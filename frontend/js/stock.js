@@ -428,6 +428,7 @@ async function loadQuote(symbol) {
     // 라이브 가격 업데이트
     liveStockPrices[symbol] = { ...liveStockPrices[symbol], price: data.price, changeRate: rate };
     renderStockMarketList();
+    if (symbol === avgDownSymbol) refreshAvgDownLive();
   } catch {}
 }
 
@@ -455,6 +456,7 @@ async function loadAccount() {
   setEl('accountPnlRate', (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%', colorByVal(pnl));
   updatePortfolioMini(lastPositions, data.cash);
   updateOrderSummary();
+  refreshAvgDownLive();
 }
 
 async function loadPositions() {
@@ -464,9 +466,10 @@ async function loadPositions() {
   if (!tbody) return;
 
   if (!lastPositions.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="padding:10px;text-align:center;color:var(--muted);">포지션 없음</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="padding:10px;text-align:center;color:var(--muted);">포지션 없음</td></tr>`;
     updatePortfolioMini([], lastCash);
     updateOrderSummary();
+    refreshAvgDownLive();
     return;
   }
   tbody.innerHTML = lastPositions.map(pos => {
@@ -479,11 +482,15 @@ async function loadPositions() {
       <td style="padding:6px 10px;text-align:right;font-size:12px;color:rgba(255,255,255,0.7);">${fmtKrw(pos.avgPrice)}</td>
       <td style="padding:6px 10px;text-align:right;font-size:12px;color:var(--accent-dark);">${fmtKrw(pos.evalAmount)}</td>
       <td style="padding:6px 10px;text-align:right;font-size:13px;font-weight:800;color:${color};">${pnl >= 0 ? '+' : ''}${fmtKrw(pnl)}</td>
+      <td style="padding:6px 6px;text-align:center;">
+        <button type="button" class="ad-mini-btn" onclick="openAvgDownModal('${escapeHtml(pos.symbol)}')" title="${escapeHtml(pos.name)} 물타기 시뮬레이션">물타기</button>
+      </td>
     </tr>`;
   }).join('');
   updatePortfolioMini(lastPositions, lastCash);
   updateBreakEven(lastPositions, document.getElementById('stockSymbol')?.value);
   updateOrderSummary();
+  refreshAvgDownLive();
 }
 
 async function loadHistory() {
@@ -669,6 +676,339 @@ document.getElementById('stockPickerClear')?.addEventListener('click', async () 
 
 document.addEventListener('click', event => {
   if (!event.target.closest('#stockPicker')) closeStockPicker();
+});
+
+/* ── 물타기 시뮬레이션 모달 ─────────────────────────────────────────────── */
+let avgDownOpen        = false;  // 모달 열림 여부
+let avgDownSymbol      = null;   // 시뮬레이션 대상 종목
+let avgDownPriceEdited = false;  // 사용자가 매수 단가를 직접 수정했는지 (실시간 시세 동기화 여부 판단)
+
+/** 모달 계산의 기준값 — 현재 선택 종목의 보유 정보 · 시세 · 현금 */
+function avgDownBase() {
+  const symbol   = avgDownSymbol;
+  const position = lastPositions.find(pos => pos.symbol === symbol);
+  const stock    = allStocks.find(item => item.symbol === symbol);
+  return {
+    symbol,
+    name:     position?.name ?? stock?.name ?? symbol ?? '-',
+    holdQty:  Number(position?.quantity ?? 0),
+    holdAvg:  Number(position?.avgPrice ?? 0),
+    price:    Number(currentStockPrice || position?.currentPrice || 0),
+    cash:     Number(lastCash || 0),
+  };
+}
+
+function adMsg(msg = '', isErr = false) {
+  const el = document.getElementById('adMsg');
+  if (el) { el.textContent = msg; el.style.color = isErr ? '#E11D48' : '#2E7D32'; }
+}
+
+/** 모달에 입력된 매수 단가 (미입력 시 현재가로 대체) */
+function avgDownBuyPrice() {
+  const raw = Number(document.getElementById('adBuyPrice')?.value);
+  return Number.isFinite(raw) && raw > 0 ? raw : avgDownBase().price;
+}
+
+/** 보유 현금으로 매수 가능한 최대 수량 */
+function avgDownMaxQty() {
+  const price = avgDownBuyPrice();
+  const cash  = avgDownBase().cash;
+  return price > 0 ? Math.floor(cash / price) : 0;
+}
+
+/** 수량을 0~최대치로 보정한 뒤 입력창·슬라이더에 반영하고 재계산 */
+function setAvgDownQty(qty) {
+  const max   = avgDownMaxQty();
+  const input = document.getElementById('adBuyQty');
+  const range = document.getElementById('adQtySlider');
+  const value = Math.max(0, Math.min(max, Math.floor(Number(qty) || 0)));
+  if (input) input.value = value || '';
+  if (range) { range.max = max; range.value = value; }
+  setText('adMaxQtyLabel', `최대 ${max.toLocaleString('ko-KR')}주`);
+  recalcAvgDown();
+}
+
+/** 보유 상태 카드 갱신 */
+function renderAvgDownBase() {
+  const { name, symbol, holdQty, holdAvg, price, cash } = avgDownBase();
+  const cost    = holdQty * holdAvg;
+  const pnl     = holdQty > 0 ? holdQty * price - cost : 0;
+  const pnlRate = cost > 0 ? (pnl / cost) * 100 : 0;
+
+  setText('adStockName', symbol ? `${name} · ${symbol}` : '-');
+  setText('adHoldQty',   `${holdQty.toLocaleString('ko-KR')}주`);
+  setText('adHoldAvg',   holdQty > 0 ? fmtKrw(holdAvg) : '-');
+  setText('adCurPrice',  price > 0 ? fmtKrw(price) : '-');
+  setEl('adPnl',         holdQty > 0 ? (pnl >= 0 ? '+' : '') + fmtKrw(Math.round(pnl)) : '-', holdQty > 0 ? colorByVal(pnl) : 'var(--fg)');
+  setEl('adPnlRate',     holdQty > 0 ? (pnlRate >= 0 ? '+' : '') + pnlRate.toFixed(2) + '%' : '-', holdQty > 0 ? colorByVal(pnlRate) : 'var(--fg)');
+  setText('adCash',      fmtKrw(cash));
+
+  // 물타기는 "평단보다 싼 가격에 추가 매수"할 때만 평균단가가 내려간다
+  const badge = document.getElementById('adStatusBadge');
+  if (badge) {
+    if (holdQty <= 0) {
+      badge.textContent = '미보유 · 신규 진입';
+      badge.className = 'badge badge-muted';
+    } else if (pnlRate < 0) {
+      badge.textContent = `손실 구간 ${pnlRate.toFixed(2)}% · 물타기 유효`;
+      badge.className = 'badge badge-red';
+    } else {
+      badge.textContent = `수익 구간 +${pnlRate.toFixed(2)}% · 추가 매수 시 평단 상승`;
+      badge.className = 'badge badge-green';
+    }
+    badge.style.fontSize = '10px';
+  }
+}
+
+/** 추가 매수 시 평균단가 · 수익률 변화 계산 */
+function recalcAvgDown() {
+  const { holdQty, holdAvg, price, cash } = avgDownBase();
+  const buyPrice = avgDownBuyPrice();
+  const buyQty   = Math.max(0, Math.floor(Number(document.getElementById('adBuyQty')?.value) || 0));
+  const buyAmount = buyPrice * buyQty;
+
+  const totalQty  = holdQty + buyQty;
+  const totalCost = holdQty * holdAvg + buyAmount;
+  // 백엔드가 평균단가를 정수로 내림 저장하므로(stock_trading.execute_order) 동일하게 맞춘다
+  const newAvg    = totalQty > 0 ? Math.floor(totalCost / totalQty) : 0;
+
+  const line = document.getElementById('adBuyAmountLine');
+  if (line) {
+    line.innerHTML = buyQty > 0
+      ? `${fmtKrw(buyPrice)} × ${buyQty.toLocaleString('ko-KR')}주 = <strong style="color:var(--accent-dark);">${fmtKrw(buyAmount)}</strong> · 보유 현금 ${fmtKrw(cash)}`
+      : '추가 매수 수량을 입력하면 평균단가 변화를 계산합니다.';
+  }
+
+  setText('adAvgBefore', holdQty > 0 ? fmtKrw(holdAvg) : '없음');
+  setText('adNewAvg',    totalQty > 0 && buyQty > 0 ? fmtKrw(newAvg) : '-');
+  setText('adTotalQty',  buyQty > 0 ? `${totalQty.toLocaleString('ko-KR')}주` : '-');
+  setText('adTotalCost', buyQty > 0 ? fmtKrw(Math.round(totalCost)) : '-');
+
+  // 평균단가 변동폭 — 내려가면 파랑(물타기 성공), 올라가면 빨강
+  const deltaEl = document.getElementById('adAvgDelta');
+  if (deltaEl) {
+    if (buyQty > 0 && holdQty > 0 && holdAvg > 0) {
+      const delta = newAvg - holdAvg;
+      const rate  = (delta / holdAvg) * 100;
+      deltaEl.textContent = `${delta >= 0 ? '+' : '−'}${fmtKrw(Math.abs(delta))} (${delta >= 0 ? '+' : ''}${rate.toFixed(2)}%)`;
+      deltaEl.style.color = delta < 0 ? '#1565C0' : delta > 0 ? '#E11D48' : 'var(--fg)';
+    } else if (buyQty > 0) {
+      deltaEl.textContent = '신규 진입';
+      deltaEl.style.color = 'var(--muted)';
+    } else {
+      deltaEl.textContent = '-';
+      deltaEl.style.color = 'var(--fg)';
+    }
+  }
+
+  // 현재가 기준 수익률 — 물타기 전 → 후
+  const pnlEl = document.getElementById('adNewPnlRate');
+  if (pnlEl) {
+    if (buyQty > 0 && price > 0 && newAvg > 0) {
+      const beforeRate = holdAvg > 0 ? ((price - holdAvg) / holdAvg) * 100 : NaN;
+      const afterRate  = ((price - newAvg) / newAvg) * 100;
+      pnlEl.innerHTML = Number.isFinite(beforeRate)
+        ? `<span style="color:${colorByVal(beforeRate)};">${beforeRate >= 0 ? '+' : ''}${beforeRate.toFixed(2)}%</span>
+           <span style="color:var(--muted);font-weight:600;"> → </span>
+           <span style="color:${colorByVal(afterRate)};">${afterRate >= 0 ? '+' : ''}${afterRate.toFixed(2)}%</span>`
+        : `<span style="color:${colorByVal(afterRate)};">${afterRate >= 0 ? '+' : ''}${afterRate.toFixed(2)}%</span>`;
+    } else {
+      pnlEl.textContent = '-';
+    }
+  }
+
+  // 본전(평균단가) 회복까지 현재가 대비 필요한 상승률
+  const beEl = document.getElementById('adBreakEven');
+  if (beEl) {
+    const need = (avg) => price > 0 ? ((avg - price) / price) * 100 : NaN;
+    if (buyQty > 0 && price > 0 && newAvg > 0) {
+      const beforeNeed = holdQty > 0 ? need(holdAvg) : NaN;
+      const afterNeed  = need(newAvg);
+      const label = (v) => v <= 0 ? '이미 달성' : `+${v.toFixed(2)}%`;
+      beEl.innerHTML = Number.isFinite(beforeNeed)
+        ? `<span style="color:var(--muted);font-weight:700;">${label(beforeNeed)}</span>
+           <span style="color:var(--muted);font-weight:600;"> → </span>
+           <span style="color:var(--accent-dark);">${label(afterNeed)}</span>`
+        : `<span style="color:var(--accent-dark);">${label(afterNeed)}</span>`;
+    } else if (holdQty > 0 && price > 0) {
+      const beforeNeed = need(holdAvg);
+      beEl.textContent = beforeNeed <= 0 ? '이미 달성' : `+${beforeNeed.toFixed(2)}%`;
+      beEl.style.color = 'var(--fg)';
+    } else {
+      beEl.textContent = '-';
+    }
+  }
+
+  // 잔여 현금 — 실제 체결은 현재가 기준이라 부족 여부는 현재가로 판단
+  const restEl  = document.getElementById('adRestCash');
+  const needCash = price * buyQty;
+  if (restEl) {
+    if (buyQty > 0) {
+      const rest = cash - buyAmount;
+      restEl.textContent = fmtKrw(Math.round(rest));
+      restEl.style.color = rest < 0 ? '#E11D48' : 'var(--fg)';
+    } else {
+      restEl.textContent = fmtKrw(cash);
+      restEl.style.color = 'var(--fg)';
+    }
+  }
+
+  // 실제 매수 가능 여부
+  const execBtn = document.getElementById('adExecBtn');
+  if (execBtn) {
+    const ok = buyQty > 0 && price > 0 && needCash <= cash;
+    execBtn.disabled = !ok;
+    execBtn.style.opacity = ok ? '1' : '.45';
+    execBtn.style.cursor  = ok ? 'pointer' : 'not-allowed';
+    execBtn.textContent   = buyQty > 0 ? `${buyQty.toLocaleString('ko-KR')}주 매수` : '이 수량으로 매수';
+  }
+
+  recalcAvgDownReverse();
+}
+
+/** 목표 평균단가 역산 — 필요한 추가 매수 수량·금액 */
+function recalcAvgDownReverse() {
+  const box = document.getElementById('adReverseResult');
+  if (!box) return;
+  const { holdQty, holdAvg, cash } = avgDownBase();
+  const buyPrice  = avgDownBuyPrice();
+  const targetAvg = Number(document.getElementById('adTargetAvg')?.value);
+
+  if (!Number.isFinite(targetAvg) || targetAvg <= 0) {
+    box.innerHTML = '목표 평균단가를 입력하면 위 매수 단가 기준으로 필요한 수량·금액을 계산합니다.';
+    return;
+  }
+  if (holdQty <= 0 || holdAvg <= 0) {
+    box.innerHTML = '<span style="color:#E11D48;">보유 중인 종목이 없어 역산할 수 없습니다. 목표 평균단가는 매수 단가와 같아집니다.</span>';
+    return;
+  }
+  if (buyPrice <= 0) {
+    box.innerHTML = '<span style="color:#E11D48;">매수 단가를 먼저 입력하세요.</span>';
+    return;
+  }
+  if (targetAvg === buyPrice) {
+    box.innerHTML = '<span style="color:#E11D48;">목표 평균단가가 매수 단가와 같아 계산할 수 없습니다.</span>';
+    return;
+  }
+
+  // (holdQty·holdAvg + q·buyPrice) / (holdQty + q) = targetAvg  →  q = holdQty(holdAvg − targetAvg) / (targetAvg − buyPrice)
+  const requiredQty = holdQty * (holdAvg - targetAvg) / (targetAvg - buyPrice);
+  if (requiredQty <= 0) {
+    box.innerHTML = '<span style="color:#E11D48;">해당 매수 단가로는 목표 평균단가에 도달할 수 없습니다. 목표가 현재 평균단가와 매수 단가 사이의 값인지 확인하세요.</span>';
+    return;
+  }
+
+  const qty    = Math.ceil(requiredQty);
+  const amount = qty * buyPrice;
+  const short  = amount - cash;
+  box.innerHTML = `
+    <div class="ad-row"><span>필요한 추가 매수 수량</span><b>${qty.toLocaleString('ko-KR')}주</b></div>
+    <div class="ad-row"><span>필요한 추가 매수 금액</span><b>${fmtKrw(amount)}</b></div>
+    <div class="ad-row"><span>도달 시 총 보유 수량</span><b>${(holdQty + qty).toLocaleString('ko-KR')}주</b></div>
+    ${short > 0
+      ? `<div style="margin-top:6px;color:#E11D48;font-weight:700;">보유 현금이 ${fmtKrw(short)} 부족합니다.</div>`
+      : `<div style="margin-top:6px;"><button type="button" class="ad-mini-btn" onclick="setAvgDownQty(${qty})">이 수량으로 시뮬레이션</button></div>`}
+  `;
+}
+
+/** 시세·계좌 갱신 시 열려 있는 모달을 최신 값으로 다시 그린다 */
+function refreshAvgDownLive() {
+  if (!avgDownOpen) return;
+  const priceInput = document.getElementById('adBuyPrice');
+  // 사용자가 직접 고치지 않았고 입력 중이 아닐 때만 현재가를 따라간다
+  if (priceInput && !avgDownPriceEdited && document.activeElement !== priceInput) {
+    const price = avgDownBase().price;
+    if (price > 0) priceInput.value = price;
+  }
+  renderAvgDownBase();
+  setAvgDownQty(document.getElementById('adBuyQty')?.value ?? 0);
+}
+
+async function openAvgDownModal(symbol) {
+  const target = symbol || document.getElementById('stockSymbol')?.value;
+  if (!target) { showMsg('종목을 먼저 선택해주세요.', true); return; }
+  if (symbol && symbol !== document.getElementById('stockSymbol')?.value) await selectStock(symbol);
+
+  avgDownSymbol      = target;
+  avgDownOpen        = true;
+  avgDownPriceEdited = false;
+  adMsg('');
+
+  const { price } = avgDownBase();
+  const priceInput = document.getElementById('adBuyPrice');
+  if (priceInput) priceInput.value = price > 0 ? price : '';
+  const targetInput = document.getElementById('adTargetAvg');
+  if (targetInput) targetInput.value = '';
+
+  document.getElementById('avgDownOverlay')?.classList.add('open');
+  renderAvgDownBase();
+  setAvgDownQty(0);
+  document.getElementById('adBuyQty')?.focus();
+}
+
+function closeAvgDownModal() {
+  avgDownOpen = false;
+  document.getElementById('avgDownOverlay')?.classList.remove('open');
+}
+
+/** 시뮬레이션한 수량 그대로 실제 시장가 매수 주문 */
+async function executeAvgDownBuy() {
+  const { symbol, price, cash, holdQty, holdAvg } = avgDownBase();
+  const qty = Math.max(0, Math.floor(Number(document.getElementById('adBuyQty')?.value) || 0));
+  if (qty < 1)          { adMsg('매수 수량을 1주 이상 입력하세요.', true); return; }
+  if (!(price > 0))     { adMsg('현재 시세를 불러온 뒤 주문할 수 있습니다.', true); return; }
+  if (price * qty > cash) { adMsg('보유 현금이 부족합니다.', true); return; }
+
+  const buyPrice = avgDownBuyPrice();
+  const notice = buyPrice !== price
+    ? `\n\n※ 시뮬레이션 단가(${fmtKrw(buyPrice)})와 무관하게 현재가 ${fmtKrw(price)}로 체결됩니다.`
+    : '';
+  const newAvg = Math.floor((holdQty * holdAvg + price * qty) / (holdQty + qty));
+  if (!confirm(`${symbol} ${qty.toLocaleString('ko-KR')}주를 ${fmtKrw(price)}에 매수합니다.\n주문금액 ${fmtKrw(price * qty)}\n예상 평균단가 ${fmtKrw(newAvg)}${notice}`)) return;
+
+  const btn = document.getElementById('adExecBtn');
+  if (btn) btn.disabled = true;
+  try {
+    await requestJson('/api/stocks/orders/buy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, quantity: qty }),
+    });
+    showMsg(`물타기 매수 완료 (${qty.toLocaleString('ko-KR')}주)`);
+    await Promise.all([loadAccount(), loadPositions(), loadQuote(symbol), loadHistory()]);
+    adMsg(`${qty.toLocaleString('ko-KR')}주 매수 완료 — 평균단가가 갱신되었습니다.`);
+    setAvgDownQty(0);
+  } catch (e) {
+    adMsg(e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+    recalcAvgDown();  // 잔여 현금 기준으로 매수 버튼 활성 상태 재판정
+  }
+}
+
+document.getElementById('avgDownBtn')?.addEventListener('click', () => openAvgDownModal());
+document.getElementById('adCloseBtn')?.addEventListener('click', closeAvgDownModal);
+document.getElementById('adCancelBtn')?.addEventListener('click', closeAvgDownModal);
+document.getElementById('adExecBtn')?.addEventListener('click', executeAvgDownBuy);
+document.getElementById('avgDownOverlay')?.addEventListener('click', event => {
+  if (event.target.id === 'avgDownOverlay') closeAvgDownModal();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && avgDownOpen) closeAvgDownModal();
+});
+document.getElementById('adBuyPrice')?.addEventListener('input', () => {
+  avgDownPriceEdited = true;
+  setAvgDownQty(document.getElementById('adBuyQty')?.value ?? 0);
+});
+document.getElementById('adBuyQty')?.addEventListener('input', event => setAvgDownQty(event.target.value));
+document.getElementById('adQtySlider')?.addEventListener('input', event => setAvgDownQty(event.target.value));
+document.getElementById('adTargetAvg')?.addEventListener('input', recalcAvgDownReverse);
+document.getElementById('adPercentBtns')?.addEventListener('click', event => {
+  const btn = event.target.closest('[data-ad-percent]');
+  if (!btn) return;
+  const price = avgDownBuyPrice();
+  if (!(price > 0)) { adMsg('매수 단가를 먼저 입력하세요.', true); return; }
+  setAvgDownQty(Math.floor(avgDownBase().cash * (Number(btn.dataset.adPercent) / 100) / price));
 });
 
 /* ── 유틸 ────────────────────────────────────────────────────────────────── */

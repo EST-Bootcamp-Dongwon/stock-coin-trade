@@ -77,6 +77,59 @@
       z-index: 50;
       margin-top: 0;
     }
+
+    /* ── 물타기 시뮬레이션 모달 ─────────────────────────────────────────── */
+    .ad-open-btn { width:100%; padding:.4rem; border:1.5px solid rgba(41,98,255,.3); border-radius:6px; color:var(--accent-dark); background:rgba(41,98,255,.06); font-size:12px; font-weight:800; cursor:pointer; transition:background .12s,border-color .12s; }
+    .ad-open-btn:hover { background:rgba(41,98,255,.14); border-color:var(--accent); }
+    .ad-mini-btn { padding:2px 7px; border:1px solid rgba(41,98,255,.3); border-radius:5px; color:var(--accent-dark); background:rgba(41,98,255,.06); font-size:10px; font-weight:800; white-space:nowrap; cursor:pointer; }
+    .ad-mini-btn:hover { background:rgba(41,98,255,.16); }
+
+    #avgDownOverlay { display:none; position:fixed; inset:0; z-index:500; padding:16px; background:rgba(0,0,0,.45); align-items:center; justify-content:center; }
+    #avgDownOverlay.open { display:flex; }
+    #avgDownModal { display:flex; flex-direction:column; width:640px; max-width:96vw; max-height:90vh; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 16px 48px rgba(0,0,0,.28); }
+
+    .ad-header { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:14px 16px; border-bottom:1px solid var(--border); }
+    .ad-header h3 { font-size:16px; font-weight:900; color:var(--fg); line-height:1.3; }
+    .ad-header p { display:flex; align-items:center; gap:6px; margin-top:3px; font-size:12px; color:var(--muted); }
+    .ad-body { flex:1; overflow-y:auto; padding:14px 16px; }
+    .ad-footer { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 16px; border-top:1px solid var(--border); background:var(--surface-2); border-radius:0 0 12px 12px; flex-wrap:wrap; }
+    .ad-footer-btns { display:flex; gap:8px; margin-left:auto; }
+    .ad-footer-btns button { width:auto; padding:.45rem 1.1rem; font-size:13px; }
+
+    .ad-section-title { display:flex; align-items:center; gap:6px; margin:16px 0 7px; font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+    .ad-section-title:first-child { margin-top:0; }
+
+    .ad-stat-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+    .ad-stat { padding:7px 9px; background:var(--surface-2); border:1px solid var(--border); border-radius:6px; }
+    .ad-stat span { display:block; font-size:10px; font-weight:700; color:var(--muted); }
+    .ad-stat strong { display:block; margin-top:1px; font-size:13px; font-weight:800; color:var(--fg); }
+
+    .ad-input-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .ad-input-grid label { display:block; font-size:11px; font-weight:700; color:var(--fg-2); }
+    .ad-input { margin-top:3px; padding:.35rem .6rem; font-size:13px; }
+    .ad-slider { width:100%; margin-top:10px; accent-color:var(--accent); cursor:pointer; }
+    .ad-slider-meta { display:flex; justify-content:space-between; font-size:10px; color:var(--muted); }
+    .ad-percent-row { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin-top:7px; }
+    .ad-percent-row button { padding:4px 0; border:1px solid var(--border); border-radius:5px; color:var(--fg); background:var(--surface); font-size:11px; font-weight:750; cursor:pointer; }
+    .ad-percent-row button:hover { border-color:var(--accent); color:var(--accent-dark); background:rgba(41,98,255,.08); }
+
+    .ad-hero { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:8px; padding:11px 12px; background:linear-gradient(160deg,#FFFFFF 55%,var(--surface-2)); border:1px solid rgba(41,98,255,.18); border-radius:8px; }
+    .ad-hero > div > span { display:block; font-size:10px; font-weight:700; color:var(--muted); }
+    .ad-hero > div > strong { display:block; margin-top:1px; font-size:17px; font-weight:900; color:var(--fg); }
+    .ad-hero-arrow { font-size:17px; font-weight:900; color:var(--accent); }
+    .ad-hero-after strong { color:var(--accent-dark); }
+
+    .ad-row { display:flex; align-items:baseline; justify-content:space-between; gap:10px; padding:6px 2px; border-bottom:1px solid var(--border); font-size:12px; }
+    .ad-row:last-child { border-bottom:none; }
+    .ad-row > span { color:var(--muted); font-weight:600; }
+    .ad-row > b { font-size:13px; font-weight:800; color:var(--fg); text-align:right; }
+    .ad-note { padding:8px 10px; border-radius:6px; background:var(--surface-2); font-size:11px; line-height:1.6; color:var(--muted); }
+
+    @media (max-width:560px) {
+      .ad-stat-grid { grid-template-columns:repeat(2,1fr); }
+      .ad-hero { grid-template-columns:1fr; text-align:center; }
+      .ad-hero-arrow { transform:rotate(90deg); }
+    }
   </style>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Pretendard','-apple-system','BlinkMacSystemFont','Segoe UI','sans-serif']}}}}</script>
@@ -218,6 +271,7 @@
             <button id="buyBtn" type="button" class="btn-buy" style="font-size:13px;padding:.45rem;">매수</button>
             <button id="sellBtn" type="button" class="btn-sell" style="font-size:13px;padding:.45rem;">매도</button>
           </div>
+          <button id="avgDownBtn" type="button" class="ad-open-btn" style="margin-bottom:6px;">🧮 물타기 시뮬레이션</button>
           <p id="stockMessage" style="font-size:11px;color:var(--muted);"></p>
         </div>
       </div>
@@ -248,6 +302,7 @@
               <th style="padding:6px 10px;text-align:right;color:var(--muted);font-size:10px;font-weight:700;">평균단가</th>
               <th style="padding:6px 10px;text-align:right;color:var(--muted);font-size:10px;font-weight:700;">평가금액</th>
               <th style="padding:6px 10px;text-align:right;color:var(--muted);font-size:10px;font-weight:700;">손익</th>
+              <th style="padding:6px 6px;text-align:center;color:var(--muted);font-size:10px;font-weight:700;">물타기</th>
             </tr></thead>
             <tbody id="positionsBody"></tbody>
           </table>
@@ -330,6 +385,85 @@
   </footer>
 </div><!-- /trading-root -->
 
+<!-- ── 물타기 시뮬레이션 모달 ─────────────────────────────────────────────── -->
+<div id="avgDownOverlay" role="dialog" aria-modal="true" aria-labelledby="avgDownTitle">
+  <div id="avgDownModal">
+
+    <div class="ad-header">
+      <div>
+        <h3 id="avgDownTitle">🧮 물타기 시뮬레이션</h3>
+        <p><span id="adStockName">-</span><span id="adStatusBadge" class="badge badge-muted" style="font-size:10px;">-</span></p>
+      </div>
+      <button id="adCloseBtn" type="button" class="oc-close-btn" aria-label="닫기">✕</button>
+    </div>
+
+    <div class="ad-body">
+
+      <!-- 현재 보유 상태 -->
+      <div class="ad-section-title">현재 보유 상태</div>
+      <div class="ad-stat-grid">
+        <div class="ad-stat"><span>보유 수량</span><strong id="adHoldQty">-</strong></div>
+        <div class="ad-stat"><span>평균 단가</span><strong id="adHoldAvg">-</strong></div>
+        <div class="ad-stat"><span>현재가</span><strong id="adCurPrice">-</strong></div>
+        <div class="ad-stat"><span>평가 손익</span><strong id="adPnl">-</strong></div>
+        <div class="ad-stat"><span>수익률</span><strong id="adPnlRate">-</strong></div>
+        <div class="ad-stat"><span>보유 현금</span><strong id="adCash">-</strong></div>
+      </div>
+
+      <!-- 추가 매수 조건 -->
+      <div class="ad-section-title">추가 매수 조건</div>
+      <div class="ad-input-grid">
+        <label>매수 단가 (원)
+          <input id="adBuyPrice" type="number" min="1" step="1" class="dark-input ad-input" placeholder="현재가">
+        </label>
+        <label>매수 수량 (주)
+          <input id="adBuyQty" type="number" min="0" step="1" class="dark-input ad-input" placeholder="0">
+        </label>
+      </div>
+      <input id="adQtySlider" type="range" min="0" max="0" step="1" value="0" class="ad-slider" aria-label="추가 매수 수량 슬라이더">
+      <div class="ad-slider-meta"><span>0주</span><span id="adMaxQtyLabel">최대 -</span></div>
+      <div id="adPercentBtns" class="ad-percent-row">
+        <button type="button" data-ad-percent="10">현금 10%</button>
+        <button type="button" data-ad-percent="25">25%</button>
+        <button type="button" data-ad-percent="50">50%</button>
+        <button type="button" data-ad-percent="100">전액</button>
+      </div>
+      <p id="adBuyAmountLine" class="ad-note" style="margin-top:8px;">추가 매수 수량을 입력하면 평균단가 변화를 계산합니다.</p>
+
+      <!-- 시뮬레이션 결과 -->
+      <div class="ad-section-title">시뮬레이션 결과</div>
+      <div class="ad-hero">
+        <div><span>현재 평균단가</span><strong id="adAvgBefore">-</strong></div>
+        <div class="ad-hero-arrow" aria-hidden="true">→</div>
+        <div class="ad-hero-after"><span>물타기 후 평균단가</span><strong id="adNewAvg">-</strong></div>
+      </div>
+      <div style="margin-top:8px;">
+        <div class="ad-row"><span>평균단가 변동</span><b id="adAvgDelta">-</b></div>
+        <div class="ad-row"><span>총 보유 수량</span><b id="adTotalQty">-</b></div>
+        <div class="ad-row"><span>총 매수 원금</span><b id="adTotalCost">-</b></div>
+        <div class="ad-row"><span>현재가 기준 수익률</span><b id="adNewPnlRate">-</b></div>
+        <div class="ad-row"><span>본전까지 필요 상승률</span><b id="adBreakEven">-</b></div>
+        <div class="ad-row"><span>매수 후 잔여 현금</span><b id="adRestCash">-</b></div>
+      </div>
+
+      <!-- 목표 평균단가 역산 -->
+      <div class="ad-section-title">목표 평균단가 역산 <span class="badge badge-muted" style="font-size:9px;">선택</span></div>
+      <input id="adTargetAvg" type="number" min="1" step="1" class="dark-input ad-input" placeholder="도달하고 싶은 평균단가 (원)">
+      <div id="adReverseResult" class="ad-note" style="margin-top:8px;">목표 평균단가를 입력하면 위 매수 단가 기준으로 필요한 수량·금액을 계산합니다.</div>
+
+    </div>
+
+    <div class="ad-footer">
+      <p id="adMsg" style="font-size:11px;color:var(--muted);"></p>
+      <div class="ad-footer-btns">
+        <button id="adCancelBtn" type="button" class="btn-ghost">닫기</button>
+        <button id="adExecBtn" type="button" class="btn-buy">이 수량으로 매수</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
 <script>
 function switchTab(name) {
   ['positions','history','orderbook'].forEach(t => {
@@ -351,6 +485,6 @@ switchTab('positions');
 </script>
 <script src="/js/config.js"></script>
 <script src="/js/common.js?v=20260802"></script>
-<script src="/js/stock.js?v=20260802-3"></script>
+<script src="/js/stock.js?v=20260804-1"></script>
 </body>
 </html>
