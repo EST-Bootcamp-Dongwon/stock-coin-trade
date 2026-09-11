@@ -25,7 +25,7 @@
 #
 # ★ **필요한 마일스톤에서 한 줄씩 추가한다.** requirements 가 바뀌면 Cloud 가 환경을
 #   다시 만들고, 안 쓰는 패키지는 메모리 2.7GB 한도를 미리 깎는다.
-#   (예정: `PyYAML` M4 · `huggingface_hub` M6 · 차트 M8. `requests` 는 M3 에서 추가됐다.
+#   (예정: `huggingface_hub` M6 · 차트 M8. `requests` 는 M3 · `PyYAML` 은 M4 에서 추가됐다.
 #    pandas·numpy·pyarrow 는 streamlit 이 이미 끌고 온다 — 따로 적지 않는다)
 #
 # 🔴 `pykrx` 를 이 파일에 넣지 않는다. KRX FAQ 가 이름을 지목해 IP 차단을 경고한다
@@ -59,3 +59,16 @@ streamlit==1.63.0
 #   않는다 — 이 파일은 Streamlit Cloud 가 설치하는 목록이고, Cloud 는 테스트를
 #   돌리지 않으면서 메모리 2.7GB 한도만 깎는다.
 requests==2.34.2
+
+# ── M4 (섹터 정의) ──────────────────────────────────────────────────
+# `sector/sector_master.py` 가 `sector/config/sectors.yaml` 을 읽는다.
+#
+# ★ **왜 배포 목록에 있는가** — 이 파일은 배치(`batch/validate_config.py`)만 쓰는
+#   것이 아니다. 화면이 섹터 이름·GICS 태그·`note`(근거)를 보여줘야 하므로
+#   (M9·M10) Streamlit 런타임도 같은 YAML 을 읽는다. 개발 전용이 아니다.
+# ★ 설치 용량이 작고(<1MB) C 확장은 선택 사항이라 Cloud 빌드가 순정 파이썬
+#   구현으로도 끝난다 — 2.7GB 메모리 한도에 부담이 없다.
+# 🔒 JSON·TOML 로 바꾸지 않는다. `note` 가 **여러 줄 한국어 산문**이고 그것이
+#   이 설정의 본체다 — 블록 스칼라(`|`)를 쓸 수 없는 형식은 근거를 못 담는다.
+#   대신 `yaml.safe_load` 만 쓴다(임의 객체 역직렬화 금지).
+PyYAML==6.0.3
