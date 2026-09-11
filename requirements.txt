@@ -72,3 +72,18 @@ requests==2.34.2
 #   이 설정의 본체다 — 블록 스칼라(`|`)를 쓸 수 없는 형식은 근거를 못 담는다.
 #   대신 `yaml.safe_load` 만 쓴다(임의 객체 역직렬화 금지).
 PyYAML==6.0.3
+
+# ── M6 (HF 파이프라인) ──────────────────────────────────────────────
+# `sector/datastore/hub.py` 가 파생값을 올리고 앱이 내려받는다.
+#
+# ★ **왜 배포 목록에 있는가** — 앱이 HF private dataset 에서 `latest/` 를 읽어야
+#   화면이 그려진다. 배치만 쓰는 것이 아니다.
+# ★ `huggingface_hub` 는 순수 파이썬이고 의존이 얕다(requests·filelock·tqdm·
+#   fsspec·hf-xet). 무거운 것은 `transformers`·`torch` 쪽이고 여기선 안 끌어온다.
+# 🔒 이 핀은 루트 `.venv`(Python 3.12.3)에 실제로 설치해 게시를 돌린 버전과 같다.
+#    `backend/.venv` 의 1.27.0 과 다르다 — **맞추지 않는다**(다른 런타임이다).
+#
+# 🔴 토큰은 두 개이고 **이름이 역할을 말한다** — 앱은 `HF_TOKEN_READ`(read 전용)
+#    만 받는다. `HF_TOKEN_WRITE` 는 로컬 `.env` 에만 두고 Streamlit Secrets 에
+#    넣지 않는다 (→ `sector/datastore/hub.py` 머리주석).
+huggingface_hub==1.31.0

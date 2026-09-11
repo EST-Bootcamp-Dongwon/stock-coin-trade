@@ -53,7 +53,10 @@ python -m batch.fetch_daily --days 425              # data/raw/ 로 수집 (멱�
 python -m batch.build_sector_daily --dry-run        # data/raw/ → 집계 (쓰지 않음)
 python -m batch.build_sector_daily                  # → data/derived/*.parquet
 
-python -m batch.publish --date 20260910 --dry-run               # HF 업로드 리허설
+# 게시 (M6) — 🔒 올리는 것은 data/derived/ 의 파생값뿐. data/raw/ 는 한 파일도 안 간다
+python -m batch.publish --date 20260910 --dry-run    # 무엇을 올릴지만 본다
+python -m batch.publish --date 20260910              # HF private dataset 으로
+python -m batch.publish --date 20260910              # ★ 두 번째 — "업로드 0건" 이어야 정상
 
 # v2.0 (Django) — 동결. 회귀 확인용으로만 돌린다
 cd backend && .venv/bin/pytest                # 골든 23건 · DB 불필요 ← 항상 통과해야 한다

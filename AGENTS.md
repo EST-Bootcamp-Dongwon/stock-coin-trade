@@ -110,8 +110,12 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
 - 🔒 **`.env` · KIS `appkey`/`appsecret` · KRX·HF·DART 키를 커밋하지 않는다.**
   `.gitignore` 가 `.env*` 를 막고 `!.env.example` 로 예시만 푼다. **이 순서를 뒤집지 마라.**
 - 🔒 **`.gitignore` 에 `.streamlit/secrets.toml` 을 별도로 넣는다** — `.env*` 패턴이 못 막는다.
-- 🔒 **앱에 주는 HF 토큰은 read 전용.** 쓰기가 필요한 곳(`team-notes`)은 **그 저장소 하나에만**
-  권한이 있는 fine-grained 토큰을 따로 만든다.
+- 🔒 **HF 토큰은 이름이 역할을 말한다** (2026-09-11 · M6):
+  `HF_TOKEN_WRITE`(배치 전용 · 루트 `.env` **만**) / `HF_TOKEN_READ`(앱 · Streamlit Secrets) /
+  `HF_TOKEN_NOTES_WRITE`(M13 · `team-notes` 그 저장소 하나에만).
+  🔴 옛 이름 `HUGGINGFACE_ACCESS_TOKEN` 을 버린 이유 — "ACCESS" 가 read 인지 write 인지
+  이름으로 알 수 없어 **org 전체 쓰기 토큰이 앱용 칸에 들어가 있었다.** 그대로 배포했다면
+  쓰기 권한이 Streamlit Secrets 로 넘어간다. 시크릿은 `sector/secret_access.py` 하나로만 읽는다.
 - `.env` 가 둘이다 — 루트 `.env`(v3.0·v1.0) / `backend/.env`(v2.0 Django 가 읽는 유일한 것).
 - push 전 `git status --short` 로 PDF·ZIP·데이터 원본 혼입을 확인한다.
 
