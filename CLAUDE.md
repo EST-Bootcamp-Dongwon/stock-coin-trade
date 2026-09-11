@@ -41,10 +41,18 @@ git status --short
 ```bash
 # v3.0 (Streamlit) — 정본
 streamlit run streamlit_app.py
-pytest                                        # sector/ 골든만 수집
+pytest                                        # sector/ · batch/ 골든 수집
 
-python -m sector.sources.krx_openapi --probe --date 20260910   # 원천 단독 점검
-python -m batch.validate_config                                 # 섹터 정의 검증
+python -m sector.sources.krx_openapi --probe --date 20260910          # ETF 원천 점검
+python -m sector.sources.krx_stock --probe --date 20260910 --market stk  # 주식 원천 점검
+python -m batch.validate_config                                       # 섹터 정의 검증
+
+# 집계 (M5) — 수집과 집계를 나눠 뒀다. 집계는 네트워크를 부르지 않는다
+python -m batch.fetch_daily --days 425 --dry-run    # 무엇을 받을지만 본다
+python -m batch.fetch_daily --days 425              # data/raw/ 로 수집 (멱등 · 재개 가능)
+python -m batch.build_sector_daily --dry-run        # data/raw/ → 집계 (쓰지 않음)
+python -m batch.build_sector_daily                  # → data/derived/*.parquet
+
 python -m batch.publish --date 20260910 --dry-run               # HF 업로드 리허설
 
 # v2.0 (Django) — 동결. 회귀 확인용으로만 돌린다

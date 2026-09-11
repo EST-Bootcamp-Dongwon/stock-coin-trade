@@ -41,6 +41,7 @@ KRX Open API 에 **지수 구성종목·ETF PDF 가 없다.** 섹터 구성은 �
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import re
@@ -53,6 +54,7 @@ import yaml
 
 __all__ = [
     "has_errors",
+    "read_raw_payload",
     "default_raw_dir",
     "GICS_SECTORS",
     "LIQUIDITY_GATE_KRW",
@@ -330,10 +332,12 @@ def load(path: Path | str | None = None) -> SectorMaster:
 # ── 원천 스냅샷 → 유니버스 ───────────────────────────────────────────────────
 
 #: `data/raw/` 안의 파일 이름 규칙. 🔒 이 폴더는 gitignore 다 — KRX 원천이 여기까지만 산다.
+#: ★ `*` 가 날짜 뒤의 `.gz` 까지 먹는다 — 1년치 배치(`batch/fetch_daily.py`)는 gzip 으로
+#:   저장하고 단발 `--probe` 는 평문으로 저장하는데, 읽는 쪽은 둘을 구별할 이유가 없다.
 _RAW_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("etf", "etf_bydd_trd_*.json"),   # ETP > ETF 일별매매정보
-    ("stk", "stk_bydd_trd_*.json"),   # 유가증권 일별매매정보
-    ("ksq", "ksq_bydd_trd_*.json"),   # 코스닥 일별매매정보
+    ("etf", "etf_bydd_trd_*.json*"),   # ETP > ETF 일별매매정보
+    ("stk", "stk_bydd_trd_*.json*"),   # 유가증권 일별매매정보
+    ("ksq", "ksq_bydd_trd_*.json*"),   # 코스닥 일별매매정보
 )
 _RESULT_BLOCK = "OutBlock_1"
 
@@ -343,11 +347,19 @@ def default_raw_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "data" / "raw"
 
 
-def _iter_rows(path: Path) -> Iterable[Mapping[str, Any]]:
+def read_raw_payload(path: Path) -> Any:
+    """`data/raw/` 스냅샷 한 개를 읽는다. `.json` 과 `.json.gz` 를 모두 안다."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        if path.suffix == ".gz":
+            with gzip.open(path, "rt", encoding="utf-8") as fp:
+                return json.load(fp)
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise SectorConfigError(f"원천 스냅샷을 읽을 수 없다: {path} ({exc})") from exc
+
+
+def _iter_rows(path: Path) -> Iterable[Mapping[str, Any]]:
+    payload = read_raw_payload(path)
     block = payload.get(_RESULT_BLOCK) if isinstance(payload, Mapping) else None
     if not isinstance(block, list):
         raise SectorConfigError(f"{path.name} 에 '{_RESULT_BLOCK}' 리스트가 없다")
