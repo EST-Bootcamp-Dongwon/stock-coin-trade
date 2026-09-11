@@ -41,6 +41,7 @@ ImportError 로 죽는다 — 통과가 아니라 실패다.
 
 ## 쓰는 법
 
+    python -m batch.build_scores                        # 먼저 채점이 최신이어야 한다
     python -m batch.publish --date 20260910 --dry-run   # 무엇을 올릴지만 본다
     python -m batch.publish --date 20260910             # 올린다
     python -m batch.publish --date 20260910             # ★ 두 번째 — 업로드 0건
@@ -58,6 +59,7 @@ from pathlib import Path
 from typing import Any
 
 # 🔴 게이트는 조건부 import 가 아니다. 없으면 여기서 죽는다 — 그것이 의도다.
+from sector import scoring
 from sector.datastore import gate, hub
 from sector.sector_master import SectorConfigError, load
 from sector.sources.krx_common import repo_root
@@ -76,7 +78,7 @@ SOURCE_NOTICE = (
     "원천 데이터는 포함하지 않는다."
 )
 
-_KINDS = ("sector_daily", "market_daily")
+_KINDS = ("sector_daily", "market_daily", "score_daily")
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,27 +165,31 @@ def _month_path(kind: str, month: str) -> str:
 def build_shards(
     sector: Any,
     market: Any,
+    score: Any,
     *,
     latest_days: int = LATEST_BUSINESS_DAYS,
 ) -> list[Shard]:
-    """게시용 프레임 두 개 → 올릴 파일 목록. **네트워크를 부르지 않는다.**"""
+    """게시용 프레임 셋 → 올릴 파일 목록. **네트워크를 부르지 않는다.**"""
+    kinds = (("sector_daily", sector), ("market_daily", market), ("score_daily", score))
     shards: list[Shard] = []
-    for kind, frame in (("sector_daily", sector), ("market_daily", market)):
+    for kind, frame in kinds:
         months = sorted({str(d)[:6] for d in frame["bas_dd"]})
         for month in months:
             part = frame[frame["bas_dd"].astype("string").str[:6] == month]
             shards.append(_shard(_month_path(kind, month), part))
 
     # `latest/` — 앱이 읽는 유일한 곳. 최근 N 영업일만 담는다.
+    # 🔒 창은 **집계의 날짜 축**으로 잡는다. 점수는 축이 설 때까지 기다리느라 더
+    #    짧을 수 있고, 그쪽으로 창을 잡으면 집계가 덩달아 잘린다.
     days = sorted({str(d) for d in sector["bas_dd"]})
     window = set(days[-latest_days:])
-    for kind, frame in (("sector_daily", sector), ("market_daily", market)):
+    for kind, frame in kinds:
         part = frame[frame["bas_dd"].astype("string").isin(window)]
         shards.append(_shard(f"latest/{kind}_latest.parquet", part))
     return shards
 
 
-def snapshot(sector: Any, market: Any, *, as_of: str, published_date: str,
+def snapshot(sector: Any, market: Any, score: Any, *, as_of: str, published_date: str,
              config: Any, latest_days: int) -> dict[str, Any]:
     """`latest/snapshot.json` — 앱이 "데이터 상태"를 그릴 재료.
 
@@ -203,6 +209,12 @@ def snapshot(sector: Any, market: Any, *, as_of: str, published_date: str,
         "sector_count": int(sector["sector_id"].nunique()),
         "market_rows": int(len(market)),
         "partial_sector_rows": int(sector["is_partial"].sum()),
+        "score_rows": int(len(score)),
+        "score_first_bas_dd": (min(str(d) for d in score["bas_dd"]) if len(score) else None),
+        # 🔴 "점수가 나온 행" 은 전체 행보다 적을 수 있다 — 축이 하나도 서지 않은
+        #    초기 구간이 있기 때문이다. 앱이 그 구간을 빈 화면 대신 설명으로 그린다.
+        "scored_rows": int(score["score_balanced_bp"].notna().sum()),
+        "presets": sorted(scoring.PRESETS),
         "latest_window_days": latest_days,
         "config_version": config.version,
         "config_sha256": config.config_sha256,
@@ -210,6 +222,7 @@ def snapshot(sector: Any, market: Any, *, as_of: str, published_date: str,
         "read_this": {
             "sector_daily": "latest/sector_daily_latest.parquet",
             "market_daily": "latest/market_daily_latest.parquet",
+            "score_daily": "latest/score_daily_latest.parquet",
         },
     }
 
@@ -222,6 +235,7 @@ def readme(*, repo_id: str) -> bytes:
     withheld = "\n".join(
         f"- `{c}` — {why}" for c, why in sorted(gate.DELIBERATELY_WITHHELD.items())
     )
+    preset_list = " · ".join(f"`{name}`" for name in sorted(scoring.PRESETS))
     text = f"""---
 license: other
 language:
@@ -252,9 +266,11 @@ pretty_name: 섹터 ETF 레이더 — 파생값
 
 | 경로 | 내용 |
 |---|---|
-| `latest/sector_daily_latest.parquet` | 최근 {LATEST_BUSINESS_DAYS}영업일 섹터 집계. **앱은 이것만 읽는다** |
+| `latest/score_daily_latest.parquet` | 최근 {LATEST_BUSINESS_DAYS}영업일 **4축 점수·순위**. 랭킹 화면이 읽는다 |
+| `latest/sector_daily_latest.parquet` | 같은 창의 섹터 집계 — 점수의 입력이자 근거 화면의 재료 |
 | `latest/market_daily_latest.parquet` | 같은 창의 시장 기준선 |
 | `latest/snapshot.json` | 기준일·건수·설정 지문 |
+| `score_daily/year=YYYY/month=MM/…` | 월별 보관본 |
 | `sector_daily/year=YYYY/month=MM/…` | 월별 보관본 |
 | `market_daily/year=YYYY/month=MM/…` | 월별 보관본 |
 | `MANIFEST.json` | 파일별 행수·해시·게시일 |
@@ -271,6 +287,22 @@ pretty_name: 섹터 ETF 레이더 — 파생값
 ### `market_daily` (1행 = 1영업일)
 
 {columns(gate.MARKET_PUBLISHED_COLUMNS)}
+
+### `score_daily` (1행 = 1섹터 × 1영업일)
+
+4축 — **모멘텀(M) · 자금흐름(F) · 폭(B) · 밸류(V)**. 축마다 원시값(`*_raw_bp`)과
+같은 날 섹터들 사이에서 표준화한 값(`*_z_bp` = z × 10000, `clip(±3σ)`)이 있다.
+점수는 `Σ w·z / Σ w` 를 bp 로 적은 것이라 **±30000bp(±3σ)를 넘지 않는다.**
+
+가중치 프리셋 {preset_list} 의 결과만 저장한다 — 다른 가중치는 앱이 `*_z_bp` 로
+그 자리에서 다시 더한다.
+
+{columns(gate.SCORE_PUBLISHED_COLUMNS)}
+
+🔴 **`*_z_bp` 가 비어 있는 축은 그날 계산할 수 없었던 축이다.** 0 이 아니다 —
+`axes_missing` 이 어느 축인지 말하고, `n_axes_used` 만큼으로 가중치를 다시
+정규화한 점수가 들어 있다. `axes_degraded` 는 섹터들의 중앙값절대편차가 0 이라
+평균절대편차로 표준화한 축이다(폭 축에서 실제로 생긴다).
 
 ### 일부러 내보내지 않는 열
 
@@ -354,9 +386,9 @@ def plan_publish(
 
 # ── 게이트 ──────────────────────────────────────────────────────────────────
 
-def run_gate(sector: Any, market: Any, *, as_of: str) -> None:
+def run_gate(sector: Any, market: Any, score: Any, *, as_of: str) -> None:
     """🔴 검사기를 돌리고, **돌았는지까지** 확인한다. 안 돌았으면 통과가 아니다."""
-    report = gate.check(sector=sector, market=market, as_of=as_of)
+    report = gate.check(sector=sector, market=market, score=score, as_of=as_of)
     missing = gate.REQUIRED_CHECKS - report.checks_run
     if missing:
         raise hub.PublishBlocked(
@@ -368,7 +400,8 @@ def run_gate(sector: Any, market: Any, *, as_of: str) -> None:
         raise hub.PublishBlocked(
             "🔴 업로드 게이트가 막았다 — 한 파일도 올리지 않는다:\n"
             + "\n".join(f"    · {v}" for v in report.violations),
-            hint="집계(`python -m batch.build_sector_daily`)를 다시 확인한다",
+            hint="집계(`python -m batch.build_sector_daily`)와 "
+                 "채점(`python -m batch.build_scores`)을 다시 확인한다",
         )
 
 
@@ -378,7 +411,15 @@ def derived_dir() -> Path:
     return repo_root() / "data" / "derived"
 
 
-def _load_frames(directory: Path) -> tuple[Any, Any]:
+#: 파생값마다 "없으면 무엇을 먼저 돌려야 하는가". 🔒 막다른 길로 끝내지 않는다.
+_HOW_TO_BUILD = {
+    "sector_daily": "python -m batch.build_sector_daily",
+    "market_daily": "python -m batch.build_sector_daily",
+    "score_daily": "python -m batch.build_scores",
+}
+
+
+def _load_frames(directory: Path) -> tuple[Any, Any, Any]:
     import pandas as pd
 
     frames = []
@@ -386,10 +427,10 @@ def _load_frames(directory: Path) -> tuple[Any, Any]:
         path = directory / f"{kind}.parquet"
         if not path.is_file():
             raise FileNotFoundError(
-                f"{path} 가 없다. 먼저 `python -m batch.build_sector_daily` 를 돌린다."
+                f"{path} 가 없다. 먼저 `{_HOW_TO_BUILD[kind]}` 를 돌린다."
             )
         frames.append(pd.read_parquet(path))
-    return frames[0], frames[1]
+    return frames[0], frames[1], frames[2]
 
 
 def _human(n: int) -> str:
@@ -407,6 +448,19 @@ def _config_is_newer(directory: Path) -> bool:
     if not config.is_file() or not built.is_file():
         return False
     return config.stat().st_mtime > built.stat().st_mtime
+
+
+def _score_is_stale(directory: Path) -> bool:
+    """채점을 집계보다 먼저 돌려 놓고 잊었는가.
+
+    ⚠️ `_config_is_newer` 와 같은 이유로 **경고까지만** 한다 — mtime 은 `git checkout`
+       만으로도 움직이고, 막으면 애먼 날에 배치가 선다.
+    """
+    built = directory / "sector_daily.parquet"
+    scored = directory / "score_daily.parquet"
+    if not built.is_file() or not scored.is_file():
+        return False
+    return built.stat().st_mtime > scored.stat().st_mtime
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -443,7 +497,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        raw_sector, raw_market = _load_frames(directory)
+        raw_sector, raw_market, raw_score = _load_frames(directory)
         config = load()
     except (FileNotFoundError, SectorConfigError) as exc:
         print(f"❌ {exc}", file=sys.stderr)
@@ -452,15 +506,18 @@ def main(argv: list[str] | None = None) -> int:
     # 🔒 룩어헤드 차단 — `--date` 보다 뒤의 날은 애초에 싣지 않는다.
     raw_sector = raw_sector[raw_sector["bas_dd"].astype("string") <= as_of_arg]
     raw_market = raw_market[raw_market["bas_dd"].astype("string") <= as_of_arg]
-    if len(raw_sector) == 0 or len(raw_market) == 0:
-        print(f"❌ --date={as_of_arg} 이하의 행이 없다. 집계 범위를 확인한다.", file=sys.stderr)
+    raw_score = raw_score[raw_score["bas_dd"].astype("string") <= as_of_arg]
+    if len(raw_sector) == 0 or len(raw_market) == 0 or len(raw_score) == 0:
+        print(f"❌ --date={as_of_arg} 이하의 행이 없다. 집계·채점 범위를 확인한다.",
+              file=sys.stderr)
         return 2
 
     sector = gate.project_sector(raw_sector)
     market = gate.project_market(raw_market)
+    score = gate.project_score(raw_score)
 
     try:
-        run_gate(sector, market, as_of=as_of_arg)
+        run_gate(sector, market, score, as_of=as_of_arg)
     except hub.PublishBlocked as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
@@ -472,11 +529,14 @@ def main(argv: list[str] | None = None) -> int:
     if _config_is_newer(directory):
         print("⚠️  sectors.yaml 이 집계 결과보다 새롭다 — "
               "`python -m batch.build_sector_daily` 를 다시 돌리는 편이 낫다.")
+    if _score_is_stale(directory):
+        print("⚠️  score_daily 가 sector_daily 보다 오래됐다 — "
+              "`python -m batch.build_scores` 를 다시 돌리는 편이 낫다.")
 
-    shards = build_shards(sector, market, latest_days=args.latest_days)
+    shards = build_shards(sector, market, score, latest_days=args.latest_days)
     shards.append(_doc_shard(
         SNAPSHOT_PATH,
-        _json_bytes(snapshot(sector, market, as_of=as_of, published_date=as_of_arg,
+        _json_bytes(snapshot(sector, market, score, as_of=as_of, published_date=as_of_arg,
                              config=config, latest_days=args.latest_days)),
     ))
     shards.append(_doc_shard(README_PATH, readme(repo_id=args.repo_id)))
@@ -484,7 +544,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"저장소: {args.repo_id} (dataset · private 전제)")
     print(f"설정  : sectors.yaml {config.version} (sha256 {config.config_sha256[:12]}…)")
     print(f"as_of : {as_of} · 영업일 {sector['bas_dd'].nunique()}일 · "
-          f"sector {len(sector)}행 · market {len(market)}행")
+          f"sector {len(sector)}행 · market {len(market)}행 · score {len(score)}행")
     print(f"게이트: {len(gate.REQUIRED_CHECKS)}개 검사 통과")
 
     # ── 원격 상태 읽기 ──────────────────────────────────────────────────────

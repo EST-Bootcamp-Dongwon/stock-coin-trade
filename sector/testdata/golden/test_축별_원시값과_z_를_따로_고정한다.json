@@ -1,0 +1,296 @@
+{
+  "20250328": {
+    "alpha": {
+      "degraded": "",
+      "missing": "MV",
+      "raw": [
+        null,
+        98,
+        -4500,
+        null
+      ],
+      "z": [
+        null,
+        -6745,
+        -3372,
+        null
+      ]
+    },
+    "bravo": {
+      "degraded": "",
+      "missing": "MV",
+      "raw": [
+        null,
+        121,
+        -2800,
+        null
+      ],
+      "z": [
+        null,
+        0,
+        3372,
+        null
+      ]
+    },
+    "charlie": {
+      "degraded": "",
+      "missing": "MV",
+      "raw": [
+        null,
+        144,
+        -1100,
+        null
+      ],
+      "z": [
+        null,
+        6745,
+        10117,
+        null
+      ]
+    },
+    "delta": {
+      "degraded": "",
+      "missing": "MV",
+      "raw": [
+        null,
+        166,
+        600,
+        null
+      ],
+      "z": [
+        null,
+        13197,
+        16862,
+        null
+      ]
+    },
+    "echo": {
+      "degraded": "",
+      "missing": "MFV",
+      "raw": [
+        null,
+        null,
+        -7800,
+        null
+      ],
+      "z": [
+        null,
+        null,
+        -16466,
+        null
+      ]
+    },
+    "foxtrot": {
+      "degraded": "",
+      "missing": "MV",
+      "raw": [
+        null,
+        98,
+        -4500,
+        null
+      ],
+      "z": [
+        null,
+        -6745,
+        -3372,
+        null
+      ]
+    }
+  },
+  "20250620": {
+    "alpha": {
+      "degraded": "",
+      "missing": "",
+      "raw": [
+        120,
+        95,
+        500,
+        -336
+      ],
+      "z": [
+        6745,
+        0,
+        8356,
+        -6745
+      ]
+    },
+    "bravo": {
+      "degraded": "",
+      "missing": "",
+      "raw": [
+        112,
+        117,
+        -7900,
+        -269
+      ],
+      "z": [
+        -6745,
+        18548,
+        -8557,
+        6745
+      ]
+    },
+    "charlie": {
+      "degraded": "",
+      "missing": "MV",
+      "raw": [
+        null,
+        138,
+        -6200,
+        null
+      ],
+      "z": [
+        null,
+        30000,
+        -5134,
+        null
+      ]
+    },
+    "delta": {
+      "degraded": "",
+      "missing": "",
+      "raw": [
+        -168,
+        87,
+        -4500,
+        160
+      ],
+      "z": [
+        -30000,
+        -6745,
+        -1711,
+        30000
+      ]
+    },
+    "echo": {
+      "degraded": "",
+      "missing": "MFV",
+      "raw": [
+        null,
+        null,
+        -2800,
+        null
+      ],
+      "z": [
+        null,
+        null,
+        1711,
+        null
+      ]
+    },
+    "foxtrot": {
+      "degraded": "",
+      "missing": "",
+      "raw": [
+        120,
+        95,
+        500,
+        -336
+      ],
+      "z": [
+        6745,
+        0,
+        8356,
+        -6745
+      ]
+    }
+  },
+  "20250801": {
+    "alpha": {
+      "degraded": "",
+      "missing": "",
+      "raw": [
+        73,
+        94,
+        -7100,
+        -295
+      ],
+      "z": [
+        6745,
+        0,
+        -6745,
+        -6745
+      ]
+    },
+    "bravo": {
+      "degraded": "",
+      "missing": "",
+      "raw": [
+        42,
+        115,
+        -5400,
+        -198
+      ],
+      "z": [
+        0,
+        17705,
+        -2248,
+        6745
+      ]
+    },
+    "charlie": {
+      "degraded": "",
+      "missing": "V",
+      "raw": [
+        -24,
+        135,
+        -3700,
+        null
+      ],
+      "z": [
+        -14360,
+        30000,
+        2248,
+        null
+      ]
+    },
+    "delta": {
+      "degraded": "",
+      "missing": "",
+      "raw": [
+        -419,
+        86,
+        -2000,
+        310
+      ],
+      "z": [
+        -30000,
+        -6745,
+        6745,
+        30000
+      ]
+    },
+    "echo": {
+      "degraded": "",
+      "missing": "MFV",
+      "raw": [
+        null,
+        null,
+        -300,
+        null
+      ],
+      "z": [
+        null,
+        null,
+        11242,
+        null
+      ]
+    },
+    "foxtrot": {
+      "degraded": "",
+      "missing": "",
+      "raw": [
+        73,
+        94,
+        -7100,
+        -295
+      ],
+      "z": [
+        6745,
+        0,
+        -6745,
+        -6745
+      ]
+    }
+  }
+}

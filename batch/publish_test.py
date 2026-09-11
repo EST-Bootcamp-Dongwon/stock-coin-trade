@@ -23,11 +23,14 @@ DAYS = ["20260901", "20260902", "20260903"]      # 화·수·목
 SECTORS = ["alpha", "beta"]
 
 
+CONFIG = SimpleNamespace(version="test-1", config_sha256="c" * 64)
+
+
 # ── 합성 원천 ───────────────────────────────────────────────────────────────
 
 def derived_frames(days=DAYS, *, shares_step=100, stamp="2026-09-11T06:00:00+00:00",
                    idx_bump=0):
-    sector_rows, market_rows = [], []
+    sector_rows, market_rows, score_rows = [], [], []
     for step, day in enumerate(days):
         for i, sid in enumerate(SECTORS):
             sector_rows.append({
@@ -45,32 +48,50 @@ def derived_frames(days=DAYS, *, shares_step=100, stamp="2026-09-11T06:00:00+00:
         market_rows.append({
             "bas_dd": day, "stock_n": 2700, "mkt_idx_bp": 10000 + step * 30,
             "mkt_ret_1d_bp": 30, "mkt_ret_20d_bp": 200, "eqw_idx_bp": 10000 + step * 20,
+            "eqw_ret_1d_bp": 20,
             "breadth_up_bp": 5500, "breadth_n": 2700, "is_partial": False,
             "fetched_at": stamp,
         })
+        for i, sid in enumerate(SECTORS):
+            # 🔒 실제 채점을 부르지 않는다 — 3영업일로는 어떤 축도 서지 않아
+            #    게이트의 순위·축 검사가 아무것도 보지 못한다. 여기서 시험하려는
+            #    것은 점수의 값이 아니라 **게시가 멱등한가**다.
+            z = (1 - 2 * i) * 10_000 + step * 10          # alpha +1σ · beta −1σ
+            score_rows.append({
+                "bas_dd": day, "sector_id": sid, "gics": "Industrials",
+                "m_raw_bp": 100 * (i + 1), "f_raw_bp": 200 * (i + 1),
+                "b_raw_bp": 500, "v_raw_bp": -50,
+                "m_z_bp": z, "f_z_bp": z, "b_z_bp": z, "v_z_bp": z,
+                "n_axes_used": 4, "axes_missing": "", "axes_degraded": "",
+                "score_balanced_bp": z, "rank_balanced": i + 1,
+                "score_momentum_bp": z, "rank_momentum": i + 1,
+                "score_contrarian_bp": z, "rank_contrarian": i + 1,
+                "liquidity_ok": True, "etf_n": 2, "is_partial": False,
+                "config_version": CONFIG.version, "config_sha256": CONFIG.config_sha256,
+                "fetched_at": stamp,
+            })
 
     def typed(rows):
         frame = pd.DataFrame(rows)
         return frame.astype({c: "Int64" for c in frame.columns
                              if frame[c].dtype.kind in "iu"})
 
-    return typed(sector_rows), typed(market_rows)
+    return typed(sector_rows), typed(market_rows), typed(score_rows)
 
 
 def write_derived(directory, **kwargs):
     directory.mkdir(parents=True, exist_ok=True)
-    sector, market = derived_frames(**kwargs)
+    sector, market, score = derived_frames(**kwargs)
     sector.to_parquet(directory / "sector_daily.parquet", index=False)
     market.to_parquet(directory / "market_daily.parquet", index=False)
+    score.to_parquet(directory / "score_daily.parquet", index=False)
     return directory
 
 
 def published(**kwargs):
-    sector, market = derived_frames(**kwargs)
-    return gate.project_sector(sector), gate.project_market(market)
-
-
-CONFIG = SimpleNamespace(version="test-1", config_sha256="c" * 64)
+    sector, market, score = derived_frames(**kwargs)
+    return (gate.project_sector(sector), gate.project_market(market),
+            gate.project_score(score))
 
 
 # ── 가짜 HF — 커밋한 것을 기억한다 ──────────────────────────────────────────
@@ -183,15 +204,15 @@ def test_건너뛴_파일의_MANIFEST_항목을_그대로_이어받는다(tmp_pa
 
 
 def test_같은_입력이면_같은_바이트다(tmp_path):
-    sector, market = published()
-    a = publish.build_shards(sector, market)
-    b = publish.build_shards(sector, market)
+    sector, market, score = published()
+    a = publish.build_shards(sector, market, score)
+    b = publish.build_shards(sector, market, score)
     assert [(s.path, s.data) for s in a] == [(s.path, s.data) for s in b]
 
 
 def test_MANIFEST_가_결정적이다():
-    sector, market = published()
-    shards = publish.build_shards(sector, market)
+    sector, market, score = published()
+    shards = publish.build_shards(sector, market, score)
     kwargs = dict(as_of="20260903", published_date="20260903",
                   repo_id="x/y", config=CONFIG)
     one = publish.plan_publish(shards, None, None, **kwargs)
@@ -200,8 +221,8 @@ def test_MANIFEST_가_결정적이다():
 
 
 def test_계획이_원격_MANIFEST_를_보고_건너뛴다():
-    sector, market = published()
-    shards = publish.build_shards(sector, market)
+    sector, market, score = published()
+    shards = publish.build_shards(sector, market, score)
     kwargs = dict(as_of="20260903", published_date="20260903",
                   repo_id="x/y", config=CONFIG)
     first = publish.plan_publish(shards, None, None, **kwargs)
@@ -225,16 +246,16 @@ def test_게시_경로에_벽시계가_없다():
 
 
 def test_snapshot_이_같은_입력에_같은_값이다():
-    sector, market = published()
+    sector, market, score = published()
     kwargs = dict(as_of="20260903", published_date="20260903",
                   config=CONFIG, latest_days=400)
-    assert publish.snapshot(sector, market, **kwargs) == publish.snapshot(
-        sector, market, **kwargs)
+    assert publish.snapshot(sector, market, score, **kwargs) == publish.snapshot(
+        sector, market, score, **kwargs)
 
 
 def test_snapshot_이_값을_담지_않는다():
-    sector, market = published()
-    text = json.dumps(publish.snapshot(sector, market, as_of="20260903",
+    sector, market, score = published()
+    text = json.dumps(publish.snapshot(sector, market, score, as_of="20260903",
                                        published_date="20260903", config=CONFIG,
                                        latest_days=400), ensure_ascii=False)
     assert "200000000" not in text and "10000" not in text      # 거래대금·지수값
@@ -245,19 +266,19 @@ def test_snapshot_이_값을_담지_않는다():
 
 def test_검사를_덜_돌리면_통과가_아니다(monkeypatch):
     """🔴 '0건 검사 후 위반 없음' 은 통과가 아니라 판정 불가다."""
-    sector, market = published()
+    sector, market, score = published()
     monkeypatch.setattr(
         publish.gate, "check",
         lambda **kw: gate.GateReport(checks_run=frozenset({"rows_present"}), violations=()),
     )
     with pytest.raises(hub.PublishBlocked, match="판정 불가"):
-        publish.run_gate(sector, market, as_of="20260903")
+        publish.run_gate(sector, market, score, as_of="20260903")
 
 
 def test_위반이_있으면_막는다():
-    sector, market = published()
+    sector, market, score = published()
     with pytest.raises(hub.PublishBlocked, match="게이트"):
-        publish.run_gate(sector, market, as_of="20260902")      # 룩어헤드
+        publish.run_gate(sector, market, score, as_of="20260902")      # 룩어헤드
 
 
 def test_게이트가_막으면_커밋이_없다(tmp_path, fake_hub):
@@ -271,8 +292,8 @@ def test_게이트가_막으면_커밋이_없다(tmp_path, fake_hub):
 
 def test_모든_샤드_경로가_문을_통과한다():
     """게이트가 두 겹이다 — 열(gate.py)과 경로(hub.py)."""
-    sector, market = published()
-    shards = publish.build_shards(sector, market)
+    sector, market, score = published()
+    shards = publish.build_shards(sector, market, score)
     for shard in shards:
         hub.assert_publishable_path(shard.path)
     for path in (publish.MANIFEST_PATH, publish.README_PATH, publish.SNAPSHOT_PATH):
@@ -289,25 +310,25 @@ def test_원천_폴더를_게시하려_하면_거부한다(tmp_path, fake_hub):
 # ── 샤딩 ────────────────────────────────────────────────────────────────────
 
 def test_월별_샤드의_행_합이_전체와_같다():
-    sector, market = published(days=["20260828", "20260831", "20260901"])
-    shards = publish.build_shards(sector, market)
+    sector, market, score = published(days=["20260828", "20260831", "20260901"])
+    shards = publish.build_shards(sector, market, score)
     months = [s for s in shards if s.path.startswith("sector_daily/")]
     assert sum(s.rows for s in months) == len(sector)
     assert {s.path.rsplit("_", 1)[-1][:6] for s in months} == {"202608", "202609"}
 
 
 def test_latest_가_최근_영업일만_담는다():
-    sector, market = published()
-    shards = publish.build_shards(sector, market, latest_days=2)
+    sector, market, score = published()
+    shards = publish.build_shards(sector, market, score, latest_days=2)
     latest = next(s for s in shards if s.path == "latest/sector_daily_latest.parquet")
     assert latest.rows == 2 * len(SECTORS)
 
 
 def test_latest_경로가_앱이_읽는_이름과_같다():
     """snapshot.json 이 가리키는 경로와 실제 샤드 경로가 어긋나면 앱이 빈다."""
-    sector, market = published()
-    paths = {s.path for s in publish.build_shards(sector, market)}
-    pointed = publish.snapshot(sector, market, as_of="20260903",
+    sector, market, score = published()
+    paths = {s.path for s in publish.build_shards(sector, market, score)}
+    pointed = publish.snapshot(sector, market, score, as_of="20260903",
                                published_date="20260903", config=CONFIG,
                                latest_days=400)["read_this"].values()
     assert set(pointed) <= paths

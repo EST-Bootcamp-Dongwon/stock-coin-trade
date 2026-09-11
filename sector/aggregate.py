@@ -136,6 +136,7 @@ class MarketDailyRow:
     mkt_ret_1d_bp: int | None
     mkt_ret_20d_bp: int | None
     eqw_idx_bp: int | None          # 동일가중 — 대형주 쏠림을 빼고 본 시장
+    eqw_ret_1d_bp: int | None       # ★ 동일가중 일간 수익률 — 이 계열의 **관측 신호**다
     breadth_up_bp: int | None       # 전체 시장에서 지수 > SMA20 인 비율
     breadth_n: int
     is_partial: bool
@@ -334,6 +335,7 @@ def aggregate(
             mkt_ret_1d_bp=_ret_bp(cap_ret),
             mkt_ret_20d_bp=_ret_bp(mkt_cap_series.lagged_return()),
             eqw_idx_bp=mkt_eqw_series.idx_bp,
+            eqw_ret_1d_bp=_ret_bp(eqw_ret),
             breadth_up_bp=(
                 _to_bp(Decimal(breadth_hits) / Decimal(breadth_total) * _BP)
                 if breadth_total else None

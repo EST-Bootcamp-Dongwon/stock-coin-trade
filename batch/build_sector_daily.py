@@ -193,7 +193,7 @@ _SECTOR_COLUMNS = [
 ]
 _MARKET_COLUMNS = [
     "bas_dd", "stock_n", "mkt_idx_bp", "mkt_ret_1d_bp", "mkt_ret_20d_bp",
-    "eqw_idx_bp", "breadth_up_bp", "breadth_n", "is_partial", "fetched_at",
+    "eqw_idx_bp", "eqw_ret_1d_bp", "breadth_up_bp", "breadth_n", "is_partial", "fetched_at",
 ]
 
 

@@ -53,6 +53,12 @@ python -m batch.fetch_daily --days 425              # data/raw/ 로 수집 (멱�
 python -m batch.build_sector_daily --dry-run        # data/raw/ → 집계 (쓰지 않음)
 python -m batch.build_sector_daily                  # → data/derived/*.parquet
 
+# 채점 (M7) — 집계가 사실이면 점수는 판단이다. 그래서 단계를 나눴다
+python -m batch.build_scores --dry-run              # 무엇이 나올지만 본다
+python -m batch.build_scores                        # → data/derived/score_daily.parquet
+pytest sector/scoring_golden_test.py                # 골든 — 값과 성질을 함께 고정
+pytest sector/scoring_golden_test.py --snapshot-update   # 🔒 이유를 설명할 수 있을 때만
+
 # 게시 (M6) — 🔒 올리는 것은 data/derived/ 의 파생값뿐. data/raw/ 는 한 파일도 안 간다
 python -m batch.publish --date 20260910 --dry-run    # 무엇을 올릴지만 본다
 python -m batch.publish --date 20260910              # HF private dataset 으로
