@@ -25,14 +25,32 @@
 /data/
 *.parquet
 *.feather
+#
+# 🔴 **KRX Open API 응답은 JSON 이다.** 위 세 패턴이 JSON 을 못 막는다.
+#    `CLAUDE.md` 에 이미 `python -m sector.sources.krx_openapi --probe` 가 문서화돼
+#    있어, 그 출력이 `data/` 밖(저장소 루트 등)에 떨어지면 **Public 저장소에 KRX
+#    원천이 커밋된다** — 약관 제11조② 위반이고 제11조④(이용승인 철회) 노출이다.
+# 🔒 `--probe` 출력은 반드시 `data/raw/` 로만 떨어뜨린다. 아래는 그물이지 대책이 아니다.
+#    (`*.json` 을 통째로 막지 않는 이유 — `vercel.json`·`backend/package.json` 등
+#     커밋해야 하는 JSON 이 실재한다. 그래서 루트·원천 이름만 정확히 막는다)
+/probe*.json
+/krx_*.json
+/response*.json
+*.raw.json
+/*.csv
 # ★ sector/testdata/ 의 합성 CSV 는 커밋한다 — 골든 테스트 픽스처다.
 #   실제 KRX 데이터를 픽스처로 커밋하지 않는다 (AGENTS.md 5장).
+#   🔒 `--probe` 의 실제 응답을 이 폴더에 저장하지 않는다 — 여기는 막혀 있지 않다.
 
 # ── 🔒 이력 백업 ─────────────────────────────────────────────────
 # 옛 이력 bundle 에는 강사님 시크릿이 들어 있다 (→ ADR-SC-0005).
 *.bundle
 
 # ── Python ──────────────────────────────────────────────────────
+# 🔴 `uv.lock` 은 Streamlit Cloud 의 의존성 인식 우선순위에서 `requirements.txt` 를
+#    **이긴다.** 로컬에서 uv 를 한 번 썼다가 커밋되면 배포가 조용히 다른 목록을
+#    설치한다. 원격·시크릿에 쓴 것과 같은 논리다 — 없는 경로는 밟을 수 없다.
+uv.lock
 __pycache__/
 *.pyc
 *.pyo

@@ -88,3 +88,18 @@ GitLab 이 자기 서버에서 devlee328288 토큰으로 push 하므로, 로컬�
 - ⚠️ 12시간 무트래픽 슬립. 열람 권한자 **누구나** 깨울 수 있으므로 팀 규칙으로 해결한다.
   외부 핑 서비스는 ToS 소지가 있어 쓰지 않는다.
 - ⚠️ Vercel 을 되살리려면 ① Supabase restore ② 루트 `requirements.txt` 분리 검증이 선행돼야 한다.
+
+## 후속 (2026-09-11 · M2)
+
+②를 실행했다. **분리는 "검증"이 아니라 하드 제약으로 판명됐다** — Streamlit Cloud 는
+의존성 파일을 ① 엔트리포인트 디렉터리 → ② 저장소 루트 순으로 찾고 **처음 만난 하나만**
+쓴다(공식 문서). 엔트리포인트가 루트 `streamlit_app.py` 라 두 후보가 한 곳으로 붕괴하고,
+배포 UI 에 경로를 지정하는 칸이 없다. 즉 **루트 `requirements.txt` 는 Streamlit 전용이다.**
+
+- Vercel slim 목록과 근거 주석은 `api/requirements.txt` 로 옮겼다 (**보관본**).
+  Vercel 문서가 `api/` 안의 의존성 파일을 자동으로 읽는다는 보장을 확인하지 못했으므로,
+  되살릴 때는 **루트로 되돌린다.** 절차는 `VERCEL.md` 0장.
+- 원격 재구성(④)도 완료했다 — `origin`=GitLab · `github-est`=GitHub ·
+  `devlee328288` 로컬 원격 없음.
+- 두 배포를 **동시에** 유지하려면 `pyproject.toml` 분리를 따로 검증해야 한다
+  (우선순위가 `requirements.txt` 뒤라 여지가 있다). 지금은 하지 않는다.

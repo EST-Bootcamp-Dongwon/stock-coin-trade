@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────────
+# Vercel(v2.0) 배포 의존성 — 🔒 **보관본이다. 지금 아무도 읽지 않는다.**
+#
+# ★★ 2026-09-11 저장소 루트에서 이 자리로 옮겼다 (→ ADR-SC-0008 ② · `VERCEL.md` 0장).
+#   왜 옮겼나 — Streamlit Community Cloud 는 의존성 파일을 ① 엔트리포인트가 있는
+#   디렉터리 → ② 저장소 루트 순으로 찾고 **처음 만난 것 하나만** 쓴다. 엔트리포인트가
+#   루트 `streamlit_app.py` 라 두 후보가 한 곳으로 붕괴하고, 배포 UI 에 경로를
+#   지정하는 칸이 없다. 즉 루트 `requirements.txt` 는 **Streamlit 이 독점**한다.
+#
+# 🔴 **Vercel 을 되살릴 때는 이 파일을 저장소 루트로 되돌려야 한다.**
+#   Vercel 문서는 의존성 파일을 프로젝트 루트 기준으로만 설명하고, `api/` 안의
+#   `requirements.txt` 를 자동으로 읽는다는 보장을 **문서에서 확인하지 못했다.**
+#   그래서 이 자리는 "동작하는 설정"이 아니라 **근거까지 보존한 보관본**이다.
+#   되살리는 절차는 `VERCEL.md` 0장에 있다. 그때 Streamlit 쪽과 충돌하므로
+#   두 배포를 동시에 유지하려면 `pyproject.toml` 분리를 먼저 검증해야 한다.
+#
+# ★★ **개발용은 `backend/requirements.txt` 다. 이 파일이 아니다.**
+#   로컬에서는 그쪽을 설치한다:
+#       cd backend && pip install -r requirements.txt
+#
+# ★★ **왜 두 벌인가** ────────────────────────────────────────────────────────
+#
+# Vercel 파이썬 함수에는 **번들 용량 한도**가 있고, 전체 의존성은 이렇게 무겁다.
+#
+#     pandas       74MB  ┐
+#     onnxruntime  57MB  │  전부 pykrx · fastembed 가 끌고 오는 것들
+#     numpy        69MB  │  (배치 전용이고, 웹 요청 경로에서는 한 번도 안 쓰인다)
+#     matplotlib   35MB  │
+#     fontTools    26MB  ┘
+#                 ─────
+#                 260MB+
+#
+# 이 둘을 빼면 번들이 1/5 로 줄고, 콜드 스타트도 그만큼 빨라진다.
+#
+# ★ **빼도 안전한 근거** — `pykrx` 와 `fastembed` 는 코드 어디에서도 모듈 최상단에서
+#   import 하지 않는다. 필요한 순간에만 불러오고(`market.services._load_pykrx`,
+#   `insight.services._load_model`), 없으면 **무엇을 설치해야 하는지 알려주는
+#   예외**를 던진다(규약 8.5). 웹 화면은 캐시 테이블만 읽으므로 이 경로에
+#   애초에 닿지 않는다 (F-21 4장).
+#
+# ★ 배치 잡(`sync_stock_master` 등)은 Vercel 에서 돌리지 않는다 —
+#   **이 파일에 `pykrx`·`fastembed` 가 없으므로 import 부터 실패한다.**
+#   로컬 또는 상시 기동 서버에서 `backend/requirements.txt` 로 돌린다.
+#
+#   ⚠️ 2026-08-17 정정: 예전 주석은 "실측 88초로 Vercel 의 10초 한도를 못 넘긴다"
+#   였다(변경노트 E-28). **10초는 낡은 값이다** — Fluid compute 에서 전 플랜 기본
+#   300초이고 Pro 는 800초다. 88초는 시간만 보면 들어간다. 못 돌리는 진짜 이유는
+#   위의 번들 구성과 Active CPU 월 4시간 예산이다. → `VERCEL.md` 2.1
+#
+# 이 파일과 `backend/requirements.txt` 의 버전 핀은 **같아야 한다.** 한쪽만 올리면
+# 로컬에서 통과한 것이 배포에서 깨진다.
+# 🔒 루트 `requirements.txt`(v3.0 Streamlit)는 **이 규칙 밖이다.** 다른 앱·다른
+#    런타임이라 핀을 맞추려 들면 v3.0 이 동결된 v2.0 에 발목을 잡힌다.
+# ─────────────────────────────────────────────────────────────────
+
+# ── Django 코어 ────────────────────────────────────────────────
+asgiref==3.12.1
+Django==5.2.17
+djangorestframework==3.18.0
+python-dotenv==1.2.2
+sqlparse==0.5.5
+typing_extensions==4.16.0
+
+# ── DB (Supabase Postgres) ─────────────────────────────────────
+psycopg==3.3.4
+psycopg-binary==3.3.4
+# pgvector — insight.KnowledgeDocument.embedding 이 VectorField 다.
+#            **모델 로딩 시점에 필요**하므로 임베딩을 만들지 않아도 있어야 한다.
+pgvector==0.5.0
+
+# ── 정적 파일 ──────────────────────────────────────────────────
+whitenoise==6.11.0
+
+# ── 이미지 ─────────────────────────────────────────────────────
+# pillow — Member.avatar 가 ImageField 다. 없으면 `manage.py check` 가
+#          fields.E210 으로 실패해 앱이 아예 뜨지 않는다.
+pillow==12.3.0
+
+# ── 외부 HTTP ──────────────────────────────────────────────────
+# requests — market/kis.py · naver.py · jobs.py 가 모듈 최상단에서 import 한다.
+#            화면 경로에서 호출되지는 않지만 import 는 되므로 필요하다.
+requests==2.34.2

@@ -11,6 +11,11 @@
 !.env.example
 *.pem
 *.key
+# ★ Streamlit 시크릿은 위 `.env*` 패턴이 **못 막는다** (`.gitignore` 와 같은 이유).
+#   문서화된 배포 경로가 `vercel --prod`(로컬 디렉터리 업로드)이고 이 파일이 있으면
+#   Vercel 은 `.gitignore` 를 보지 않으므로, gitignore 된 로컬 `secrets.toml` 도
+#   여기서 다시 막아야 번들에 올라가지 않는다.
+.streamlit/
 
 # ── 가상환경·캐시 (번들 용량의 대부분) ──────────────────────────
 backend/.venv/
@@ -49,3 +54,26 @@ tmp/
 temp/
 *.log
 *.zip
+
+# ── v3.0 (Streamlit) — Vercel 번들에 필요 없다 ──────────────────
+# 🔴 **앞의 슬래시가 핵심이다.** 없으면 `requirements.txt` 가 모든 깊이에 일치해
+#    방금 옮긴 `api/requirements.txt` 까지 함께 빠진다 — Vercel 을 되살리는 날
+#    의존성 0개로 빌드가 깨지고 원인이 이 한 줄이라 아무도 못 찾는다.
+#    (실측: 패턴 `requirements.txt` → 루트와 `api/requirements.txt` 둘 다 제외.
+#           패턴 `/requirements.txt` → 루트만 제외)
+/requirements.txt
+streamlit_app.py
+sector/
+batch/
+dashboard/
+
+# ── 🔒 KRX 원천 데이터 ──────────────────────────────────────────
+# `vercel --prod` 는 로컬 디렉터리를 올리며 `.gitignore` 를 보지 않는다. 즉 gitignore
+# 된 원천이 번들로 새어 나갈 수 있다 — 약관 제11조②. `.gitignore` 와 같은 패턴을 둔다.
+/data/
+*.parquet
+*.feather
+/probe*.json
+/krx_*.json
+/response*.json
+*.raw.json

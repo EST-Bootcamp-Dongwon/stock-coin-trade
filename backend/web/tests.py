@@ -352,7 +352,9 @@ class NoExternalCallTests(TestCase):
 class SlimBundleTests(SimpleTestCase):
     """★★ 배포 번들(slim 의존성)만으로 앱이 뜨는지 (VERCEL.md 1장).
 
-    Vercel 에 올리는 `requirements.txt`(저장소 루트)는 `pykrx` 와 `fastembed` 를
+    Vercel 에 올리는 `requirements.txt`(**`api/requirements.txt`** — 2026-09-11 저장소
+    루트에서 옮겼다. 루트는 v3.0 Streamlit 이 쓴다 → ADR-SC-0008 ②)는
+    `pykrx` 와 `fastembed` 를
     **뺀다.** 둘이 pandas·numpy·onnxruntime·matplotlib 을 끌고 와 260MB 를 차지하는데,
     웹 요청 경로에서는 한 번도 쓰이지 않기 때문이다.
 

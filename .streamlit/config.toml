@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────
+# Streamlit 설정.
+#
+# 🔒 경로가 곧 규칙이다 — Cloud 는 **저장소 루트의 `.streamlit/config.toml`** 만 읽는다.
+#    엔트리포인트를 하위 폴더로 옮기더라도 이 파일은 루트에 남아야 한다.
+# 🔒 같은 폴더의 `secrets.toml` 은 **커밋하지 않는다.** `.gitignore` 가 그 경로를
+#    따로 막는다 (`.env*` 패턴으로는 못 잡는다 — `AGENTS.md` 3장).
+#    배포 시크릿은 Cloud 의 App settings → Secrets 에만 넣는다.
+#    ⚠️ `secrets.toml.example` 은 gitignore 되지 않는다. 예시를 둘 거면 값 자리에
+#       실제 키를 넣지 마라. 지금은 `.env.example` 하나로 충분해 두지 않았다.
+#
+# ★ 필요한 것만 적는다. Cloud 가 어떤 키를 자기 방식으로 덮어쓰는지 **공식 목록이
+#   없어서** 실행 관련 키는 건드리지 않는다.
+#   🔒 손대지 않는 것 — server.port · server.address · server.headless ·
+#      server.enableCORS · server.enableXsrfProtection · browser.serverAddress
+#   기본값이 이미 옳은 것도 적지 않는다 — client.toolbarMode="auto" ·
+#      client.showErrorDetails="full" · logger.level="info"
+#   ⬜ client.showErrorDetails (팀원에게 스택트레이스를 감출지) → M14
+#   ⬜ client.showSidebarNavigation (`pages/` 가 생긴 뒤) → M9
+#
+# ★ 페이지 제목·아이콘·화면 폭은 이 파일이 아니라 코드의 `st.set_page_config()` 다.
+# ★ Python 버전도 이 파일이 정하지 않는다 — 배포 시 Advanced settings 드롭다운이다.
+# ─────────────────────────────────────────────────────────────────
+
+[browser]
+# 기본값이 true 다. 텔레메트리를 끈다.
+gatherUsageStats = false
+
+[theme]
+# 안 박으면 팀원 7명의 OS 다크모드 설정에 따라 화면이 갈린다 —
+# "왜 내 화면만 다르냐"가 첫 질문이 된다.
+#
+# ★ `dark` 인 이유 — M8 팔레트가 이미 **어두운 배경으로 확정**돼 있다
+#   (계획서 F-4: 배경 `#121519` 4단 `#121519 / #191D23 / #21262E / #2A3039`).
+#   `light` 로 박아 두면 M8 에서 화면이 통째로 뒤집히고, 팀원이 M2 에서 본 화면과
+#   반대색이 된다 — base 를 박은 취지를 스스로 깨는 셈이다.
+# ★ 색·폰트·[theme.light]·[theme.dark]·[theme.sidebar] 는 **M8**
+#   (`dashboard/theme.py` · Pretendard) 소관이다. 여기서 팔레트를 정하지 않는다.
+base = "dark"
