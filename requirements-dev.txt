@@ -1,0 +1,19 @@
+# ─────────────────────────────────────────────────────────────────
+# v3.0 개발 전용 의존 — **Streamlit Cloud 는 이 파일을 읽지 않는다.**
+#
+# ★ 그것이 이 파일이 존재하는 이유다. Cloud 가 인식하는 이름은
+#   `uv.lock` · `Pipfile` · `environment.yml` · `requirements.txt` ·
+#   `pyproject.toml` 뿐이고(확정 사실 V20), `requirements-dev.txt` 는 그 목록에
+#   없다. 그래서 테스트 의존을 배포 환경에 밀어 넣지 않고 기록할 수 있다.
+# 🔒 이 파일 이름을 위 다섯 중 하나로 바꾸지 마라. 바꾸는 순간 Cloud 가 이것을
+#   설치 목록으로 오인하거나 `requirements.txt` 를 가린다.
+#
+# 설치:
+#   .venv/bin/python -m pip install -r requirements-dev.txt
+# 실행 (→ `AGENTS.md` 5장 · 러너가 셋이니 섞지 않는다):
+#   .venv/bin/python -m pytest          # testpaths = sector · DB 미사용
+# ─────────────────────────────────────────────────────────────────
+
+# `AGENTS.md` 5장이 루트 pytest 를 v3.0 정본 러너로 규정한다.
+# 🔒 `backend/.venv` 의 pytest 와 다른 설치다. 섞으면 동결 회귀가 무너진다.
+pytest==9.1.1
