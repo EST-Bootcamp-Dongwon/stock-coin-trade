@@ -1,0 +1,137 @@
+/* ─────────────────────────────────────────────────────────────────
+   Tailwind 소스. 이 파일을 고친 뒤에는 반드시 빌드해야 화면에 반영된다.
+
+       npm run css        1회 빌드
+       npm run css:watch  파일을 지켜보며 자동 빌드 (개발 중 이걸 켜 둔다)
+
+   산출물은 `static/css/app.css` 이고 **git 에 커밋한다.**
+
+   ★★ 왜 CDN 이 아니라 빌드인가 ────────────────────────────────────────────
+   `cdn.tailwindcss.com`(Play CDN)은 400KB 짜리 JS 를 받아 **브라우저에서**
+   CSS 를 만든다. 설정이 0 인 대신 세 가지를 잃는다:
+     ① 스타일이 적용되기 전 화면이 한 번 깜빡인다 (FOUC)
+     ② CDN 이 막히면 화면이 통째로 무너진다
+     ③ Tailwind 공식 문서가 프로덕션 사용을 권하지 않는다
+   빌드해 두면 완성된 CSS 한 장(수십 KB)만 받으면 되고, Vercel 에는 Node 빌드
+   단계 없이 파이썬 런타임만 올라간다 (산출물이 이미 저장소에 있으므로).
+
+   Django 관점 ─────────────────────────────────────────────────────────────
+   Next.js 는 `globals.css` 를 import 하면 번들러가 알아서 처리했다. Django 에는
+   자바스크립트 번들러가 없다. **CSS 빌드는 Django 바깥의 별개 단계**이고,
+   Django 는 완성된 파일을 `staticfiles` 로 서빙만 한다.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* `source(none)` 으로 자동 탐색을 끄고, 스캔 대상을 직접 적는다.
+   자동 탐색은 프로젝트 전체를 훑는데 `.venv`(수만 개 파일)가 섞이면 빌드가 느려지고,
+   무엇이 스캔됐는지 눈에 보이지 않아 "왜 이 클래스가 빠졌지"를 추적하기 어렵다. */
+@import "tailwindcss" source(none);
+
+@source "../../templates/**/*.html";
+@source "../../**/*.py";
+
+/* ── 디자인 토큰 ────────────────────────────────────────────────
+   U-01 6장 — 1차는 라이트 모드만 제공하되, **색을 전부 토큰으로 잡아둔다.**
+   v2.1 에서 다크 모드를 넣을 때 이 블록만 갈아끼우면 되게 하기 위해서다.
+   화면 여기저기에 `text-red-600` 을 직접 쓰면 그때 전수 조사를 해야 한다. */
+@theme {
+  /* ★ 상승 = 빨강, 하락 = 파랑. 국내 증시 관행이고 미국과 반대다 (U-01 4장).
+     `up`/`down` 이라는 이름을 쓰는 이유 — `red`/`blue` 로 부르면 나중에
+     색을 바꿀 때 이름이 거짓말이 된다. */
+  --color-up: oklch(0.58 0.22 25);        /* 상승·매수 */
+  --color-up-soft: oklch(0.96 0.03 25);
+  --color-down: oklch(0.55 0.19 258);     /* 하락·매도 */
+  --color-down-soft: oklch(0.96 0.03 258);
+  --color-flat: oklch(0.55 0.01 260);     /* 보합 */
+
+  /* 브랜드 — 대회가 서비스의 중심이므로 대회 관련 UI 에 쓴다 */
+  --color-brand: oklch(0.52 0.16 265);
+  --color-brand-dark: oklch(0.42 0.16 265);
+  --color-brand-soft: oklch(0.96 0.02 265);
+
+  /* 상태 */
+  --color-warn: oklch(0.65 0.16 75);      /* 회전율 경고 등 */
+  --color-warn-soft: oklch(0.97 0.04 85);
+  --color-danger: oklch(0.58 0.22 25);    /* 한도 초과 */
+
+  /* 숫자를 표에 세로로 나란히 세우기 위한 폰트 스택.
+     본문 폰트로 숫자를 쓰면 자릿수가 흔들려 금액 비교가 어렵다. */
+  --font-num: ui-monospace, "SFMono-Regular", "Menlo", "Consolas",
+              "Noto Sans KR", monospace;
+}
+
+/* ── 공통 컴포넌트 클래스 ───────────────────────────────────────
+   Tailwind 는 유틸리티가 원칙이지만, **같은 조합이 스무 번 반복되면**
+   템플릿이 읽히지 않는다. 반복되는 것만 골라 이름을 준다.
+
+   ★★ **`@layer components` 가 아니라 `@utility` 다** ──────────────────────
+
+   Tailwind v3 에서는 `@layer components { .btn { @apply … } }` 로 쓰고
+   `.btn-primary { @apply btn … }` 처럼 서로 참조할 수 있었다.
+   **v4 에서는 이것이 에러다** — `Cannot apply unknown utility class 'btn'`.
+   `@apply` 는 이제 *유틸리티만* 받고, `@layer components` 로 만든 것은
+   유틸리티가 아니기 때문이다.
+
+   v4 가 준 답이 `@utility` 다. 여기서 정의한 이름은 진짜 유틸리티가 되어
+     ① 다른 규칙에서 `@apply btn` 으로 재사용할 수 있고
+     ② `hover:btn-sm` 같은 변형도 붙는다
+   Tailwind 를 v3 예제로 배우다 v4 로 오면 가장 먼저 부딪히는 차이다. */
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2
+         text-sm font-medium transition-colors
+         focus-visible:outline-2 focus-visible:outline-offset-2
+         disabled:cursor-not-allowed disabled:opacity-50;
+}
+@utility btn-primary {
+  @apply btn bg-brand text-white hover:bg-brand-dark focus-visible:outline-brand;
+}
+@utility btn-ghost {
+  @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50;
+}
+@utility btn-sm { @apply px-2.5 py-1 text-xs; }
+
+@utility card {
+  @apply rounded-xl border border-slate-200 bg-white shadow-sm;
+}
+@utility card-title {
+  @apply flex items-center gap-2 border-b border-slate-100 px-4 py-3
+         text-sm font-semibold text-slate-900;
+}
+
+@utility field-label { @apply mb-1 block text-sm font-medium text-slate-700; }
+@utility field-input {
+  @apply w-full rounded-lg border border-slate-300 px-3 py-2 text-sm
+         placeholder:text-slate-400
+         focus:border-brand focus:ring-2 focus:ring-brand/20 focus:outline-none;
+}
+/* 필드 단위 에러 (F-01 3.1) — 어느 칸이 틀렸는지 테두리로도 보여준다.
+   빨간 글씨만 쓰면 색각 이상이 있는 사용자가 못 알아본다. */
+@utility field-input-error {
+  @apply border-danger ring-2 ring-danger/20;
+}
+@utility field-error { @apply mt-1 text-xs text-danger; }
+
+/* 숫자 셀 — 표에서 금액·수량·비율에 쓴다.
+   `tabular-nums` 가 핵심이다: 숫자 글자폭을 고정해 자릿수가 흔들리지 않는다. */
+@utility num { @apply text-right font-[family-name:var(--font-num)] tabular-nums; }
+
+/* 정직성 배지 (U-01 5장) — "화면에 보이지 않는 사실은 없는 것과 같다" */
+@utility badge {
+  @apply inline-flex items-center gap-1 rounded px-1.5 py-0.5
+         text-[11px] leading-4 font-medium;
+}
+@utility badge-sim { @apply badge bg-warn-soft text-amber-800 ring-1 ring-amber-300; }
+@utility badge-stale { @apply badge bg-slate-100 text-slate-600 ring-1 ring-slate-300; }
+@utility badge-contest { @apply badge bg-brand-soft text-brand-dark ring-1 ring-indigo-300; }
+@utility badge-practice { @apply badge bg-slate-100 text-slate-700 ring-1 ring-slate-300; }
+
+/* ── HTMX 유틸 ──────────────────────────────────────────────────
+   `htmx-indicator` 는 HTMX 가 요청 중에만 `htmx-request` 클래스를 붙여 준다.
+   기본은 숨김이고 요청 중에만 보이게 한다 (01-HTMX 규약 7.1). */
+.htmx-indicator { opacity: 0; transition: opacity 150ms ease-in; }
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator { opacity: 1; }
+
+/* Alpine 이 아직 초기화되지 않은 동안 `x-show="false"` 요소가 잠깐 보이는 것을 막는다.
+   `<div x-cloak>` 에 걸어 쓴다. */
+[x-cloak] { display: none !important; }

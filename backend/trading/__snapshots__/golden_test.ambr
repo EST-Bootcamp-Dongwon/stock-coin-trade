@@ -1,0 +1,594 @@
+# serializer version: 1
+# name: test_calc_cost_골든
+  dict({
+    '대회요율_5bp_20bp': dict({
+      'fee': 3715,
+      'gross': 7430000,
+      'tax': 14860,
+    }),
+    '매도_세금이_붙는다': dict({
+      'fee': 1500,
+      'gross': 1000000,
+      'tax': 2000,
+    }),
+    '매수_기본_15bp': dict({
+      'fee': 1500,
+      'gross': 1000000,
+      'tax': 0,
+    }),
+    '소수bp_1.5bp': dict({
+      'fee': 150,
+      'gross': 1000000,
+      'tax': 2000,
+    }),
+    '요율0_비용을_지어내지_않는다': dict({
+      'fee': 0,
+      'gross': 1000000,
+      'tax': 0,
+    }),
+    '절사_1원_미만은_버린다': dict({
+      'fee': 0,
+      'gross': 3333,
+      'tax': 0,
+    }),
+  })
+# ---
+# name: test_match_at_price_골든
+  dict({
+    '가격0은_빈_결과': dict({
+      'avg_price': '0',
+      'filled_qty': '0',
+      'fills': list([
+      ]),
+      'gross_amount': 0,
+      'has_assumed_depth': False,
+      'remaining_qty': '10',
+    }),
+    '수량0은_빈_결과': dict({
+      'avg_price': '0',
+      'filled_qty': '0',
+      'fills': list([
+      ]),
+      'gross_amount': 0,
+      'has_assumed_depth': False,
+      'remaining_qty': '0',
+    }),
+    '전량_한_조각': dict({
+      'avg_price': '74300.00000000',
+      'filled_qty': '10',
+      'fills': list([
+        dict({
+          'amount': 743000,
+          'is_assumed_depth': False,
+          'price': '74300',
+          'price_level': None,
+          'qty': '10',
+        }),
+      ]),
+      'gross_amount': 743000,
+      'has_assumed_depth': False,
+      'remaining_qty': '0',
+    }),
+    '코인_소수수량': dict({
+      'avg_price': '94999837.99896319',
+      'filled_qty': '0.00123456',
+      'fills': list([
+        dict({
+          'amount': 117283,
+          'is_assumed_depth': False,
+          'price': '95000000.5',
+          'price_level': None,
+          'qty': '0.00123456',
+        }),
+      ]),
+      'gross_amount': 117283,
+      'has_assumed_depth': False,
+      'remaining_qty': '0',
+    }),
+  })
+# ---
+# name: test_match_orderbook_10호가_소진_골든
+  dict({
+    '매도는_비싼_매수호가부터': dict({
+      'avg_price': '74120.00000000',
+      'filled_qty': '150',
+      'fills': list([
+        dict({
+          'amount': 3710000,
+          'is_assumed_depth': False,
+          'price': '74200',
+          'price_level': 1,
+          'qty': '50',
+        }),
+        dict({
+          'amount': 5928000,
+          'is_assumed_depth': False,
+          'price': '74100',
+          'price_level': 2,
+          'qty': '80',
+        }),
+        dict({
+          'amount': 1480000,
+          'is_assumed_depth': False,
+          'price': '74000',
+          'price_level': 3,
+          'qty': '20',
+        }),
+      ]),
+      'gross_amount': 11118000,
+      'has_assumed_depth': False,
+      'remaining_qty': '0',
+    }),
+    '시장가는_전부_먹는다': dict({
+      'avg_price': '74420.00000000',
+      'filled_qty': '200',
+      'fills': list([
+        dict({
+          'amount': 4458000,
+          'is_assumed_depth': False,
+          'price': '74300',
+          'price_level': 1,
+          'qty': '60',
+        }),
+        dict({
+          'amount': 2976000,
+          'is_assumed_depth': False,
+          'price': '74400',
+          'price_level': 2,
+          'qty': '40',
+        }),
+        dict({
+          'amount': 7450000,
+          'is_assumed_depth': False,
+          'price': '74500',
+          'price_level': 3,
+          'qty': '100',
+        }),
+      ]),
+      'gross_amount': 14884000,
+      'has_assumed_depth': False,
+      'remaining_qty': '0',
+    }),
+    '여러_호가_가중평균': dict({
+      'avg_price': '74366.66666667',
+      'filled_qty': '120',
+      'fills': list([
+        dict({
+          'amount': 4458000,
+          'is_assumed_depth': False,
+          'price': '74300',
+          'price_level': 1,
+          'qty': '60',
+        }),
+        dict({
+          'amount': 2976000,
+          'is_assumed_depth': False,
+          'price': '74400',
+          'price_level': 2,
+          'qty': '40',
+        }),
+        dict({
+          'amount': 1490000,
+          'is_assumed_depth': False,
+          'price': '74500',
+          'price_level': 3,
+          'qty': '20',
+        }),
+      ]),
+      'gross_amount': 8924000,
+      'has_assumed_depth': False,
+      'remaining_qty': '0',
+    }),
+    '지정가를_넘으면_멈춘다': dict({
+      'avg_price': '74300.00000000',
+      'filled_qty': '60',
+      'fills': list([
+        dict({
+          'amount': 4458000,
+          'is_assumed_depth': False,
+          'price': '74300',
+          'price_level': 1,
+          'qty': '60',
+        }),
+      ]),
+      'gross_amount': 4458000,
+      'has_assumed_depth': False,
+      'remaining_qty': '140',
+    }),
+    '최우선호가_안이면_한_조각': dict({
+      'avg_price': '74300.00000000',
+      'filled_qty': '50',
+      'fills': list([
+        dict({
+          'amount': 3715000,
+          'is_assumed_depth': False,
+          'price': '74300',
+          'price_level': 1,
+          'qty': '50',
+        }),
+      ]),
+      'gross_amount': 3715000,
+      'has_assumed_depth': False,
+      'remaining_qty': '0',
+    }),
+  })
+# ---
+# name: test_match_orderbook_잔량0_단계는_건너뛴다_골든
+  dict({
+    'avg_price': '74433.33333333',
+    'filled_qty': '60',
+    'fills': list([
+      dict({
+        'amount': 2976000,
+        'is_assumed_depth': False,
+        'price': '74400',
+        'price_level': 2,
+        'qty': '40',
+      }),
+      dict({
+        'amount': 1490000,
+        'is_assumed_depth': False,
+        'price': '74500',
+        'price_level': 3,
+        'qty': '20',
+      }),
+    ]),
+    'gross_amount': 4466000,
+    'has_assumed_depth': False,
+    'remaining_qty': '0',
+  })
+# ---
+# name: test_match_orderbook_호가순서_무관_골든
+  dict({
+    'avg_price': '74366.66666667',
+    'filled_qty': '120',
+    'fills': list([
+      dict({
+        'amount': 4458000,
+        'is_assumed_depth': False,
+        'price': '74300',
+        'price_level': 1,
+        'qty': '60',
+      }),
+      dict({
+        'amount': 2976000,
+        'is_assumed_depth': False,
+        'price': '74400',
+        'price_level': 2,
+        'qty': '40',
+      }),
+      dict({
+        'amount': 1490000,
+        'is_assumed_depth': False,
+        'price': '74500',
+        'price_level': 3,
+        'qty': '20',
+      }),
+    ]),
+    'gross_amount': 8924000,
+    'has_assumed_depth': False,
+    'remaining_qty': '0',
+  })
+# ---
+# name: test_price_limits_골든
+  dict({
+    '0': list([
+      '0',
+      '0',
+    ]),
+    '1000': list([
+      '1300',
+      '700',
+    ]),
+    '199999': list([
+      '259900',
+      '139900',
+    ]),
+    '5000': list([
+      '6500',
+      '3500',
+    ]),
+    '74000': list([
+      '96200',
+      '51800',
+    ]),
+  })
+# ---
+# name: test_resolve_limit_price_4종_골든
+  dict({
+    'STOP_제한없음': None,
+    '상대호가_매도_1': '74200',
+    '상대호가_매수_1': '74300',
+    '상대호가_매수_3': '74500',
+    '시장가_제한없음': None,
+    '자기호가_매도_1': '74300',
+    '자기호가_매수_1': '74200',
+    '자기호가_매수_2': '74100',
+    '지정가_그대로': '74250',
+  })
+# ---
+# name: test_resolve_limit_price_상하한가_특례_골든
+  dict({
+    '상대호가가_비면': dict({
+      'recoverable': True,
+      '예외': 'PriceUnavailable',
+    }),
+    '상한가_자기호가_매도': '96200',
+    '참고_상하한가': list([
+      '96200',
+      '51800',
+    ]),
+    '하한가_자기호가_매수': '51800',
+  })
+# ---
+# name: test_tick_size_경계_골든[1000]
+  dict({
+    'price': 1000,
+    'tick': '1',
+  })
+# ---
+# name: test_tick_size_경계_골든[199999]
+  dict({
+    'price': 199999,
+    'tick': '100',
+  })
+# ---
+# name: test_tick_size_경계_골든[19999]
+  dict({
+    'price': 19999,
+    'tick': '10',
+  })
+# ---
+# name: test_tick_size_경계_골든[1999]
+  dict({
+    'price': 1999,
+    'tick': '1',
+  })
+# ---
+# name: test_tick_size_경계_골든[200000]
+  dict({
+    'price': 200000,
+    'tick': '500',
+  })
+# ---
+# name: test_tick_size_경계_골든[20000]
+  dict({
+    'price': 20000,
+    'tick': '50',
+  })
+# ---
+# name: test_tick_size_경계_골든[2000]
+  dict({
+    'price': 2000,
+    'tick': '5',
+  })
+# ---
+# name: test_tick_size_경계_골든[499999]
+  dict({
+    'price': 499999,
+    'tick': '500',
+  })
+# ---
+# name: test_tick_size_경계_골든[49999]
+  dict({
+    'price': 49999,
+    'tick': '50',
+  })
+# ---
+# name: test_tick_size_경계_골든[4999]
+  dict({
+    'price': 4999,
+    'tick': '5',
+  })
+# ---
+# name: test_tick_size_경계_골든[500000]
+  dict({
+    'price': 500000,
+    'tick': '1000',
+  })
+# ---
+# name: test_tick_size_경계_골든[50000]
+  dict({
+    'price': 50000,
+    'tick': '100',
+  })
+# ---
+# name: test_tick_size_경계_골든[5000]
+  dict({
+    'price': 5000,
+    'tick': '10',
+  })
+# ---
+# name: test_가정체결_골든
+  dict({
+    '매수_가정체결': dict({
+      'avg_price': '74587.33333333',
+      'filled_qty': '300',
+      'fills': list([
+        dict({
+          'amount': 4458000,
+          'is_assumed_depth': False,
+          'price': '74300',
+          'price_level': 1,
+          'qty': '60',
+        }),
+        dict({
+          'amount': 2976000,
+          'is_assumed_depth': False,
+          'price': '74400',
+          'price_level': 2,
+          'qty': '40',
+        }),
+        dict({
+          'amount': 2235000,
+          'is_assumed_depth': False,
+          'price': '74500',
+          'price_level': 3,
+          'qty': '30',
+        }),
+        dict({
+          'amount': 3207800,
+          'is_assumed_depth': True,
+          'price': '74600',
+          'price_level': 4,
+          'qty': '43',
+        }),
+        dict({
+          'amount': 3212100,
+          'is_assumed_depth': True,
+          'price': '74700',
+          'price_level': 5,
+          'qty': '43',
+        }),
+        dict({
+          'amount': 3216400,
+          'is_assumed_depth': True,
+          'price': '74800',
+          'price_level': 6,
+          'qty': '43',
+        }),
+        dict({
+          'amount': 3070900,
+          'is_assumed_depth': True,
+          'price': '74900',
+          'price_level': 7,
+          'qty': '41',
+        }),
+      ]),
+      'gross_amount': 22376200,
+      'has_assumed_depth': True,
+      'remaining_qty': '0',
+    }),
+    '상한가에서_멈춘다': dict({
+      'avg_price': '96100.00000000',
+      'filled_qty': '30',
+      'fills': list([
+        dict({
+          'amount': 960000,
+          'is_assumed_depth': False,
+          'price': '96000',
+          'price_level': 1,
+          'qty': '10',
+        }),
+        dict({
+          'amount': 961000,
+          'is_assumed_depth': False,
+          'price': '96100',
+          'price_level': 2,
+          'qty': '10',
+        }),
+        dict({
+          'amount': 962000,
+          'is_assumed_depth': True,
+          'price': '96200',
+          'price_level': 3,
+          'qty': '10',
+        }),
+      ]),
+      'gross_amount': 2883000,
+      'has_assumed_depth': True,
+      'remaining_qty': '9970',
+    }),
+    '호가창이_비면': dict({
+      'avg_price': '0',
+      'filled_qty': '0',
+      'fills': list([
+      ]),
+      'gross_amount': 0,
+      'has_assumed_depth': False,
+      'remaining_qty': '100',
+    }),
+  })
+# ---
+# name: test_가정체결_수량단위_골든
+  dict({
+    '주식은_정수주': dict({
+      'avg_price': '74468.50000000',
+      'filled_qty': '200',
+      'fills': list([
+        dict({
+          'amount': 4458000,
+          'is_assumed_depth': False,
+          'price': '74300',
+          'price_level': 1,
+          'qty': '60',
+        }),
+        dict({
+          'amount': 2976000,
+          'is_assumed_depth': False,
+          'price': '74400',
+          'price_level': 2,
+          'qty': '40',
+        }),
+        dict({
+          'amount': 2235000,
+          'is_assumed_depth': False,
+          'price': '74500',
+          'price_level': 3,
+          'qty': '30',
+        }),
+        dict({
+          'amount': 3207800,
+          'is_assumed_depth': True,
+          'price': '74600',
+          'price_level': 4,
+          'qty': '43',
+        }),
+        dict({
+          'amount': 2016900,
+          'is_assumed_depth': True,
+          'price': '74700',
+          'price_level': 5,
+          'qty': '27',
+        }),
+      ]),
+      'gross_amount': 14893700,
+      'has_assumed_depth': True,
+      'remaining_qty': '0',
+    }),
+    '코인은_소수허용': dict({
+      'avg_price': '74468.33000000',
+      'filled_qty': '200.00000000',
+      'fills': list([
+        dict({
+          'amount': 4458000,
+          'is_assumed_depth': False,
+          'price': '74300',
+          'price_level': 1,
+          'qty': '60',
+        }),
+        dict({
+          'amount': 2976000,
+          'is_assumed_depth': False,
+          'price': '74400',
+          'price_level': 2,
+          'qty': '40',
+        }),
+        dict({
+          'amount': 2235000,
+          'is_assumed_depth': False,
+          'price': '74500',
+          'price_level': 3,
+          'qty': '30',
+        }),
+        dict({
+          'amount': 3232666,
+          'is_assumed_depth': True,
+          'price': '74600',
+          'price_level': 4,
+          'qty': '43.33333333',
+        }),
+        dict({
+          'amount': 1992000,
+          'is_assumed_depth': True,
+          'price': '74700',
+          'price_level': 5,
+          'qty': '26.66666667',
+        }),
+      ]),
+      'gross_amount': 14893666,
+      'has_assumed_depth': True,
+      'remaining_qty': '0E-8',
+    }),
+  })
+# ---

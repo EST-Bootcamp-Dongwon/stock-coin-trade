@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% load form_extras humanize %}
+
+{% block title %}모의투자 대회 플랫폼{% endblock %}
+
+{% comment %}
+  홈 (F-21 2.1).
+
+  로그인 상태에 따라 위쪽 구성이 갈린다.
+
+    비로그인       히어로 → 공개 대회 → 시장 현황 → 기능 소개
+    로그인·참가중   내 대회 현황 → 내 계좌 → 시장 현황 → 학습
+    로그인·미참가   (내 대회 자리에) 모집 중 대회 + 참가 버튼
+
+  ★ **시장 현황은 세 경우 모두에 있다.** 그래서 프래그먼트로 빼서 한 번만 정의한다.
+{% endcomment %}
+{% block content %}
+
+{% if not user.is_authenticated %}
+  {# ── 히어로 (비로그인) ───────────────────────────────── #}
+  <section class="mb-8 rounded-2xl bg-gradient-to-br from-brand to-brand-dark px-6 py-10 text-white sm:px-10 sm:py-14">
+    <h1 class="text-2xl font-bold sm:text-4xl">모의투자 대회 플랫폼</h1>
+    <p class="mt-3 max-w-xl text-sm text-indigo-100 sm:text-base">
+      실제 호가로 체결되는 모의투자 대회에 참가하고, 주식 · 코인 · 대체자산을
+      각 1억원으로 연습하세요. 실제 자금은 오가지 않습니다.
+    </p>
+    <div class="mt-6 flex flex-wrap gap-2">
+      <a href="{% url 'account:register' %}" class="btn bg-white text-brand-dark hover:bg-indigo-50">
+        가입하고 시작하기
+      </a>
+      <a href="#contests" class="btn border border-white/40 text-white hover:bg-white/10">
+        진행 중인 대회 보기
+      </a>
+    </div>
+  </section>
+{% endif %}
+
+{% if user.is_authenticated %}
+  {% comment %} ── 내 대회 현황 ★ (F-21 3.1) ───────────────────────────
+       가장 중요한 위젯. 60초마다 갱신한다 (규약 5.1 — 랭킹 스냅샷이 10분 단위라
+       그보다 자주 당길 이유가 없다).
+
+     ★★ **감싸는 `<div>` 를 두지 않고 조각을 그대로 넣는다.** 조각의 바깥 요소가
+       이미 `id` 와 `hx-get`/`hx-trigger` 를 갖고 있기 때문이다. 여기서 한 겹 더
+       감싸면 **같은 id 를 가진 요소가 문서에 둘** 생긴다 — HTML 규격 위반이고,
+       HTMX 가 `hx-target="#market"` 같은 선택자로 엉뚱한 쪽을 집게 된다.
+       첫 스왑 뒤에는 하나로 줄어들어 **처음 한 번만 이상한** 종류의 버그다. {% endcomment %}
+  {% include "web/_my_contests.html" %}
+
+  {% comment %} ── 내 계좌 요약 ────────────────────────────────────────
+       폴링하지 않는다. 계좌 잔고는 **내가 주문을 내야만** 바뀌므로,
+       주문 체결·계좌 초기화 이벤트에만 반응한다 (규약 4.1).
+       보지 않아도 되는 것을 15초마다 당기는 것은 서버리스에서 곧 비용이다. {% endcomment %}
+  {% include "web/_my_accounts.html" %}
+{% endif %}
+
+{% comment %} ── 공개 대회 카드 ──────────────────────────────────────
+     비로그인이거나, 로그인했지만 참가 중인 대회가 없을 때 뜬다. {% endcomment %}
+{% if public_contests %}
+  <section id="contests" class="mb-8">
+    <h2 class="mb-3 text-lg font-bold">
+      {% if user.is_authenticated %}참가할 수 있는 대회{% else %}진행 중인 대회{% endif %}
+    </h2>
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {% for card in public_contests %}
+        <article class="card p-4">
+          <div class="flex items-start justify-between gap-2">
+            <h3 class="text-sm font-semibold">{{ card.contest.name }}</h3>
+            <span class="badge {% if card.is_recruiting %}badge-practice{% else %}badge-contest{% endif %} shrink-0">
+              {{ card.contest.get_status_display }}
+            </span>
+          </div>
+          <p class="mt-2 text-xs text-slate-500">
+            {{ card.contest.start_date|date:"Y.m.d" }} ~ {{ card.contest.end_date|date:"Y.m.d" }}
+          </p>
+          <dl class="mt-3 grid grid-cols-3 gap-2 text-center">
+            <div>
+              <dt class="text-[11px] text-slate-500">참가자</dt>
+              <dd class="num text-sm font-semibold">{{ card.participant_count }}명</dd>
+            </div>
+            <div>
+              <dt class="text-[11px] text-slate-500">남은 기간</dt>
+              <dd class="num text-sm font-semibold">{{ card.d_day|d_day }}</dd>
+            </div>
+            <div>
+              <dt class="text-[11px] text-slate-500">1위 수익률</dt>
+              <dd class="num text-sm font-semibold {{ card.top_return_pct|pnl_class }}">
+                {% if card.top_return_pct is not None %}{{ card.top_return_pct|signed_pct }}{% else %}—{% endif %}
+              </dd>
+            </div>
+          </dl>
+          {% comment %}
+            대회 상세 화면(`contests:detail`)은 아직 없다. 없는 링크를 거는 대신
+            무엇이 준비 중인지 적는다 (web/navigation.py 의 같은 방침).
+          {% endcomment %}
+          <p class="mt-3 rounded bg-slate-50 px-2 py-1.5 text-[11px] text-slate-400">
+            대회 상세·참가 신청 화면은 준비 중입니다.
+          </p>
+        </article>
+      {% empty %}
+        <p class="col-span-full rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+          공개된 대회가 아직 없습니다.
+        </p>
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}
+
+{% comment %} ── 시장 현황 (F-21 3.2) ────────────────────────────────
+     30초 폴링. 지수·시세 캐시의 TTL 보다 짧게 당기지 않는다 (규약 5.1).
+     ★ `[document.visibilityState === 'visible']` — 탭이 백그라운드면 멈춘다.
+       보지 않는 화면을 갱신하는 것은 서버리스에서 그대로 비용이다 (규약 5.2).
+     폴링 속성은 조각 자신이 갖고 있다 (`_market.html`). {% endcomment %}
+{% include "web/_market.html" %}
+
+{% if user.is_authenticated %}
+  {# ── 학습 진행률 (F-21 3.3) ─────────────────────────── #}
+  <section class="mb-8">
+    <div class="card p-4">
+      <div class="flex items-center justify-between gap-3">
+        <h2 class="text-sm font-semibold">학습 진행률</h2>
+        <span class="num text-sm text-slate-600">
+          {{ learning.earned }} / {{ learning.total }} 포인트
+        </span>
+      </div>
+      <div class="mt-3">{% progress_bar learning.percent %}</div>
+      <p class="mt-2 text-xs text-slate-500">
+        {% if learning.last_lesson %}
+          마지막으로 본 레슨 — {{ learning.last_lesson }}
+        {% elif learning.total %}
+          아직 시작하지 않았습니다. 투자분석 14레슨이 준비돼 있습니다.
+        {% else %}
+          학습 콘텐츠가 아직 등록되지 않았습니다.
+        {% endif %}
+        <span class="text-slate-400">· 학습 화면은 준비 중입니다.</span>
+      </p>
+    </div>
+  </section>
+{% else %}
+  {# ── 기능 소개 (비로그인, F-21 2.1) ─────────────────── #}
+  <section class="mb-8">
+    <h2 class="mb-3 text-lg font-bold">무엇을 할 수 있나요</h2>
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {% for title, body, icon in features %}
+        <article class="card p-4">
+          <p class="text-2xl" aria-hidden="true">{{ icon }}</p>
+          <h3 class="mt-2 text-sm font-semibold">{{ title }}</h3>
+          <p class="mt-1 text-xs text-slate-500">{{ body }}</p>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}
+
+{% endblock %}

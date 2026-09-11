@@ -1,0 +1,127 @@
+{% extends "admin/index.html" %}
+{% comment %}
+  운영 대시보드 — 배치 경고 배너 (F-20 5장).
+
+  ★ 파일 이름이 `admin/index.html` 이 아닌 이유는 `core/admin_site.py` 의
+    `index_template` 주석 참조 (같은 이름이면 자기 자신을 확장해 무한 재귀다).
+
+  ★ 색은 전부 Django Admin 의 CSS 변수를 쓴다. 하드코딩하면 **다크 모드에서
+    글자가 배경에 묻는다** — 변수는 라이트/다크 양쪽에서 알아서 뒤집힌다.
+{% endcomment %}
+{% block content %}
+
+{% with alerts=job_alerts.alerts cron=job_alerts.cron %}
+<div class="module" style="margin-bottom:20px; border:1px solid var(--border-color);">
+
+  <h2 style="{% if job_alerts.has_problem %}background:var(--error-fg);{% endif %}">
+    배치 상태
+    {% if job_alerts.has_problem %}
+      &nbsp;⚠ 확인이 필요한 잡 {{ alerts|length }}건
+    {% endif %}
+  </h2>
+
+  <div style="padding:10px 14px;">
+
+    {# ── ① 우리 잡의 이력 (DataSyncLog) — 진실은 여기다 ────────── #}
+    {% if alerts %}
+      <table style="width:100%; border-collapse:collapse;">
+        <tbody>
+        {% for alert in alerts %}
+          <tr style="border-bottom:1px solid var(--hairline-color);">
+            <td style="padding:6px 8px 6px 0; white-space:nowrap; vertical-align:top;">
+              <a href="{% url 'admin:core_datasynclog_changelist' %}?job_name={{ alert.job_name }}"><b>{{ alert.job_name }}</b></a>
+            </td>
+            <td style="padding:6px 8px; white-space:nowrap; vertical-align:top;">
+              {% if alert.is_failed %}
+                <b style="color:var(--error-fg);">실패</b>
+              {% else %}
+                <b style="color:#a16207;">정체</b>
+              {% endif %}
+              {% if alert.disabled %}
+                <span style="margin-left:6px; padding:1px 6px; border-radius:3px;
+                             background:var(--error-fg); color:#fff; font-size:11px;">
+                  {{ job_alerts.failure_limit }}회 연속 · 스케줄러 건너뜀
+                </span>
+              {% endif %}
+            </td>
+            <td style="padding:6px 8px; white-space:nowrap; vertical-align:top;
+                       color:var(--body-quiet-color);">
+              {{ alert.started_at|date:"m-d H:i" }}
+            </td>
+            <td style="padding:6px 0 6px 8px; vertical-align:top; color:var(--body-quiet-color);">
+              {{ alert.detail }}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      {% if alerts.0.disabled %}
+        <p style="margin:10px 0 0; color:var(--body-quiet-color);">
+          자동 비활성화된 잡은 원인을 고친 뒤
+          <code>python manage.py &lt;잡 이름&gt;</code> 로 한 번 성공시키면 스케줄러가 다시 집어간다.
+        </p>
+      {% endif %}
+    {% else %}
+      <p style="margin:0; color:var(--body-quiet-color);">
+        마지막 실행이 실패한 잡이 없다.
+      </p>
+    {% endif %}
+
+    {# ── ② pg_cron 쪽 이력 — 나란히 보여준다 (F-20 5장) ────────── #}
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border-color);">
+      <p style="margin:0 0 6px; font-weight:bold;">pg_cron</p>
+
+      {% if not cron.available %}
+        <p style="margin:0; color:var(--body-quiet-color);">{{ cron.note }}</p>
+
+      {% else %}
+        <p style="margin:0 0 8px; color:var(--body-quiet-color);">
+          등록된 잡 {{ cron.jobs|length }}개{% if cron.inactive_count %}
+            · <b style="color:var(--error-fg);">비활성 {{ cron.inactive_count }}개</b>
+          {% endif %}
+          &nbsp;— 스케줄은 <b>UTC</b> 기준이다 (KST = UTC+9).
+        </p>
+
+        {% if cron.failed_runs %}
+          <table style="width:100%; border-collapse:collapse; margin-bottom:8px;">
+            <tbody>
+            {% for run in cron.failed_runs %}
+              <tr style="border-bottom:1px solid var(--hairline-color);">
+                <td style="padding:5px 8px 5px 0; white-space:nowrap;">
+                  <b>{{ run.jobname|default:"(삭제된 잡)" }}</b>
+                </td>
+                <td style="padding:5px 8px; white-space:nowrap; color:var(--error-fg);">
+                  {{ run.status }}
+                </td>
+                <td style="padding:5px 8px; white-space:nowrap; color:var(--body-quiet-color);">
+                  {{ run.start_time|date:"m-d H:i" }}
+                </td>
+                <td style="padding:5px 0 5px 8px; color:var(--body-quiet-color);">
+                  {{ run.return_message|truncatechars:120 }}
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p style="margin:0 0 8px; color:var(--body-quiet-color);">
+            최근 실행 중 실패한 것이 없다.
+          </p>
+        {% endif %}
+
+        <p style="margin:0; color:var(--body-quiet-color); font-size:12px;">
+          ★ <b>여기가 '성공' 이어도 잡이 성공한 것은 아니다.</b>
+          <code>net.http_post</code> 는 비동기라 pg_cron 은 <b>요청을 걸었다</b>는 것까지만 안다.
+          잡이 실제로 무엇을 했는지는 위의
+          <a href="{% url 'admin:core_datasynclog_changelist' %}">배치 실행 이력</a>이 말한다.
+        </p>
+      {% endif %}
+    </div>
+
+  </div>
+</div>
+{% endwith %}
+
+{{ block.super }}
+{% endblock %}

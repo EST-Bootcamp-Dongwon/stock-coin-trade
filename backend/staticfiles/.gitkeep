@@ -1,0 +1,10 @@
+# 이 디렉터리는 비어 있는 것이 정상이다.
+#
+# `WHITENOISE_USE_FINDERS = True` 라서 정적 파일은 `static/` 에서 **직접** 서빙되고,
+# `collectstatic` 은 돌리지 않는다 (VERCEL.md 2.2).
+#
+# 그런데 WhiteNoise 는 기동할 때 `STATIC_ROOT` 를 한 번 들여다보고, 없으면
+# "No directory at: .../staticfiles/" 경고를 띄운다. 정적 파일이 깨진 것처럼 보이는
+# 가짜 경보라, 빈 디렉터리를 두어 조용히 시킨다.
+#
+# 나중에 트래픽이 늘어 `collectstatic` + 해시 파일명으로 바꾸면 산출물이 여기 쌓인다.

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% load form_extras humanize %}
+
+{% block title %}내 대회 · 모의투자 대회 플랫폼{% endblock %}
+
+{% comment %} ── 내 대회 (U-04 8장 · 화면 목록 #30) ────────────────────────
+
+  참가 이력을 한 곳에서 본다. **종료된 대회도 읽기 전용으로 계속 볼 수 있다** —
+  회고 자료가 된다는 것이 이 화면의 존재 이유다.
+
+  ★ 진행 중이면 오늘 순위(수익률만으로 매긴 것)를, 종료됐으면 최종 순위(관리
+    점수까지 반영한 것)를 보여준다. **둘은 다른 값이다**(F-05 3.1). 같은 열에
+    나란히 놓이므로 확정 여부를 함께 적는다.
+{% endcomment %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold">내 대회</h1>
+  <p class="mt-1 text-sm text-slate-500">참가한 대회의 이력입니다. 종료된 대회도 계속 볼 수 있습니다.</p>
+</div>
+
+{% if rows %}
+  <div class="card overflow-x-auto">
+    <table class="w-full min-w-[640px] text-sm">
+      <thead class="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+        <tr>
+          <th scope="col" class="px-3 py-2 text-left font-medium">대회</th>
+          <th scope="col" class="px-3 py-2 text-left font-medium">기간</th>
+          <th scope="col" class="px-3 py-2 text-left font-medium">상태</th>
+          <th scope="col" class="px-3 py-2 text-right font-medium">순위</th>
+          <th scope="col" class="px-3 py-2 text-right font-medium">수익률</th>
+          <th scope="col" class="px-3 py-2 text-center font-medium">등급</th>
+          <th scope="col" class="px-3 py-2 text-right font-medium"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for row in rows %}
+          <tr>
+            <td class="px-3 py-2">
+              <a href="{% url 'contests:detail' row.contest.slug %}"
+                 class="font-medium hover:text-brand hover:underline">{{ row.contest.name }}</a>
+              <span class="ml-1 text-xs text-slate-400">{{ row.participation.nickname }}</span>
+            </td>
+            <td class="num px-3 py-2 text-xs text-slate-500">
+              {{ row.contest.start_date|date:"m.d" }} ~ {{ row.contest.end_date|date:"m.d" }}
+            </td>
+            <td class="px-3 py-2">
+              <span class="badge {% if row.is_closed %}badge-practice{% else %}badge-contest{% endif %}">
+                {{ row.contest.get_status_display }}
+              </span>
+              {% if not row.participation.is_ranked %}
+                <span class="badge-stale ml-1">순위 제외</span>
+              {% endif %}
+            </td>
+            <td class="num px-3 py-2 text-right font-semibold">
+              {% if row.rank %}{{ row.rank }}위{% else %}—{% endif %}
+            </td>
+            <td class="num px-3 py-2 text-right {{ row.return_pct|pnl_class }}">
+              {% if row.return_pct is not None %}{{ row.return_pct|signed_pct }}{% else %}—{% endif %}
+            </td>
+            <td class="num px-3 py-2 text-center font-semibold">
+              {% if row.grade %}{{ row.grade }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right">
+              <a href="{% url 'contests:ranking' row.contest.slug %}"
+                 class="text-xs font-medium text-brand hover:underline">랭킹 →</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% comment %}
+    ★ 등급이 왜 비어 있는지 적어 둔다. 진행 중에는 최종 점수가 존재하지 않는데,
+      안내가 없으면 "등급이 안 나온다" 는 문의가 온다 (변경노트 E-51).
+  {% endcomment %}
+  <p class="mt-3 text-xs text-slate-400">
+    등급은 대회가 종료되고 최종 정산이 끝난 뒤에 확정됩니다. 진행 중에 보이는 순위는
+    수익률만으로 매긴 것이고, 최종 순위에는 관리 점수가 함께 반영됩니다.
+    참가자 수가 적으면 상위 등급이 나오지 않을 수 있습니다.
+  </p>
+  <p class="mt-1 text-xs text-slate-400">
+    대회 대시보드 · 결과 화면은 준비 중입니다.
+  </p>
+
+{% else %}
+  <div class="rounded-lg border border-dashed border-slate-300 p-8 text-center">
+    <p class="text-sm text-slate-500">아직 참가한 대회가 없습니다.</p>
+    <a href="{% url 'contests:list' %}" class="btn-primary btn-sm mt-3">대회 둘러보기</a>
+  </div>
+{% endif %}
+{% endblock %}

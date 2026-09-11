@@ -1,0 +1,67 @@
+{% load form_extras humanize %}{% comment %}
+  내 계좌 요약 (F-21 2.1).
+
+  ★★ **계좌가 4개 이상이라 '지금 어느 계좌를 보고 있는가' 가 혼동되기 쉽다**
+    (U-01 4.1). 그래서 카드마다 **모드 배지**를 단다 — 대회는 강조색, 연습은 중성색.
+
+  ★ 폴링하지 않는다. 잔고는 내가 주문을 내야만 바뀌므로 `order:filled` ·
+    `account:reset` 이벤트에만 반응한다 (규약 4.1). 보지 않아도 되는 것을
+    주기적으로 당기는 것은 서버리스에서 곧 비용이다.
+{% endcomment %}
+<div id="my-accounts"
+     hx-get="{% url 'frag_my_accounts' %}"
+     hx-trigger="order:filled from:body, account:reset from:body"
+     hx-swap="outerHTML"
+     class="mb-8">
+
+  {% if account_cards %}
+    <h2 class="mb-3 text-lg font-bold">내 계좌</h2>
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {% for card in account_cards %}
+        <article class="card p-4">
+          <div class="flex items-start justify-between gap-2">
+            <span class="{% if card.is_contest %}badge-contest{% else %}badge-practice{% endif %} min-w-0">
+              <span class="truncate">{{ card.label }}</span>
+            </span>
+            {% if card.account.is_frozen %}
+              <span class="badge-stale shrink-0" title="대회 종료 후 동결된 계좌입니다">동결</span>
+            {% endif %}
+          </div>
+
+          <p class="num mt-3 text-xl font-bold">{{ card.total_asset|krw_short }}</p>
+          <p class="num text-xs {{ card.profit|pnl_class }}">
+            {{ card.profit|krw_short }}원 ({{ card.profit_pct|signed_pct }})
+          </p>
+
+          <p class="mt-2 text-[11px] text-slate-500">
+            보유 {{ card.position_count }}종목 ·
+            현금 <span class="num">{{ card.account.cash|krw_short }}</span>
+          </p>
+
+          {% comment %}
+            ── 정직성 표시 (U-01 5장) ─────────────────────────
+            평가액이 "진짜 시세" 로 계산된 것인지 화면에 밝힌다.
+            ★ 이 배지가 없으면 사용자는 모든 숫자를 실시간 시세로 믿는다.
+          {% endcomment %}
+          {% if card.has_caveat %}
+            <div class="mt-2 flex flex-wrap gap-1">
+              {% if card.simulated_symbols %}
+                <span class="badge-sim" title="{{ card.simulated_symbols|join:', ' }}">
+                  시뮬레이션 가격 {{ card.simulated_symbols|length }}종목
+                </span>
+              {% endif %}
+              {% if card.estimated_symbols %}
+                <span class="badge-stale" title="시세를 받지 못해 매수 평단으로 평가했습니다: {{ card.estimated_symbols|join:', ' }}">
+                  평단 평가 {{ card.estimated_symbols|length }}종목
+                </span>
+              {% endif %}
+              {% if card.is_stale %}
+                <span class="badge-stale" title="캐시 만료 시각이 지난 시세입니다">낡은 시세</span>
+              {% endif %}
+            </div>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>

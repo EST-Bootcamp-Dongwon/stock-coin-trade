@@ -1,0 +1,57 @@
+{% load form_extras %}{% comment %}
+  참가 신청 폼 조각 (F-02 6장) — 별칭 + 규칙 동의.
+
+  ★ `method`/`action` 을 함께 남겨 **자바스크립트 없이도 동작**하게 한다
+    (점진적 향상). HTMX 가 로드되면 `hx-post` 가 우선한다.
+
+  ★ 검증 실패 응답은 이 조각만 다시 온다(뷰의 `_form_response` 와 같은 방식).
+    `hx-target="this"` + `hx-swap="outerHTML"` 이라 폼이 통째로 교체된다.
+{% endcomment %}
+<form method="post" action="{% url 'contests:join' contest.slug %}"
+      hx-post="{% url 'contests:join' contest.slug %}"
+      hx-target="this" hx-swap="outerHTML"
+      hx-indicator="#join-spinner"
+      class="space-y-1">
+  {% csrf_token %}
+
+  {% comment %}
+    폼 전체에 걸린 에러(정원 초과·신청 마감 등). 특정 입력칸의 문제가 아니라
+    여기 모인다 — 뷰가 `form.add_error(None, …)` 로 붙인 것이다.
+  {% endcomment %}
+  {% if form.non_field_errors %}
+    <div class="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-danger ring-1 ring-red-200" role="alert">
+      {% for error in form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+    </div>
+  {% endif %}
+
+  {% include "_partials/_field.html" with field=form.nickname %}
+
+  {% comment %} ── 규칙 동의 ─────────────────────────────────────
+       체크박스는 `_field.html` 과 배치가 달라(라벨이 오른쪽) 여기서 직접 그린다.
+  {% endcomment %}
+  <div class="mb-4">
+    <label class="flex items-start gap-2 text-sm">
+      {{ form.agree_rules }}
+      <span class="text-slate-700">
+        {{ form.agree_rules.label }}
+        <span class="text-danger" aria-hidden="true">*</span>
+      </span>
+    </label>
+    {% for error in form.agree_rules.errors %}
+      <p class="field-error" role="alert">{{ error }}</p>
+    {% endfor %}
+  </div>
+
+  <button type="submit" class="btn-primary w-full">
+    {% if auto_approve %}참가 신청하고 시작하기{% else %}참가 신청{% endif %}
+    <span id="join-spinner" class="htmx-indicator">⏳</span>
+  </button>
+
+  <p class="pt-2 text-center text-xs text-slate-400">
+    {% if auto_approve %}
+      신청과 동시에 대회 계좌가 만들어집니다.
+    {% else %}
+      운영자 승인 후 대회 계좌가 만들어집니다.
+    {% endif %}
+  </p>
+</form>

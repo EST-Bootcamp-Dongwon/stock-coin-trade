@@ -1,0 +1,40 @@
+{% comment %}
+  회원가입 폼 조각 (F-01 3장).
+
+  구조는 로그인 폼과 같다 — `_login_form.html` 의 주석 참조.
+{% endcomment %}
+<form method="post" action="{% url 'account:register' %}"
+      hx-post="{% url 'account:register' %}"
+      hx-target="this" hx-swap="outerHTML"
+      hx-indicator="#register-spinner"
+      class="space-y-1">
+  {% csrf_token %}
+
+  {% if form.non_field_errors %}
+    <div class="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-danger ring-1 ring-red-200" role="alert">
+      {% for error in form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+    </div>
+  {% endif %}
+
+  {% include "_partials/_field.html" with field=form.username %}
+  {% include "_partials/_field.html" with field=form.email %}
+  {% include "_partials/_field.html" with field=form.display_name %}
+  {% include "_partials/_field.html" with field=form.password1 %}
+  {% include "_partials/_field.html" with field=form.password2 %}
+
+  <input type="hidden" name="next" value="{{ next }}">
+
+  {% comment %}
+    가입하면 무엇이 생기는지 **가입 전에** 알린다 (F-01 3장의 계좌 자동 생성).
+    누르고 나서야 알게 되는 것을 줄인다.
+  {% endcomment %}
+  <div class="mb-4 rounded-lg bg-brand-soft px-3 py-2 text-xs text-slate-600">
+    가입하면 <b>연습 계좌 3개</b>(주식 · 코인 · 대체자산)가 각 <b>1억원</b>으로 자동 생성됩니다.
+    대회 계좌는 대회 참가가 승인될 때 따로 만들어집니다.
+  </div>
+
+  <button type="submit" class="btn-primary w-full">
+    <span id="register-spinner" class="htmx-indicator">⏳</span>
+    가입하고 시작하기
+  </button>
+</form>

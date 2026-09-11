@@ -1,0 +1,17 @@
+{
+  "name": "stock-coin-trade-frontend-build",
+  "version": "2.0.0",
+  "private": true,
+  "description": "v2.0 화면의 CSS 빌드 도구. 런타임 의존성이 아니라 개발 도구다 — Vercel 은 이 package.json 을 쓰지 않고, 빌드 산출물(static/css/app.css)만 저장소에서 읽는다.",
+  "scripts": {
+    "css": "tailwindcss -i ./static/css/app.src.css -o ./static/css/app.css --minify",
+    "css:watch": "tailwindcss -i ./static/css/app.src.css -o ./static/css/app.css --watch",
+    "vendor": "cp node_modules/htmx.org/dist/htmx.min.js static/vendor/htmx.min.js && cp node_modules/alpinejs/dist/cdn.min.js static/vendor/alpine.min.js"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "alpinejs": "^3.16.1",
+    "htmx.org": "^2.0.10",
+    "tailwindcss": "^4.3.3"
+  }
+}

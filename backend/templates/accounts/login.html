@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}로그인 · 모의투자 대회 플랫폼{% endblock %}
+
+{% block content %}
+<div class="mx-auto w-full max-w-sm py-6 sm:py-12">
+  <h1 class="mb-1 text-2xl font-bold">로그인</h1>
+  <p class="mb-6 text-sm text-slate-500">대회 참가와 연습 거래는 로그인 후 이용할 수 있습니다.</p>
+
+  <div class="card p-5">
+    {% include "accounts/_login_form.html" %}
+  </div>
+
+  <p class="mt-4 text-center text-sm text-slate-600">
+    계정이 없으신가요?
+    <a href="{% url 'account:register' %}{% if next %}?next={{ next|urlencode }}{% endif %}"
+       class="font-medium text-brand hover:underline">회원가입</a>
+  </p>
+
+  {% comment %}
+    ★ 비밀번호 재설정 링크를 두지 않는다. F-01 6장이 "1차는 운영자가 Admin 에서
+      재설정" 으로 미뤄 둔 항목이라, 누르면 아무 데도 안 가는 링크를 두는 대신
+      **어떻게 해결하는지**를 적는다 (규약 8.5 — 막다른 길로 만들지 않는다).
+  {% endcomment %}
+  <p class="mt-6 text-center text-xs text-slate-400">
+    비밀번호를 잊으셨나요? 1차 버전에는 재설정 메일 발송이 없습니다 — 운영자에게 문의하세요.
+  </p>
+</div>
+{% endblock %}

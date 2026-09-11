@@ -1,0 +1,42 @@
+{% comment %}
+  로그인 폼 조각 (F-01 3.1).
+
+  ★★ **HTMX 와 평범한 폼 전송이 동시에 살아 있다** ────────────────────────
+
+      method="post" action="…"   자바스크립트가 없어도 동작한다 (기본)
+      hx-post="…"                HTMX 가 있으면 이쪽이 가로챈다 (향상)
+
+  HTMX 가 로딩되지 않았거나 실패해도 **로그인은 된다.** 인증처럼 반드시 되어야
+  하는 화면에서 자바스크립트를 필수로 만들지 않는다 (점진적 향상).
+
+  ★ `hx-target="this" hx-swap="outerHTML"` — 검증에 실패하면 서버가 이 조각을
+    다시 보내고, HTMX 가 폼 **자기 자신**을 통째로 갈아끼운다. 페이지 전체가
+    다시 그려지지 않으므로 스크롤 위치와 다른 입력값이 유지된다
+    (01-HTMX 규약 2장의 '프래그먼트' 계층).
+{% endcomment %}
+<form method="post" action="{% url 'account:login' %}"
+      hx-post="{% url 'account:login' %}"
+      hx-target="this" hx-swap="outerHTML"
+      hx-indicator="#login-spinner"
+      class="space-y-1">
+  {% csrf_token %}
+
+  {% comment %} 아이디·비밀번호 어느 쪽 문제인지 구분하지 않는 에러는 폼 전체 에러로 온다
+     (계정 열거 방지 — accounts/forms.py 의 LoginForm 주석 참조) {% endcomment %}
+  {% if form.non_field_errors %}
+    <div class="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-danger ring-1 ring-red-200" role="alert">
+      {% for error in form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+    </div>
+  {% endif %}
+
+  {% include "_partials/_field.html" with field=form.username %}
+  {% include "_partials/_field.html" with field=form.password %}
+
+  {# 로그인 후 돌아갈 곳. `@login_required` 가 `?next=` 로 붙여 준다 #}
+  <input type="hidden" name="next" value="{{ next }}">
+
+  <button type="submit" class="btn-primary w-full">
+    <span id="login-spinner" class="htmx-indicator">⏳</span>
+    로그인
+  </button>
+</form>

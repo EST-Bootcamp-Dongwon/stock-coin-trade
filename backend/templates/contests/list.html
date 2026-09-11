@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% load form_extras humanize %}
+
+{% block title %}대회 목록 · 모의투자 대회 플랫폼{% endblock %}
+{% block description %}진행 중·모집 중인 모의투자 대회를 한눈에 봅니다. 참가 신청과 실시간 순위를 확인하세요.{% endblock %}
+
+{% comment %} ── 대회 목록 (U-02 4.1) ─────────────────────────────────────────
+
+  카드에 **참가 여부와 내 순위**를 바로 보여준다. 목록에서 대회 화면으로 한 번에
+  갈 수 있게 하려는 것이다 — 참가 중인 대회를 다시 찾아 들어가는 일이 가장 잦다.
+
+  ★ 여기 숫자는 전부 정산 잡이 만들어 둔 것을 **읽기만** 한다 (F-05 7장).
+  ★ 폴링하지 않는다. 목록의 값(참가자 수·순위)은 하루에 한 번 바뀌므로 60초마다
+    당길 이유가 없다. 서버리스 환경에서 그 호출은 그대로 비용이다.
+{% endcomment %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold">대회</h1>
+  <p class="mt-1 text-sm text-slate-500">
+    실제 호가로 체결되는 모의투자 대회입니다. 시작 자본은 모두 같고, 종목·섹터 편입 한도와
+    주간 회전율 규칙이 적용됩니다.
+  </p>
+</div>
+
+{# ── 탭 (U-02 4.1) ────────────────────────────────────────────── #}
+<nav class="mb-5 flex gap-1 border-b border-slate-200" aria-label="대회 상태">
+  {% for key, label, statuses in tabs %}
+    <a href="?tab={{ key }}"
+       {% if key == active_tab %}aria-current="page"{% endif %}
+       class="-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors
+              {% if key == active_tab %}border-brand text-brand{% else %}border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700{% endif %}">
+      {{ label }}
+    </a>
+  {% endfor %}
+</nav>
+
+<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+  {% for card in cards %}
+    <article class="card flex flex-col p-4">
+
+      {# ── 머리: 이름 · 상태 배지 ─────────────────── #}
+      <div class="flex items-start justify-between gap-2">
+        <h2 class="text-sm font-semibold">
+          <a href="{% url 'contests:detail' card.contest.slug %}" class="hover:text-brand hover:underline">
+            {{ card.contest.name }}
+          </a>
+        </h2>
+        <span class="badge {% if card.is_recruiting %}badge-practice{% else %}badge-contest{% endif %} shrink-0">
+          {{ card.contest.get_status_display }}
+        </span>
+      </div>
+
+      <p class="mt-2 text-xs text-slate-500">
+        {{ card.contest.start_date|date:"Y.m.d" }} ~ {{ card.contest.end_date|date:"Y.m.d" }}
+        <span class="num ml-1">{{ card.d_day|d_day }}</span>
+        <span class="text-slate-400">{{ card.d_day_label }}</span>
+      </p>
+
+      {# ── 지표 ──────────────────────────────────── #}
+      <dl class="mt-3 grid grid-cols-3 gap-2 text-center">
+        <div>
+          <dt class="text-[11px] text-slate-500">참가자</dt>
+          <dd class="num text-sm font-semibold">
+            {{ card.participant_count }}{% if card.contest.capacity %} / {{ card.contest.capacity }}{% endif %}명
+          </dd>
+        </div>
+        <div>
+          <dt class="text-[11px] text-slate-500">시작 자본</dt>
+          <dd class="num text-sm font-semibold">{{ card.contest.initial_capital|krw_short }}</dd>
+        </div>
+        <div>
+          <dt class="text-[11px] text-slate-500">자산군</dt>
+          <dd class="text-sm font-semibold">{{ card.contest.get_asset_class_display }}</dd>
+        </div>
+      </dl>
+
+      {% comment %} ── 액션 ─────────────────────────────────────
+           참가 중이면 내 순위를, 아니면 신청 버튼을 보여준다 (U-02 4.1 와이어).
+           ★ 정산 전에는 순위가 없다. 그때 `—` 대신 "정산 대기" 를 적는 것이
+             홈 위젯과 같은 규약이다 (`_my_contests.html`).
+      {% endcomment %}
+      <div class="mt-4 flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+        {% if card.is_joined %}
+          <span class="flex items-center gap-1.5 text-xs">
+            <span class="badge-contest">참가 중</span>
+            {% if card.is_pending %}
+              <span class="text-slate-500">승인 대기</span>
+            {% elif card.ranking %}
+              <span class="num font-semibold">{{ card.ranking.rank|default:"-" }}위</span>
+              {% if card.rank_delta > 0 %}
+                <span class="num text-up">▲{{ card.rank_delta }}</span>
+              {% elif card.rank_delta < 0 %}
+                <span class="num text-down">▼{{ card.rank_delta|stringformat:"d"|slice:"1:" }}</span>
+              {% endif %}
+              <span class="num {{ card.ranking.cumulative_return_pct|pnl_class }}">
+                {{ card.ranking.cumulative_return_pct|signed_pct }}
+              </span>
+            {% else %}
+              <span class="text-slate-500">정산 대기</span>
+            {% endif %}
+          </span>
+        {% elif card.entry_open %}
+          <a href="{% url 'contests:join' card.contest.slug %}" class="btn-primary btn-sm">참가 신청</a>
+        {% else %}
+          <span class="text-xs text-slate-400">신청 마감</span>
+        {% endif %}
+
+        <a href="{% url 'contests:ranking' card.contest.slug %}"
+           class="text-xs font-medium text-brand hover:underline">랭킹 →</a>
+      </div>
+    </article>
+
+  {% empty %}
+    {% comment %}
+      ★ 빈 상태에서 **다른 탭으로 가는 길**을 함께 준다. "없습니다" 만 적으면
+        사용자는 서비스에 대회가 하나도 없다고 생각하고 나간다.
+    {% endcomment %}
+    <p class="col-span-full rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+      이 상태의 대회가 아직 없습니다.
+      <span class="mt-2 block text-xs text-slate-400">
+        {% for key, label, statuses in tabs %}{% if key != active_tab %}
+          <a href="?tab={{ key }}" class="text-brand hover:underline">{{ label }}</a>{% if not forloop.last %} · {% endif %}
+        {% endif %}{% endfor %}
+        탭도 확인해 보세요.
+      </span>
+    </p>
+  {% endfor %}
+</div>
+{% endblock %}

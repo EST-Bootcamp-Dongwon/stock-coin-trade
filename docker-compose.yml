@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────
+# stock-coin-trade — 로컬 개발용 컨테이너
+#
+# ★ v3.0(섹터 ETF 레이더)은 컨테이너가 필요 없다. Streamlit 을 그냥 띄운다.
+#       streamlit run streamlit_app.py
+#
+# 이 파일에 남은 postgres 하나는 **동결된 v2.0 Django 회귀 확인용**이다
+# (→ ADR-SC-0005 ③). 기본 `docker compose up` 으로는 뜨지 않는다.
+#
+#       docker compose --profile v2 up -d postgres
+#
+# ⚠️ v1.0 스택(Nginx + Flask + MariaDB)은 2026-09-11 이력 재시작 때 사라졌다.
+#    강사님 원본 코드였고 새 이력에 담지 않았다 (→ ADR-SC-0005).
+#    원본이 필요하면 `upstream` 원격 또는 모노레포
+#    `learning/th03-stock-coin-trade/lecture/` 를 본다.
+# ─────────────────────────────────────────────────────────────────
+
+networks:
+  internal:
+    driver: bridge
+
+services:
+
+  # ── Postgres + pgvector (v2.0 Django — 동결) ──────────────────
+  #    로컬도 Postgres 를 쓰는 이유: SQLite 는 부분 유니크 인덱스·vector 타입·
+  #    ON CONFLICT 동작이 달라 "로컬에서 통과한 것이 운영에서 깨진다".
+  postgres:
+    image: pgvector/pgvector:pg16      # pgvector 가 미리 들어 있는 공식 이미지
+    container_name: stock-coin-postgres
+    profiles: ["v2"]                   # ★ 기본 up 에서는 뜨지 않는다
+    networks:
+      - internal
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-stockcoin}
+      POSTGRES_USER: ${POSTGRES_USER:-stockcoin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stockcoin-dev}
+      # KST 로 맞춰 psql 로 직접 볼 때 헷갈리지 않게 한다.
+      # 저장은 USE_TZ=True 라 timestamptz(UTC) 이므로 값 자체는 영향받지 않는다.
+      TZ: Asia/Seoul
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stockcoin} -d ${POSTGRES_DB:-stockcoin}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

@@ -1,0 +1,27 @@
+{% load form_extras humanize %}{% comment %}
+  상승·하락 목록 (셀 계층). `quotes` · `empty_text` 를 받아 그린다.
+
+  ★ 상승과 하락이 같은 모양이라 조각 하나를 두 번 include 한다. 복사해 두면
+    한쪽만 고치는 사고가 난다.
+{% endcomment %}
+{% if quotes %}
+  <ul class="divide-y divide-slate-100">
+    {% for quote in quotes %}
+      <li class="flex items-center justify-between gap-2 px-4 py-2 text-sm">
+        <span class="flex min-w-0 items-center gap-1.5">
+          <span class="truncate font-medium">{{ quote.symbol }}</span>
+          {% if quote.is_simulated %}
+            {# 정직성 표시 (U-01 5장) — 이 값은 수식으로 만든 가격이다 #}
+            <span class="badge-sim shrink-0" title="외부 조회 실패로 수식으로 만든 값입니다">시뮬</span>
+          {% endif %}
+        </span>
+        <span class="flex shrink-0 items-baseline gap-2">
+          <span class="num text-xs">{{ quote.price|floatformat:0|intcomma }}</span>
+          <span class="num w-16 text-xs {{ quote.change_pct|pnl_class }}">{{ quote.change_pct|signed_pct }}</span>
+        </span>
+      </li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p class="px-4 py-6 text-center text-xs text-slate-400">{{ empty_text }}</p>
+{% endif %}

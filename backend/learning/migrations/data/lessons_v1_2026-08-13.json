@@ -1,0 +1,773 @@
+[
+  {
+    "key": "macro-indicator",
+    "group": "매크로 분석",
+    "title": "경제지표 분석",
+    "order": 0,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-earth-asia",
+      "subtitle": "금리 · 물가 · 유가로 시장의 온도를 읽는 법",
+      "description": "주요 경제지표의 방향과 속도를 함께 확인해 경기 국면과 자산별 영향을 판단합니다.",
+      "theory": [
+        "금리: 기준금리와 장단기 금리차로 자금 비용과 경기 기대를 확인합니다.",
+        "물가: CPI·PCE의 추세와 근원물가를 분리해 통화정책 방향을 읽습니다.",
+        "유가: 공급 충격과 수요 회복 신호를 구분하고 운송·화학 업종 영향을 연결합니다."
+      ],
+      "tip": "단일 수치보다 <b>전월 대비 변화율</b>과 시장 예상치 대비 차이를 먼저 보세요.",
+      "code": "import pandas as pd\nimport matplotlib.pyplot as plt\n\ndf = pd.read_csv('macro_monthly.csv', parse_dates=['date'])\ndf['real_rate'] = df['policy_rate'] - df['cpi_yoy']\nax = df.plot(x='date', y=['policy_rate', 'cpi_yoy', 'oil_usd'])\nplt.show()",
+      "sample_data": {
+        "headers": [
+          "월",
+          "기준금리",
+          "CPI YoY",
+          "WTI"
+        ],
+        "rows": [
+          [
+            "2025.01",
+            "3.00%",
+            "2.1%",
+            "$75"
+          ],
+          [
+            "2025.02",
+            "2.75%",
+            "2.0%",
+            "$71"
+          ],
+          [
+            "2025.03",
+            "2.75%",
+            "2.1%",
+            "$69"
+          ]
+        ]
+      },
+      "result": {
+        "value": "-0.65%p",
+        "label": "실질금리",
+        "bars": [
+          [
+            "금리 수준",
+            68
+          ],
+          [
+            "물가 압력",
+            49
+          ],
+          [
+            "유가 부담",
+            41
+          ]
+        ]
+      },
+      "explain": "금리 인하와 안정된 물가는 위험자산에 우호적일 수 있지만, 유가 반등 시 물가 재상승 위험을 함께 점검합니다.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "macro-practice",
+    "group": "매크로 분석",
+    "title": "거시경제상황 분석 실습",
+    "order": 1,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-earth-asia",
+      "subtitle": "지표를 하나의 투자 시나리오로 연결하기",
+      "description": "경제 데이터에서 신호를 찾아 강세·중립·경계 시나리오를 작성하는 실습입니다.",
+      "theory": [
+        "① 성장(산업생산·고용) ② 물가 ③ 금리 ④ 환율·원자재 순으로 체크합니다.",
+        "지표가 좋아도 이미 주가에 반영됐는지 밸류에이션과 함께 판단합니다.",
+        "시나리오마다 수혜 업종, 위험 요인, 무효화 조건을 한 줄로 기록합니다."
+      ],
+      "tip": "결론은 “상승/하락” 대신 <b>조건부 시나리오</b>로 작성해보세요.",
+      "code": "signals = {'growth': 1, 'inflation': 0, 'liquidity': 1}\nscore = sum(signals.values())\nscenario = '확장 국면' if score >= 2 else '방어 국면'\nprint(f'거시 시나리오: {scenario}')",
+      "sample_data": {
+        "headers": [
+          "지표",
+          "최근",
+          "전월",
+          "판단"
+        ],
+        "rows": [
+          [
+            "산업생산",
+            "+1.2%",
+            "+0.4%",
+            "개선"
+          ],
+          [
+            "실업률",
+            "2.7%",
+            "2.8%",
+            "개선"
+          ],
+          [
+            "원/달러",
+            "1,345",
+            "1,330",
+            "경계"
+          ]
+        ]
+      },
+      "result": {
+        "value": "확장 국면",
+        "label": "매크로 스코어 2 / 3",
+        "bars": [
+          [
+            "성장",
+            78
+          ],
+          [
+            "물가 안정",
+            55
+          ],
+          [
+            "유동성",
+            72
+          ]
+        ]
+      },
+      "explain": "성장과 유동성은 긍정적입니다. 다만 환율 상승이 지속되면 외국인 수급과 수입물가를 재점검합니다.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "industry-competitiveness",
+    "group": "산업 분석",
+    "title": "산업 경쟁력 분석",
+    "order": 0,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-industry",
+      "subtitle": "산업 구조와 경쟁 우위를 체계적으로 비교하기",
+      "description": "산업 매력도와 기업 경쟁력을 나누어 보며, 포터의 5가지 경쟁요인을 적용합니다.",
+      "theory": [
+        "산업 경쟁력은 수익성·성장성·진입장벽·협상력·규제 환경을 종합해 판단합니다.",
+        "포터의 5 Forces: 신규 진입, 대체재, 공급자, 구매자, 기존 경쟁 강도입니다.",
+        "산업별 핵심 지표가 다릅니다. 반도체는 CAPEX·재고일수, 플랫폼은 MAU·ARPU를 봅니다."
+      ],
+      "tip": "시장 점유율이 높아도 가격 결정력이 약하면 높은 수익성을 유지하기 어렵습니다.",
+      "code": "forces = {'진입장벽': 4, '구매자 협상력': 2, '대체재 위협': 3}\n# 점수가 높을수록 산업 매력도 우수\nattractiveness = sum(forces.values()) / len(forces)\nprint(f'산업 매력도: {attractiveness:.1f} / 5')",
+      "sample_data": {
+        "headers": [
+          "경쟁요인",
+          "반도체",
+          "2차전지",
+          "플랫폼"
+        ],
+        "rows": [
+          [
+            "진입장벽",
+            "높음",
+            "높음",
+            "중간"
+          ],
+          [
+            "가격 결정력",
+            "중간",
+            "낮음",
+            "높음"
+          ],
+          [
+            "수요 변동성",
+            "높음",
+            "높음",
+            "중간"
+          ]
+        ]
+      },
+      "result": {
+        "value": "3.0 / 5",
+        "label": "산업 매력도",
+        "bars": [
+          [
+            "진입장벽",
+            80
+          ],
+          [
+            "성장성",
+            72
+          ],
+          [
+            "가격 결정력",
+            48
+          ]
+        ]
+      },
+      "explain": "고성장 산업이라도 공급 과잉과 고객 협상력이 수익성을 낮출 수 있습니다. 산업 내 선도 기업의 비용 우위를 확인하세요.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "industry-practice",
+    "group": "산업 분석",
+    "title": "산업 분석 실습",
+    "order": 1,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-industry",
+      "subtitle": "산업별 핵심지표를 비교해 투자 가설 만들기",
+      "description": "동일 산업의 기업을 같은 기준으로 비교하고, 숫자 뒤의 사업 구조를 해석합니다.",
+      "theory": [
+        "비교 기업의 사업 포트폴리오와 회계연도, 일회성 요인을 먼저 맞춥니다.",
+        "매출 성장률·영업이익률·CAPEX·점유율을 한 표에서 추적합니다.",
+        "선도 기업과 후발 기업의 격차가 확대되는지 확인합니다."
+      ],
+      "tip": "숫자의 우열보다 <b>왜 차이가 생겼는지</b> 사업모델로 설명해보세요.",
+      "code": "peer = pd.DataFrame({'기업':['A','B','C'],\n '매출성장률':[14.2,8.6,11.3], '영업이익률':[18.1,9.4,13.0]})\npeer['경쟁력점수'] = peer['매출성장률'] + peer['영업이익률']\nprint(peer.sort_values('경쟁력점수', ascending=False))",
+      "sample_data": {
+        "headers": [
+          "기업",
+          "매출 성장",
+          "영업이익률",
+          "점유율"
+        ],
+        "rows": [
+          [
+            "A사",
+            "14.2%",
+            "18.1%",
+            "32%"
+          ],
+          [
+            "B사",
+            "8.6%",
+            "9.4%",
+            "21%"
+          ],
+          [
+            "C사",
+            "11.3%",
+            "13.0%",
+            "17%"
+          ]
+        ]
+      },
+      "result": {
+        "value": "A사 우위",
+        "label": "수익성 · 점유율 동시 선도",
+        "bars": [
+          [
+            "성장성",
+            81
+          ],
+          [
+            "수익성",
+            86
+          ],
+          [
+            "시장지위",
+            78
+          ]
+        ]
+      },
+      "explain": "A사는 성장성과 수익성을 동시에 확보했습니다. 다음 단계는 밸류에이션 프리미엄이 정당한지 확인하는 것입니다.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "fundamental-financials",
+    "group": "기본적 분석",
+    "title": "재무제표 분석",
+    "order": 0,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-file-invoice-dollar",
+      "subtitle": "손익계산서 · 재무상태표 · 현금흐름표 읽기",
+      "description": "세 재무제표를 연결해 회사의 이익 품질과 재무 안전성을 점검합니다.",
+      "theory": [
+        "손익계산서: 매출 성장, 마진, 비용 구조에서 이익의 원천을 봅니다.",
+        "재무상태표: 부채비율, 유동비율, 운전자본으로 안전성을 살핍니다.",
+        "현금흐름표: 영업현금흐름이 순이익을 꾸준히 뒷받침하는지 확인합니다."
+      ],
+      "tip": "순이익이 늘어도 <b>영업현금흐름이 따라오지 않으면</b> 매출채권·재고를 확인하세요.",
+      "code": "income = {'revenue': 1200, 'op_income': 180}\ncashflow = {'net_income': 142, 'ocf': 165}\nmargin = income['op_income'] / income['revenue'] * 100\ncash_quality = cashflow['ocf'] / cashflow['net_income']\nprint(f'영업이익률 {margin:.1f}%, 이익현금화 {cash_quality:.2f}배')",
+      "sample_data": {
+        "headers": [
+          "항목",
+          "2023",
+          "2024",
+          "2025E"
+        ],
+        "rows": [
+          [
+            "매출액",
+            "1,000",
+            "1,110",
+            "1,200"
+          ],
+          [
+            "영업이익",
+            "120",
+            "142",
+            "180"
+          ],
+          [
+            "영업현금흐름",
+            "116",
+            "151",
+            "165"
+          ]
+        ]
+      },
+      "result": {
+        "value": "15.0%",
+        "label": "예상 영업이익률",
+        "bars": [
+          [
+            "매출 성장",
+            74
+          ],
+          [
+            "마진 개선",
+            83
+          ],
+          [
+            "현금 창출",
+            88
+          ]
+        ]
+      },
+      "explain": "매출보다 이익이 빠르게 증가하고 현금흐름도 뒷받침합니다. 재고와 차입금 증감까지 보면 분석이 완성됩니다.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "fundamental-valuation",
+    "group": "기본적 분석",
+    "title": "기업가치 분석",
+    "order": 1,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-file-invoice-dollar",
+      "subtitle": "상대가치평가(멀티플)와 절대가치평가(DCF)",
+      "description": "비슷한 기업과 비교하는 멀티플, 미래 현금을 할인하는 DCF를 함께 사용합니다.",
+      "theory": [
+        "PER·PBR·EV/EBITDA는 동종 기업의 성장성·수익성·부채를 맞춰 비교합니다.",
+        "DCF는 FCF, 할인율(WACC), 영구성장률 가정에 민감합니다.",
+        "EVA는 자본비용을 웃도는 경제적 이익을 측정합니다."
+      ],
+      "tip": "DCF의 숫자 하나보다 <b>가정 변화에 따른 가치 범위</b>를 확인하는 것이 중요합니다.",
+      "code": "fcf = [120, 138, 156, 171, 184]\nwacc, g = 0.09, 0.02\npv = sum(cf / (1+wacc)**(i+1) for i, cf in enumerate(fcf))\ntv = fcf[-1] * (1+g) / (wacc-g) / (1+wacc)**5\nenterprise_value = pv + tv\nprint(round(enterprise_value, 1))",
+      "sample_data": {
+        "headers": [
+          "방법",
+          "산출가치",
+          "비중",
+          "핵심 가정"
+        ],
+        "rows": [
+          [
+            "PER 비교",
+            "62,000원",
+            "30%",
+            "EPS 성장률"
+          ],
+          [
+            "EV/EBITDA",
+            "58,000원",
+            "30%",
+            "동종 멀티플"
+          ],
+          [
+            "DCF",
+            "65,000원",
+            "40%",
+            "WACC 9.0%"
+          ]
+        ]
+      },
+      "result": {
+        "value": "62,100원",
+        "label": "가중 목표주가",
+        "bars": [
+          [
+            "멀티플 평가",
+            76
+          ],
+          [
+            "DCF 평가",
+            82
+          ],
+          [
+            "안전마진",
+            61
+          ]
+        ]
+      },
+      "explain": "현재가와의 차이가 안전마진입니다. 목표가보다 DCF의 할인율·성장률 가정이 현실적인지 먼저 검증하세요.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "fundamental-practice",
+    "group": "기본적 분석",
+    "title": "분석기업선정 및 밸류에이션 실습",
+    "order": 2,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-file-invoice-dollar",
+      "subtitle": "투자 후보를 고르고 적정가치를 계산하는 전 과정",
+      "description": "스크리닝부터 기업 선택, 동종사 비교, 목표가와 투자 메모 작성까지 진행합니다.",
+      "theory": [
+        "산업 성장성 → 재무 품질 → 경쟁우위 → 밸류에이션 순으로 후보를 좁힙니다.",
+        "선정 기준을 사전에 정하면 확증편향을 줄일 수 있습니다.",
+        "목표가와 함께 매수 근거, 리스크, 매도 기준을 기록합니다."
+      ],
+      "tip": "“좋은 기업”과 “좋은 가격”은 다릅니다. 두 조건을 분리해 체크하세요.",
+      "code": "universe = df.query('roe > 10 and debt_ratio < 100')\nselected = universe.sort_values('earnings_growth', ascending=False).head(5)\nselected['target_price'] = selected['eps'] * selected['peer_per']\nprint(selected[['name', 'target_price']])",
+      "sample_data": {
+        "headers": [
+          "기준",
+          "후보 A",
+          "후보 B",
+          "기준값"
+        ],
+        "rows": [
+          [
+            "ROE",
+            "16.2%",
+            "11.8%",
+            "> 10%"
+          ],
+          [
+            "부채비율",
+            "62%",
+            "94%",
+            "< 100%"
+          ],
+          [
+            "예상 PER",
+            "11.4x",
+            "16.8x",
+            "업종 14x"
+          ]
+        ]
+      },
+      "result": {
+        "value": "후보 A 선정",
+        "label": "재무 품질 · 밸류에이션 우위",
+        "bars": [
+          [
+            "수익성",
+            81
+          ],
+          [
+            "안정성",
+            75
+          ],
+          [
+            "가격 매력",
+            78
+          ]
+        ]
+      },
+      "explain": "후보 A는 수익성과 밸류에이션이 균형적입니다. 실적 추정치가 유지되는지 분기마다 업데이트하세요.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "technical-trend",
+    "group": "기술적 분석",
+    "title": "추세 분석",
+    "order": 0,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-chart-line",
+      "subtitle": "지지·저항 · 이동평균 · 갭 · 되돌림",
+      "description": "가격의 방향성과 힘을 먼저 정의하고, 진입·손절 기준을 가격대로 설정합니다.",
+      "theory": [
+        "상승추세는 고점과 저점이 높아지는 구조로 확인합니다.",
+        "이동평균선은 추세 필터로 쓰고, 지지·저항은 거래량과 함께 검증합니다.",
+        "갭과 피보나치 되돌림은 반전 가능 구간을 찾는 보조도구입니다."
+      ],
+      "tip": "추세선은 예측선이 아니라 <b>시장 참여자의 기준선</b>으로 활용하세요.",
+      "code": "df['ma20'] = df['close'].rolling(20).mean()\ndf['ma60'] = df['close'].rolling(60).mean()\ndf['trend'] = (df['ma20'] > df['ma60']).map({True:'상승', False:'하락'})\nprint(df[['close','ma20','ma60','trend']].tail())",
+      "sample_data": {
+        "headers": [
+          "일자",
+          "종가",
+          "20일선",
+          "60일선"
+        ],
+        "rows": [
+          [
+            "06/03",
+            "71,200",
+            "69,840",
+            "67,130"
+          ],
+          [
+            "06/04",
+            "72,000",
+            "70,050",
+            "67,240"
+          ],
+          [
+            "06/05",
+            "71,650",
+            "70,280",
+            "67,360"
+          ]
+        ]
+      },
+      "result": {
+        "value": "상승 추세",
+        "label": "20일선이 60일선 상회",
+        "bars": [
+          [
+            "단기 추세",
+            76
+          ],
+          [
+            "중기 추세",
+            69
+          ],
+          [
+            "지지 강도",
+            64
+          ]
+        ]
+      },
+      "explain": "20일선 부근이 첫 지지 후보입니다. 이탈 시 거래량 증가 여부를 보고 손절 기준을 지킵니다.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "technical-pattern",
+    "group": "기술적 분석",
+    "title": "패턴 · 캔들 차트 분석",
+    "order": 1,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-chart-line",
+      "subtitle": "가격 패턴과 캔들 심리로 전환 신호 찾기",
+      "description": "차트 패턴을 단독 신호로 쓰지 않고 거래량·추세·지지저항과 결합합니다.",
+      "theory": [
+        "이중바닥·컵앤핸들·삼각수렴은 완성 조건과 돌파 거래량이 중요합니다.",
+        "캔들 몸통은 종가 방향, 꼬리는 가격대에서의 매수·매도 공방을 보여줍니다.",
+        "반전 패턴은 기존 추세가 충분히 진행된 뒤에 신뢰도가 높아집니다."
+      ],
+      "tip": "패턴은 “발견”보다 <b>무효화 가격</b>을 먼저 정할 때 실전에 도움이 됩니다.",
+      "code": "body = abs(df.close - df.open)\nrange_ = df.high - df.low\ndf['doji'] = (body / range_) < 0.1\n# 거래량이 동반된 돌파만 후보로 추림\ndf['breakout'] = (df.close > df.high.shift(20)) & (df.volume > df.volume.rolling(20).mean())",
+      "sample_data": {
+        "headers": [
+          "신호",
+          "가격대",
+          "거래량",
+          "해석"
+        ],
+        "rows": [
+          [
+            "저항 돌파",
+            "72,000",
+            "평균 1.8배",
+            "강세"
+          ],
+          [
+            "도지",
+            "71,650",
+            "평균 수준",
+            "관망"
+          ],
+          [
+            "지지 확인",
+            "69,800",
+            "평균 1.2배",
+            "유지"
+          ]
+        ]
+      },
+      "result": {
+        "value": "돌파 확인",
+        "label": "거래량 동반 저항 돌파",
+        "bars": [
+          [
+            "패턴 완성도",
+            74
+          ],
+          [
+            "거래량 확인",
+            82
+          ],
+          [
+            "추세 일치",
+            70
+          ]
+        ]
+      },
+      "explain": "저항 돌파 뒤 종가 기준으로 지지 전환되는지 확인합니다. 돌파 당일 추격매수는 손익비를 낮출 수 있습니다.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "technical-indicators",
+    "group": "기술적 분석",
+    "title": "지표 분석 · 엘리어트파동이론",
+    "order": 2,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-chart-line",
+      "subtitle": "RSI · MACD · 파동을 보조 신호로 활용하기",
+      "description": "보조지표는 가격보다 늦을 수 있으므로 추세와 가격 구조를 우선합니다.",
+      "theory": [
+        "RSI는 과매수·과매도보다 다이버전스와 50선 회복을 함께 봅니다.",
+        "MACD는 모멘텀 변화, 볼린저밴드는 변동성 확대·축소를 관찰합니다.",
+        "엘리어트 파동은 하나의 가설입니다. 카운팅보다 무효화 조건이 중요합니다."
+      ],
+      "tip": "지표가 여러 개 일치해도 <b>가격의 손절선</b> 없이 진입하지 마세요.",
+      "code": "delta = df.close.diff()\ngain = delta.clip(lower=0).rolling(14).mean()\nloss = -delta.clip(upper=0).rolling(14).mean()\ndf['rsi14'] = 100 - (100 / (1 + gain / loss))\nprint(df[['close','rsi14']].tail())",
+      "sample_data": {
+        "headers": [
+          "지표",
+          "현재",
+          "전일",
+          "해석"
+        ],
+        "rows": [
+          [
+            "RSI(14)",
+            "58.4",
+            "55.1",
+            "중립 상단"
+          ],
+          [
+            "MACD",
+            "+182",
+            "+146",
+            "상승"
+          ],
+          [
+            "볼린저 %B",
+            "0.72",
+            "0.65",
+            "상단 접근"
+          ]
+        ]
+      },
+      "result": {
+        "value": "중립 · 상승",
+        "label": "모멘텀 회복 구간",
+        "bars": [
+          [
+            "RSI 모멘텀",
+            58
+          ],
+          [
+            "MACD 방향",
+            72
+          ],
+          [
+            "변동성",
+            55
+          ]
+        ]
+      },
+      "explain": "RSI가 과매수권이 아니고 MACD가 개선 중입니다. 다만 밴드 상단 근처에서는 분할 진입과 손절가 설정이 필요합니다.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "technical-practice",
+    "group": "기술적 분석",
+    "title": "분석기업선정 및 기술적 분석 실습",
+    "order": 3,
+    "max_points": 8,
+    "content": {
+      "icon": "fa-chart-line",
+      "subtitle": "종목 스크리닝부터 매매계획 수립까지",
+      "description": "유동성과 추세가 있는 종목을 고르고, 진입·목표·손절 가격을 수치로 설계합니다.",
+      "theory": [
+        "거래대금·변동성·추세 조건으로 실습 종목을 먼저 좁힙니다.",
+        "진입가, 손절가, 목표가와 포지션 크기를 동시에 정합니다.",
+        "손익비와 승률을 기록해 전략을 검증합니다."
+      ],
+      "tip": "매매 계획은 장중이 아니라 <b>장 시작 전</b> 작성하는 것이 좋습니다.",
+      "code": "entry, stop, target = 71600, 69800, 75200\nrisk = entry - stop\nreward = target - entry\nrr = reward / risk\nposition = 1_000_000 / risk  # 허용 손실 100만원 기준\nprint(f'손익비 {rr:.2f}, 수량 {position:.0f}주')",
+      "sample_data": {
+        "headers": [
+          "항목",
+          "가격",
+          "설정 근거"
+        ],
+        "rows": [
+          [
+            "진입가",
+            "71,600원",
+            "돌파 후 눌림"
+          ],
+          [
+            "손절가",
+            "69,800원",
+            "20일선 이탈"
+          ],
+          [
+            "목표가",
+            "75,200원",
+            "전고점 구간"
+          ]
+        ]
+      },
+      "result": {
+        "value": "2.00 : 1",
+        "label": "예상 손익비",
+        "bars": [
+          [
+            "진입 신뢰도",
+            71
+          ],
+          [
+            "손절 명확성",
+            88
+          ],
+          [
+            "보상 가능성",
+            79
+          ]
+        ]
+      },
+      "explain": "손익비가 2 이상인 계획입니다. 진입 후에는 손절선을 임의로 낮추지 않고, 거래 기록으로 규칙을 검증하세요.",
+      "is_interactive": false
+    }
+  },
+  {
+    "key": "quant-day5",
+    "group": "일자별 학습",
+    "title": "5일차 · 데이터 활용 퀀트 모델링",
+    "order": 0,
+    "max_points": 6,
+    "content": {
+      "icon": "fa-calendar-days",
+      "subtitle": "",
+      "description": "",
+      "theory": [],
+      "tip": "",
+      "code": "",
+      "sample_data": null,
+      "result": null,
+      "explain": "",
+      "is_interactive": true
+    }
+  },
+  {
+    "key": "json-consistency",
+    "group": "분석 도구",
+    "title": "정합성검사",
+    "order": 0,
+    "max_points": 6,
+    "content": {
+      "icon": "fa-shield-halved",
+      "subtitle": "",
+      "description": "",
+      "theory": [],
+      "tip": "",
+      "code": "",
+      "sample_data": null,
+      "result": null,
+      "explain": "",
+      "is_interactive": true
+    }
+  }
+]

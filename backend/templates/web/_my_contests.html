@@ -1,0 +1,112 @@
+{% load form_extras humanize %}{% comment %}
+  내 대회 현황 ★ (F-21 3.1) — 홈에서 가장 중요한 위젯.
+
+  **참가자가 매일 확인해야 하는 것**을 한 곳에 모은다: 순위·기준가·수익률·편입비 +
+  회전율/한도 경고.
+
+  ★★ 여기 있는 숫자는 전부 **정산 잡이 만들어 둔 것을 읽기만** 한다 (F-05 7장).
+    화면이 조회 시점에 다시 계산하면 랭킹 화면과 홈이 서로 다른 숫자를 말한다.
+
+  ★ 폴링 속성이 이 조각에도 있어야 갱신이 이어진다 (`_market.html` 주석 참조).
+{% endcomment %}
+<div id="my-contests"
+     hx-get="{% url 'frag_my_contests' %}"
+     hx-trigger="every 60s [document.visibilityState === 'visible']"
+     hx-swap="outerHTML"
+     class="{% if my_contests %}mb-8{% endif %}">
+
+  {% for card in my_contests %}
+    <section class="card mb-3 p-4">
+
+      {# ── 머리 ──────────────────────────────────────── #}
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-2">
+          <span class="badge-contest">대회</span>
+          <h2 class="text-base font-bold">{{ card.contest.name }}</h2>
+          <span class="num text-xs text-slate-500">{{ card.d_day|d_day }}</span>
+        </div>
+        <span class="text-xs text-slate-400">
+          {% if card.ranking %}{{ card.ranking.date|date:"m/d" }} 기준{% else %}정산 대기{% endif %}
+        </span>
+      </div>
+
+      {% comment %} ── 지표 4종 ───────────────────────────────────
+           모바일에서는 2×2, 넓은 화면에서는 한 줄로 편다. {% endcomment %}
+      <dl class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div class="rounded-lg bg-slate-50 p-3">
+          <dt class="text-[11px] text-slate-500">순위</dt>
+          <dd class="num text-lg font-bold">
+            {% if card.ranking %}
+              {{ card.ranking.rank }}
+              {% if card.rank_delta > 0 %}
+                <span class="text-xs text-up">▲{{ card.rank_delta }}</span>
+              {% elif card.rank_delta < 0 %}
+                <span class="text-xs text-down">▼{{ card.rank_delta|stringformat:"d"|slice:"1:" }}</span>
+              {% endif %}
+            {% else %}—{% endif %}
+          </dd>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <dt class="text-[11px] text-slate-500">기준가 (NAV)</dt>
+          <dd class="num text-lg font-bold">
+            {% if card.ranking %}{{ card.ranking.nav|floatformat:0|intcomma }}{% else %}—{% endif %}
+          </dd>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <dt class="text-[11px] text-slate-500">누적 수익률</dt>
+          <dd class="num text-lg font-bold {% if card.ranking %}{{ card.ranking.cumulative_return_pct|pnl_class }}{% endif %}">
+            {% if card.ranking %}{{ card.ranking.cumulative_return_pct|signed_pct }}{% else %}—{% endif %}
+          </dd>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <dt class="text-[11px] text-slate-500">편입비 · 종목수</dt>
+          <dd class="num text-lg font-bold">
+            {% if card.snapshot %}
+              {{ card.snapshot.invested_ratio_pct|floatformat:1 }}%
+              <span class="text-xs font-normal text-slate-500">· {{ card.snapshot.position_count }}종목</span>
+            {% else %}—{% endif %}
+          </dd>
+        </div>
+      </dl>
+
+      {% comment %} ── 경고 ───────────────────────────────────────
+           F-21 3.1 — 회전율은 노란색, 한도 초과는 빨간색.
+           ★ 타임폴리오도 홈에 이것을 띄운다. 참가자가 대회 화면까지 들어가야
+             알 수 있으면 늦는다. {% endcomment %}
+      {% if card.turnover_warning %}
+        <p class="mt-3 rounded-lg bg-warn-soft px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-300">
+          ⚠️ 금주 회전율 <b class="num">{{ card.turnover.turnover_pct|floatformat:2 }}%</b>
+          (기준 {{ card.turnover_minimum_pct|floatformat:0 }}%) — 위반 {% if card.turnover.is_confirmed %}확정{% else %}예상{% endif %}입니다.
+          {% if not card.turnover.is_confirmed %}
+            {% comment %}
+              WeeklyTurnover 모델 주석이 요구한 안내다. 없으면 월요일마다 문의가 들어온다.
+            {% endcomment %}
+            <span class="block text-amber-700">
+              주가 막 시작한 시점에는 매매가 없어 예상 위반으로 보이는 것이 정상입니다.
+            </span>
+          {% endif %}
+        </p>
+      {% endif %}
+
+      {% if card.has_limit_violation %}
+        <div class="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-danger ring-1 ring-red-200">
+          🚫 한도 초과 상태입니다.
+          {% comment %}
+            ★ 위반 JSONB 는 규칙 종류마다 키가 다르다. 템플릿에서 `default:` 로
+              대체 키를 찾으면 **키가 없는 종류에서 렌더가 통째로 터진다.**
+              서비스 계층이 문장으로 정리해 준 것을 그리기만 한다
+              (web/services.py 의 `violation_lines` 주석 참조).
+          {% endcomment %}
+          <ul class="mt-1 list-disc pl-4">
+            {% for line in card.violation_lines %}<li>{{ line }}</li>{% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      {# ── 빠른 이동 (F-21 3.1) ──────────────────────── #}
+      <p class="mt-3 rounded bg-slate-50 px-2 py-1.5 text-[11px] text-slate-400">
+        주문 · 랭킹 · 포트폴리오 화면은 준비 중입니다.
+      </p>
+    </section>
+  {% endfor %}
+</div>

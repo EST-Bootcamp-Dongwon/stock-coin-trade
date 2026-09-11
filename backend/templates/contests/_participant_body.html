@@ -1,0 +1,165 @@
+{% load form_extras humanize %}{% comment %}
+  참가자 포트폴리오 **본문** (U-02 7장 · A-02 4.2).
+
+  ★ 제목·닫기 버튼은 여기 없다. 이 조각을 두 곳이 함께 쓰기 때문이다 —
+    랭킹 화면의 모달(`_participant_modal.html`)과 주소로 직접 들어온 페이지
+    (`participant.html`). 껍데기만 다르고 내용은 하나여야 두 화면이 갈라지지 않는다.
+
+  ★★ **현금·잔고 절대금액은 넣지 않는다.** 종목·비중·손익률만 공개한다.
+    시작 자본은 어차피 모두 같고, 우리가 비교하려는 것은 운용 결과다.
+
+  ★★ 여기 숫자는 전부 **정산이 만들어 둔 스냅샷**이다 (F-05 7장). "지금 이 순간"
+    을 다시 평가하면 랭킹 표의 편입비와 이 안의 비중이 **같은 화면에서** 서로
+    다른 숫자가 된다.
+{% endcomment %}
+
+{% if not allowed %}
+  {# 공개 범위에 걸렸다 — 왜 못 보는지 적는다 (규약 원칙 2). #}
+  <p class="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+    이 참가자의 포트폴리오는 공개되지 않았습니다.
+    <span class="mt-1 block text-xs text-slate-400">{{ block_reason }}</span>
+  </p>
+
+{% else %}
+
+  {# ── 요약 (금액이 아니라 비율과 개수) ─────────────── #}
+  {% if snapshot %}
+    <dl class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div class="rounded-lg bg-slate-50 p-3">
+        <dt class="text-[11px] text-slate-500">기준가 (NAV)</dt>
+        <dd class="num text-lg font-bold">{{ snapshot.nav|floatformat:2|intcomma }}</dd>
+      </div>
+      <div class="rounded-lg bg-slate-50 p-3">
+        <dt class="text-[11px] text-slate-500">누적 수익률</dt>
+        <dd class="num text-lg font-bold {{ snapshot.cumulative_return_pct|pnl_class }}">
+          {{ snapshot.cumulative_return_pct|signed_pct }}
+        </dd>
+      </div>
+      <div class="rounded-lg bg-slate-50 p-3">
+        <dt class="text-[11px] text-slate-500">편입비</dt>
+        <dd class="num text-lg font-bold">{{ snapshot.invested_ratio_pct|floatformat:1 }}%</dd>
+      </div>
+      <div class="rounded-lg bg-slate-50 p-3">
+        <dt class="text-[11px] text-slate-500">보유 종목</dt>
+        <dd class="num text-lg font-bold">{{ snapshot.position_count }}</dd>
+      </div>
+    </dl>
+  {% endif %}
+
+  <p class="mb-4 rounded bg-slate-50 px-3 py-2 text-[11px] text-slate-400">
+    Intraday Return · Daily NAV 차트는 준비 중입니다. 현금·잔고 금액은 공개되지 않습니다.
+  </p>
+
+  {# ── 보유 종목 (전체) ────────────────────────────── #}
+  <h3 class="mb-2 text-sm font-semibold">보유 종목 <span class="text-slate-400">(전체)</span></h3>
+  {% if holdings %}
+    {# 넓은 표는 가로 스크롤 컨테이너에 담는다 — 페이지 전체가 가로로 밀리면 안 된다. #}
+    <div class="mb-5 overflow-x-auto rounded-lg border border-slate-200">
+      <table class="w-full min-w-[560px] text-sm">
+        <thead class="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+          <tr>
+            <th scope="col" class="px-3 py-2 text-left font-medium">종목</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">종가</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">평단</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">비중</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">손익률</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for holding in holdings %}
+            <tr>
+              <td class="px-3 py-2">
+                <span class="font-medium">{{ holding.name|default:holding.symbol }}</span>
+                <span class="num ml-1 text-xs text-slate-400">{{ holding.symbol }}</span>
+              </td>
+              <td class="num px-3 py-2 text-right">{{ holding.close_price|floatformat:0|intcomma }}</td>
+              <td class="num px-3 py-2 text-right">{{ holding.avg_price|floatformat:0|intcomma }}</td>
+              <td class="num px-3 py-2 text-right">{{ holding.weight_pct|floatformat:1 }}%</td>
+              <td class="num px-3 py-2 text-right {{ holding.pnl_pct|pnl_class }}">
+                {{ holding.pnl_pct|signed_pct }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="mb-5 rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400">
+      아직 정산된 보유 종목이 없습니다.
+    </p>
+  {% endif %}
+
+  {# ── 수익 종목 (전체) ────────────────────────────── #}
+  <h3 class="mb-2 text-sm font-semibold">
+    수익 종목 <span class="text-slate-400">(전체 · 실현 + 평가 손익)</span>
+  </h3>
+  {% if profit_rows %}
+    <div class="mb-5 overflow-x-auto rounded-lg border border-slate-200">
+      <table class="w-full min-w-[420px] text-sm">
+        <thead class="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+          <tr>
+            <th scope="col" class="px-3 py-2 text-left font-medium">종목</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">손익</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">수익 / 총수익</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for row in profit_rows %}
+            <tr>
+              <td class="px-3 py-2">
+                <span class="font-medium">{{ row.name|default:row.symbol }}</span>
+                <span class="num ml-1 text-xs text-slate-400">{{ row.symbol }}</span>
+              </td>
+              <td class="num px-3 py-2 text-right {{ row.pnl|pnl_class }}">{{ row.pnl|intcomma }}</td>
+              <td class="num px-3 py-2 text-right text-slate-500">
+                {% if row.share_pct %}{{ row.share_pct|floatformat:1 }}%{% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="mb-5 rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400">
+      아직 손익이 기록된 종목이 없습니다.
+    </p>
+  {% endif %}
+
+  {# ── 거래 이력 (v2.0 신규 — 언제 사고팔았는지까지 공개) ── #}
+  <h3 class="mb-2 text-sm font-semibold">
+    거래 이력 <span class="text-slate-400">(최근 {{ orders|length }}건)</span>
+  </h3>
+  {% if orders %}
+    <div class="overflow-x-auto rounded-lg border border-slate-200">
+      <table class="w-full min-w-[480px] text-sm">
+        <thead class="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+          <tr>
+            <th scope="col" class="px-3 py-2 text-left font-medium">시각</th>
+            <th scope="col" class="px-3 py-2 text-left font-medium">종목</th>
+            <th scope="col" class="px-3 py-2 text-left font-medium">구분</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">수량</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">체결가</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for order in orders %}
+            <tr>
+              <td class="num px-3 py-2 text-xs text-slate-500">{{ order.created_at|date:"m/d H:i" }}</td>
+              <td class="num px-3 py-2">{{ order.symbol }}</td>
+              <td class="px-3 py-2">
+                <span class="{{ order.side|order_side_class }}">{{ order.get_side_display }}</span>
+              </td>
+              <td class="num px-3 py-2 text-right">{{ order.filled_qty|floatformat:"-4" }}</td>
+              <td class="num px-3 py-2 text-right">{{ order.avg_fill_price|floatformat:0|intcomma }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400">
+      아직 체결된 주문이 없습니다.
+    </p>
+  {% endif %}
+
+{% endif %}

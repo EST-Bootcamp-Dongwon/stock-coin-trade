@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}{{ participation.nickname }} · {{ contest.name }} 랭킹{% endblock %}
+
+{% comment %} ── 참가자 포트폴리오 (주소로 직접 들어온 경우) ─────────────────
+
+  랭킹 화면에서는 같은 내용이 모달로 뜬다(`_participant_modal.html`). 이 페이지는
+  **주소를 직접 치거나 링크를 공유받은 사람**을 위한 것이다.
+
+  ★ 규약 — "주소창에 직접 URL 을 쳐도 화면이 나와야 한다"(core/htmx.py `is_htmx`).
+    HTMX 전용 조각만 만들면 공유된 링크가 깨진 화면을 준다.
+{% endcomment %}
+
+{% block content %}
+<nav class="mb-2 text-xs text-slate-400">
+  <a href="{% url 'contests:list' %}" class="hover:text-brand hover:underline">대회</a>
+  <span class="mx-1">/</span>
+  <a href="{% url 'contests:detail' contest.slug %}" class="hover:text-brand hover:underline">{{ contest.name }}</a>
+  <span class="mx-1">/</span>
+  <a href="{% url 'contests:ranking' contest.slug %}" class="hover:text-brand hover:underline">랭킹</a>
+  <span class="mx-1">/</span>{{ participation.nickname }}
+</nav>
+
+<div class="mb-5 flex flex-wrap items-center gap-2">
+  <h1 class="text-2xl font-bold">{{ participation.nickname }}</h1>
+  {% if not participation.is_ranked %}
+    <span class="badge-stale">순위 제외</span>
+  {% endif %}
+  {% if snapshot %}
+    <span class="text-xs text-slate-400">{{ snapshot.date|date:"Y.m.d" }} 정산 기준</span>
+  {% endif %}
+</div>
+
+{% include "contests/_participant_body.html" %}
+
+<p class="mt-6">
+  <a href="{% url 'contests:ranking' contest.slug %}" class="btn-ghost btn-sm">← 랭킹으로</a>
+</p>
+{% endblock %}

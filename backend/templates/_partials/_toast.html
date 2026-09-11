@@ -1,0 +1,30 @@
+{% comment %}
+  토스트 컨테이너 (U-01 4장 · 01-HTMX 규약 4.1).
+
+  들어오는 길이 두 개다.
+
+    ① Django 메시지     `messages.success(request, "…")` → 페이지 이동 후에 뜬다
+                        (로그인·가입·로그아웃)
+    ② HTMX 이벤트       `HX-Trigger: {"toast": {...}}` → 화면이 그대로일 때 뜬다
+                        (주문 체결·계좌 초기화). static/js/app.js 가 여기에 꽂는다
+
+  ★ 두 경로를 **같은 컨테이너**에 모은다. 알림이 화면 여기저기서 다른 모양으로
+    뜨는 것을 막으려면 출구가 하나여야 한다.
+
+  ★ `aria-live="polite"` — 스크린리더가 토스트를 읽어 준다. 시각 효과만 있는
+    알림은 보이지 않는 사용자에게는 존재하지 않는 것과 같다.
+{% endcomment %}
+<div id="toast-container"
+     class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex flex-col items-center gap-2 px-4"
+     role="status" aria-live="polite">
+  {% if messages %}
+    {% for message in messages %}
+      <div class="toast pointer-events-auto w-full max-w-md rounded-lg px-4 py-3 text-sm shadow-lg
+                  {% if message.tags == 'error' %}bg-danger text-white
+                  {% elif message.tags == 'warning' %}bg-warn text-white
+                  {% else %}bg-slate-900 text-white{% endif %}">
+        {{ message }}
+      </div>
+    {% endfor %}
+  {% endif %}
+</div>

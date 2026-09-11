@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}회원가입 · 모의투자 대회 플랫폼{% endblock %}
+
+{% block content %}
+<div class="mx-auto w-full max-w-sm py-6 sm:py-12">
+  <h1 class="mb-1 text-2xl font-bold">회원가입</h1>
+  <p class="mb-6 text-sm text-slate-500">이메일 인증 없이 바로 시작할 수 있습니다.</p>
+
+  <div class="card p-5">
+    {% include "accounts/_register_form.html" %}
+  </div>
+
+  <p class="mt-4 text-center text-sm text-slate-600">
+    이미 계정이 있으신가요?
+    <a href="{% url 'account:login' %}{% if next %}?next={{ next|urlencode }}{% endif %}"
+       class="font-medium text-brand hover:underline">로그인</a>
+  </p>
+</div>
+{% endblock %}

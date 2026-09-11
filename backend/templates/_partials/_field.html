@@ -1,0 +1,28 @@
+{% load form_extras %}{% comment %}
+  입력칸 한 줄 — 라벨 · 입력 · 도움말 · 에러.
+
+  ★ **필드 단위 에러**가 F-01 3.1 이 v1.0 에서 승계하기로 한 패턴이다.
+    v1.0 은 `{"field": "email", "error": "…"}` 를 손으로 만들어 보냈고, Django 폼은
+    `form.errors` 가 이미 같은 구조다. 여기서는 그것을 해당 입력칸 **바로 아래**에 그린다.
+    폼 위에 에러를 몰아서 띄우면 어느 칸이 문제인지 눈으로 찾아야 한다.
+
+  쓰는 법:  {% include "_partials/_field.html" with field=form.email %}
+{% endcomment %}
+<div class="mb-4">
+  <label for="{{ field.id_for_label }}" class="field-label">
+    {{ field.label }}
+    {% if field.field.required %}<span class="text-danger" aria-hidden="true">*</span>{% endif %}
+  </label>
+
+  {# 에러가 있으면 테두리 클래스를 덧입혀 렌더한다 (core/templatetags/form_extras.py) #}
+  {{ field|with_error }}
+
+  {% if field.help_text %}
+    <p class="mt-1 text-xs text-slate-500">{{ field.help_text }}</p>
+  {% endif %}
+
+  {% for error in field.errors %}
+    {# role="alert" — 스크린리더가 즉시 읽는다 #}
+    <p class="field-error" role="alert">{{ error }}</p>
+  {% endfor %}
+</div>

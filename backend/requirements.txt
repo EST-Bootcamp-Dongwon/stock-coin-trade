@@ -1,0 +1,32 @@
+# ── Django 코어 ────────────────────────────────────────────────
+asgiref==3.12.1
+Django==5.2.17
+djangorestframework==3.18.0
+pgvector==0.5.0
+pillow==12.3.0
+psycopg==3.3.4
+psycopg-binary==3.3.4
+python-dotenv==1.2.2
+sqlparse==0.5.5
+typing_extensions==4.16.0
+
+# ── 정적 파일 서빙 (U-01 · Vercel 배포) ────────────────────────
+# whitenoise — Django 프로세스가 CSS·JS 를 직접 서빙한다. 서버리스에는 우리가
+#              세울 Nginx 가 없어서 필요하다. 순수 파이썬이라 번들이 안 커진다.
+whitenoise==6.11.0
+
+# ── 외부 시장 데이터 (F-16 · 05 문서 5.3) ──────────────────────
+# pykrx  — 종목 마스터·영업일. ★ 2026-08-13 부터 KRX 데이터포털이 로그인을
+#          요구한다. backend/.env 에 KRX_ID · KRX_PW 가 있어야 동작한다.
+#          import 하는 순간 KRX 에 로그인하므로 지연 import 로만 쓴다
+#          (market/services.py 의 _load_pykrx 참조).
+# requests — 업비트 공개 API. pykrx 도 내부적으로 쓴다.
+pykrx==1.2.8
+requests==2.34.2
+
+# ── 임베딩 (E-06 2.5) ──────────────────────────────────────────
+# fastembed — 지식 문서 벡터. onnxruntime 을 함께 끌어와 200MB 가량 된다.
+#             모델(paraphrase-multilingual-MiniLM-L12-v2, 384차원)은 첫 실행에
+#             약 220MB 를 내려받아 .fastembed-cache/ 에 둔다.
+#             ★ 로컬 CPU 로 돌린다 — 시드 21건에는 GPU 이득이 없다 (규약 8.2).
+fastembed==0.8.0

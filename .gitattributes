@@ -1,0 +1,54 @@
+# ─────────────────────────────────────────────────────────────
+# 줄바꿈 정책 — Windows · WSL(Ubuntu) 양쪽에서 작업하기 위한 설정
+#
+# Windows 는 core.autocrlf=true, WSL(리눅스)은 기본 꺼짐이라
+# 같은 저장소를 양쪽에서 열면 한쪽에서만 "전체 파일 수정됨"으로 보인다.
+# 이 파일은 git 설정보다 우선하므로 양쪽 동작을 일치시킨다.
+# 부모 저장소(EST-Camp-AI-Quant)와 동일한 정책을 적용한다.
+#
+# 컨테이너 관점에서도 LF 가 맞다. 이 프로젝트는 Docker Compose 3-컨테이너 구성이라
+# CRLF 가 섞인 셸 스크립트(scripts/ec2/deploy.sh 등)를 이미지에 넣으면
+# `bash: \r: command not found` 로 실패한다.
+#
+# ※ 이 파일은 강사님 원본(edumgt/stock-coin-trade)에는 없다. 우리 작업본에만 추가한 것이라
+#   upstream merge 시 충돌하지 않는다. 원본에 CRLF 로 커밋된 파일은 없음을 확인했으므로
+#   (2026-08-04) 예외 목록도 비어 있다.
+# ─────────────────────────────────────────────────────────────
+
+* text=auto eol=lf
+
+*.sh            text eol=lf
+*.py            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.md            text eol=lf
+*.txt           text eol=lf
+*.html          text eol=lf
+*.css           text eol=lf
+*.js            text eol=lf
+*.json          text eol=lf
+*.sql           text eol=lf
+*.conf          text eol=lf
+*.svg           text eol=lf
+Dockerfile      text eol=lf
+Dockerfile.*    text eol=lf
+*.Dockerfile    text eol=lf
+.dockerignore   text eol=lf
+.env.example    text eol=lf
+
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.woff          binary
+*.woff2         binary
+*.ttf           binary
+*.otf           binary
+*.pdf           binary
+*.zip           binary
+*.tar           binary

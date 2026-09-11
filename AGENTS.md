@@ -1,0 +1,175 @@
+# AGENTS.md — `stock-coin-trade` 작업 규칙
+
+> 이 저장소에서 AI 에이전트(Claude Code · Cursor · Windsurf · Cline)가 지켜야 할 규칙의 **정본**이다.
+> Claude Code 는 이 파일을 직접 읽지 않는다 — [`CLAUDE.md`](CLAUDE.md) 가 `@AGENTS.md` 로 임포트한다.
+>
+> 상위 규칙: 모노레포 루트 `EST-Camp-AI-Quant/AGENTS.md` · 사용자 전역 `~/.claude/CLAUDE.md`
+> 충돌하면 **상위가 이긴다.** 여기에는 이 저장소에만 해당하는 것을 적는다.
+>
+> **현재 어디까지 왔는지는 [`세션-시작-프롬프트.md`](세션-시작-프롬프트.md) 가 답한다.**
+
+---
+
+## 1. 이 저장소는 무엇인가
+
+**키움증권 모의투자 대회용 — 섹터 ETF 레이더.**
+"지금 어느 섹터가 유망한가"를 **근거와 함께** 판단하는 Streamlit 대시보드다.
+개발은 소유자 1인, 사용은 팀 7명. 비용 0원.
+
+| | 무엇 |
+|---|---|
+| **v3.0** ★ 현재 | `streamlit_app.py` · `sector/` · `batch/` · `dashboard/` — Streamlit Community Cloud |
+| **v2.0** 동결 | `backend/` Django 5.2.17 + DRF — 모의투자 플랫폼. **개발하지 않는다** |
+
+### 🔒 "동결" 의 뜻 — 방치가 아니다
+
+`backend/`(26,597줄 · 테스트 384건)는 **개발하지 않으나 계속 돌아야 한다.**
+
+```bash
+cd backend && .venv/bin/pytest          # 골든 23건 · DB 불필요 ← 항상 통과해야 한다
+```
+
+이 한 줄을 M1·M7·M14 의 완료 조건에 넣었다. 넣지 않으면 이 규칙이 거짓말이 된다.
+동결 해제 시점은 대회 종료 후에 다시 판단한다. → [ADR-SC-0005](docs/decisions/0005-산출물-재지정과-이력-재시작.md)
+
+### 이력은 2026-09-11 에 재시작했다
+
+강사님 원본(`edumgt/stock-coin-trade`)의 fork 로 출발했으나, 목적이 바뀌면서
+**orphan 으로 이력을 다시 시작하고 강사님 코드를 새 이력에 담지 않았다.**
+그 이유(시크릿·라이선스·타인 커밋)와 백업 위치는 ADR-SC-0005 에 있다.
+
+- 옛 이력: `stock-coin-trade-fork-history-20260911.bundle` (모노레포 상위 폴더, gitignore)
+- 강사님 원본: `upstream` 원격(fetch 전용) · 모노레포 `learning/th03-stock-coin-trade/lecture/`
+- ⚠️ **ADR-SC-0001(fork 계보 유지)·0002(체결엔진 원본)는 폐기됐다.** 그 문서를 근거로 삼지 마라.
+
+---
+
+## 2. 원격과 계정 ★ 가장 조심할 곳
+
+| 원격 | 대상 | 용도 |
+|---|---|---|
+| `origin` | `gitlab.com/dev-dongwon05253/stock-coin-trade` | **정본.** 평소 push 대상. ⚠️ `est-` 접두사 없음 |
+| `github-est` | `github.com/EST-Bootcamp-Dongwon/stock-coin-trade` | 동시 push 유지 (⚠️ Flagged 계정) |
+| `upstream` | `github.com/edumgt/stock-coin-trade` | fetch 전용. push URL 차단됨 |
+| *(로컬 원격 없음)* | `github.com/devlee328288/stock-coin-trade` | 🔒 **GitLab push-mirror 로만 간다** |
+
+```bash
+git push origin main        # GitLab — 미러가 devlee328288 GitHub 을 따라온다
+git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패해도 무방
+```
+
+### 🔒 지켜야 할 것
+
+1. 🔒 **`devlee328288` 원격을 로컬 git 에 절대 추가하지 않는다.**
+   GitLab 이 자기 서버에서 devlee328288 토큰으로 push 하므로 **오push 경로가 존재하지 않는다.**
+   규칙으로 막으면 언젠가 어기지만, 없는 경로는 밟을 수 없다.
+2. 🔒 **모든 git·gh 작업 전에 `gh auth status` 로 활성 계정을 확인하고 보고한다.**
+   사용자는 `dev-dongwon05253`(개인 · Flagged)과 `devlee328288`(팀 · 공개)을 **오간다.**
+   세션 중간에도 바뀐다.
+3. 🔒 **세션 마무리 복붙 프롬프트 끝에 항상 현재 `gh` 활성 계정을 적는다.**
+4. ⚠️ **push mirror 는 force push 로 동작한다.** GitHub 미러에서 직접 커밋하면 사라진다.
+   Issues·Projects·Wiki 를 끄고 README 최상단에 "읽기 전용 미러"를 명시한다.
+5. 되돌리기는 `git revert`. **`reset --hard` · force push · 히스토리 재작성은 사용자 승인 후에만.**
+
+→ [ADR-SC-0008](docs/decisions/0008-배포-streamlit-전환과-원격-재구성.md)
+
+---
+
+## 3. 절대 제약 — 이걸 어기는 제안은 하지 않는다
+
+| # | 제약 | 근거 |
+|---|---|---|
+| 1 | **LLM 유료 API 비용 0원** | 강사님 방침 |
+| 2 | **매매 신호 생성 경로에 LLM 금지** | 비결정성 · 재현 불가 · 사전학습 룩어헤드 오염 |
+| 3 | RAG·Agent 는 신호 경로와 **물리적으로 분리된 별도 서비스** | 2번의 귀결 |
+| 4 | AWS 등 클라우드 인프라 미사용 | 강사님 방침 |
+| 5 | Docker 이미지 용량 최소화 | 로컬 디스크 제약 |
+| 6 | **CI/CD 를 필수 경로에 두지 않음** | GitHub 계정 리스크. 검증은 로컬에서 동일하게 돌아야 한다 |
+| 7 | **헤비 프론트 프레임워크 금지** (Next.js · React SPA · 번들러) | 강사님 방침 |
+| **8** | 🔴 **값을 지어내지 않는다** — 취득 실패는 예외이거나 "없음" 표시 | [ADR-SC-0007](docs/decisions/0007-값을-지어내지-않는다.md) |
+| **9** | 🔴 **국내 데이터만.** 미국 주식·해외 원천 미사용 | 대회가 국내장 |
+| **10** | 🔴 **KRX 원천 데이터를 저장소·HF 에 올리지 않는다.** 파생·집계값만 | [ADR-SC-0006](docs/decisions/0006-krx-데이터-제3자-제공-금지.md) · 약관 제11조② |
+| **11** | 🔴 **`gh` 활성 계정을 작업 전마다 확인한다** | 2장 |
+| **12** | 🔴 **화면에 "한국거래소 통계정보" 출처를 표시한다** | 약관 제10조③ |
+
+### 데이터 취득 경로 — 조사로 확정된 것 (2026-09-11)
+
+| 경로 | 판정 |
+|---|---|
+| **KRX Open API** `data-dbg.krx.co.kr/svc/apis/` | ✅ **주 경로.** `AUTH_KEY` 헤더 · 인증키 + **개별 API 승인** · 키당 일 10,000회 |
+| **KIS 한국투자증권** | ✅ **준실시간 시세.** `MARKET_DIV_CODE="J"` 가 ETF 포함 |
+| DART OpenAPI · ECOS · 언론사 RSS | ✅ 공식 |
+| 네이버 검색 API | ⚠️ 2026-09-07 특약 — **저장·가공·재정렬 금지**, 보관 21일. **조회 시점 링크만** |
+| **`pykrx`** | 🔴 **쓰지 않는다.** KRX FAQ 가 이름을 지목해 IP 차단 경고 |
+| `finance.naver.com` · `api.finance.naver.com` · `m.stock.naver.com` | 🔴 robots `Disallow: /` |
+| `polling.finance.naver.com` | 🔴 robots 는 404지만 **네이버 약관이 봇 자동수집 금지** |
+| yfinance · 해외 데이터 | 🔴 제약 9 |
+
+### 보안 — Public 저장소다
+
+- 🔒 **`.env` · KIS `appkey`/`appsecret` · KRX·HF·DART 키를 커밋하지 않는다.**
+  `.gitignore` 가 `.env*` 를 막고 `!.env.example` 로 예시만 푼다. **이 순서를 뒤집지 마라.**
+- 🔒 **`.gitignore` 에 `.streamlit/secrets.toml` 을 별도로 넣는다** — `.env*` 패턴이 못 막는다.
+- 🔒 **앱에 주는 HF 토큰은 read 전용.** 쓰기가 필요한 곳(`team-notes`)은 **그 저장소 하나에만**
+  권한이 있는 fine-grained 토큰을 따로 만든다.
+- `.env` 가 둘이다 — 루트 `.env`(v3.0·v1.0) / `backend/.env`(v2.0 Django 가 읽는 유일한 것).
+- push 전 `git status --short` 로 PDF·ZIP·데이터 원본 혼입을 확인한다.
+
+---
+
+## 4. 코딩 규약
+
+- Python 3.12 · 들여쓰기 **4 spaces**(파이썬) / 2 spaces(설정 파일) · ruff line-length 100
+- 모든 대화·주석·문서는 **한국어**. 변수·함수명만 영어(`snake_case`)
+- 날짜·시간은 **KST** 기준으로 사고하되 저장은 UTC. 영업일 키는 `bas_dd` (`"YYYYMMDD"` 문자열 —
+  사전순 = 날짜순이라 `<=` 비교가 그대로 통한다)
+- 금액은 **정수(원)**, 비율은 **bp 정수 + `Decimal`**. `float` 금지 — 누적 반올림이 샌다
+  - 스코어링 중간 계산은 numpy float 를 쓰되 **저장·스냅샷 직전에 bp 정수로 양자화**한다
+- 복잡한 비즈니스 로직에는 **왜** 를 적는 한국어 주석을 단다. 무엇을 하는지는 코드가 말한다
+- 커밋 메시지: `<scope>: <동사원형 요약>` (예: `sector: add momentum axis`)
+- 문서 문체: 개조식("-다"). 튜토리얼만 "-습니다"
+- 다이어그램은 Mermaid `flowchart` + `subgraph`. **`C4Context`/`C4Container` 문법 금지**
+  (GitHub 이 렌더링하지 못한다)
+- ADR 은 `docs/decisions/NNNN-title.md`, 참조 키는 **`ADR-SC-NNNN`**
+
+---
+
+## 5. 테스트 — 러너가 셋이다. 섞지 마라
+
+| 러너 | 대상 | 언제 |
+|---|---|---|
+| `pytest` (저장소 루트) | `sector/scoring_golden_test.py` — 순수 함수 · **DB 미사용** | v3.0 정본 |
+| `cd backend && .venv/bin/pytest` | `trading/golden_test.py` **23건** | **동결 회귀.** 항상 통과해야 한다 |
+| `cd backend && manage.py test` | `*/tests.py` (Django `TestCase` · DB 사용) | 동결 회귀 |
+
+- 🔒 **루트 `pytest.ini` 에 `DJANGO_SETTINGS_MODULE` 을 넣지 않는다.** `testpaths = sector`.
+- 🔒 **파일명이 `scoring_golden_test.py` 인 것은 우연이 아니다** — pytest 의 `*_test.py` 는 줍고
+  Django 의 `test*.py` 는 안 줍는다. `test_scoring.py` 로 바꾸면 양쪽이 다 주워
+  `snapshot` 픽스처가 없다며 깨진다.
+- 🔒 **골든 테스트를 먼저, 튜닝을 나중에.** 값이 바뀐 이유를 설명할 수 있을 때만 `--snapshot-update`.
+- 테스트는 **언제 돌려도 같은 답**을 내야 한다. 시계는 입력이지 환경이 아니다.
+- 🔒 **`test_asof_monotone`** — `data[:T+30]` 으로 계산한 `score(T)` 와 `data[:T]` 로 계산한
+  값이 **정확히 같아야 한다.** 이 한 줄이 룩어헤드를 구조적으로 잡는다.
+- 🔒 **픽스처에 실제 KRX 데이터를 커밋하지 않는다.** 합성 데이터를 쓴다 (제약 10).
+
+---
+
+## 6. 이미 확정된 것 — 다시 논의하지 않는다
+
+- **섹터는 2계층이다** — GICS 11 대분류(상위) + 한국 테마 ETF(하위). 각 섹터를
+  **ETF 렌즈**와 **구성종목 렌즈** 둘로 본다. 🔒 **갈라지면 갈라진 채로 보여준다.** 평균 내지 않는다
+- **스코어링은 4축이다** — 모멘텀 35 / 자금흐름 30 / 폭 20 / 밸류 15.
+  🔒 **거래대금을 점수에 넣지 않는다** (Lee & Swaminathan 2000: 고회전은 오히려 미래 수익률이
+  낮다). 거래대금은 **유동성 게이트**로만 쓴다 — 일평균 1억 미만이면 경고 배지
+- **뉴스·공시로 관심 축을 만들지 않는다.** 네이버 특약이 저장·가공을 금지하고, DART 공시 건수는
+  정기보고서 계절성이 지배하며 유상증자(악재)와 공급계약(호재)이 같은 점수가 된다.
+  **부호가 섞인 지표는 축이 될 수 없다.** 뉴스·공시는 **타임라인 맥락**으로만 쓴다
+- **자금흐름 축은 ETF 상장좌수(`LIST_SHRS`) 변화만 본다.** 순자산총액은 좌수 × NAV 라
+  NAV 변화를 모멘텀 축과 이중 계산하게 된다
+- **섹터 구성종목은 `sector/config/sectors.yaml` 에 사람이 손으로 적는다.**
+  KRX Open API 에 지수 구성종목·ETF PDF 가 없다. 🔒 **모든 섹터에 `note`(왜 이렇게 묶었나)를
+  1줄 이상 쓴다** — 근거 없는 묶음을 막는 게이트다
+- **Supabase 를 쓰지 않는다.** 무료 티어 7일 무활동 pause 가 치명적이다
+- **Vercel 연동은 해제됐다.** `api/`·`vercel.json` 코드는 보존 — 되살리려면 연동만 다시 건다
+- **팀원은 개발자가 아니라 사용자다.** 설치 0, URL 하나. 화면이 용어를 설명해야 하고
+  **"과거 데이터의 요약이다. 투자 권유가 아니다"** 를 상시 표시한다

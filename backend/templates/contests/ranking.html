@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% load form_extras humanize %}
+
+{% block title %}{{ contest.name }} 랭킹 · 모의투자 대회 플랫폼{% endblock %}
+{% block description %}{{ contest.name }} 참가자 순위와 포트폴리오. 전 참가자의 보유 종목이 공개됩니다.{% endblock %}
+
+{% comment %} ── 대회 랭킹 (U-02 6장) ───────────────────────────────────────
+
+  탭 3종(수익률 순위 · Top Pick · 포트폴리오 분석) 중 **수익률 순위**만 이번에
+  만든다. 나머지 둘은 준비 중임을 화면에 적어 둔다 (규약 8.5 — 막다른 길 금지).
+
+  ★ 안내문 3줄은 U-02 6.2 가 **그대로 넣으라고** 못박은 문구다. 특히 첫 줄은
+    v2.0 의 차별점이다 — 벤치마크는 상위 10명만 공개하고 50등 이후는 조회조차
+    못 했다. 우리는 전 참가자를 공개한다.
+{% endcomment %}
+
+{% block content %}
+
+{# ── 헤더 ────────────────────────────────────────────────── #}
+<div class="mb-4">
+  <nav class="mb-2 text-xs text-slate-400">
+    <a href="{% url 'contests:list' %}" class="hover:text-brand hover:underline">대회</a>
+    <span class="mx-1">/</span>
+    <a href="{% url 'contests:detail' contest.slug %}" class="hover:text-brand hover:underline">{{ contest.name }}</a>
+    <span class="mx-1">/</span>랭킹
+  </nav>
+
+  <div class="flex flex-wrap items-center justify-between gap-2">
+    <div class="flex flex-wrap items-center gap-2">
+      <h1 class="text-2xl font-bold">랭킹</h1>
+      <span class="badge badge-contest">{{ contest.get_status_display }}</span>
+    </div>
+
+    {% if my_row %}
+      {% comment %}
+        "내 순위로" — 목록이 100명이 넘어가면 스크롤로 자기를 찾는 것이 일이다.
+        `#my-rank` 는 표 안의 내 행이 달고 있는 id 다 (`_ranking_table.html`).
+      {% endcomment %}
+      <a href="#my-rank" class="btn-ghost btn-sm">
+        내 순위로
+        <span class="num ml-1 font-semibold">
+          {% if my_row.ranking.rank %}{{ my_row.ranking.rank }}위{% else %}순위 제외{% endif %}
+        </span>
+      </a>
+    {% endif %}
+  </div>
+</div>
+
+{# ── 탭 (U-02 6.1) ───────────────────────────────────────── #}
+<nav class="mb-4 flex gap-1 border-b border-slate-200" aria-label="랭킹 보기">
+  <span aria-current="page"
+        class="-mb-px border-b-2 border-brand px-4 py-2 text-sm font-medium text-brand">수익률 순위</span>
+  <span class="-mb-px cursor-not-allowed border-b-2 border-transparent px-4 py-2 text-sm text-slate-300"
+        title="아직 준비 중인 화면입니다">Top Pick <span class="text-[10px]">준비 중</span></span>
+  <span class="-mb-px cursor-not-allowed border-b-2 border-transparent px-4 py-2 text-sm text-slate-300"
+        title="아직 준비 중인 화면입니다">포트폴리오 분석 <span class="text-[10px]">준비 중</span></span>
+</nav>
+
+{% comment %} ── 안내문 (U-02 6.2 — 문구 그대로) ───────────────────── {% endcomment %}
+<ul class="mb-4 space-y-1 rounded-lg bg-slate-50 px-4 py-3 text-xs text-slate-600">
+  <li>※ 전 참가자의 보유 종목과 수익 종목이 공개됩니다.</li>
+  <li>※ [순위] : 수익률 순위. 최종 운영 능력 평가와는 무관</li>
+  <li>※ [액티브] : 주별 회전율 5% 이상 유지</li>
+</ul>
+
+{% comment %}
+  ★ 프래그먼트를 감싸는 <div> 를 추가하지 않는다. 조각의 바깥 요소가 이미
+    `id="ranking-table"` 을 갖고 있어, 한 겹 더 감싸면 같은 id 가 문서에 둘 생긴다.
+{% endcomment %}
+{% include "contests/_ranking_table.html" %}
+
+{% comment %} ── 참가자 상세 모달이 들어올 자리 ────────────────────────
+     ★ 비워 둔다. [열기] 버튼이 `hx-target="#participant-modal"` 로 여기를 채운다.
+       모달을 미리 다 그려 두면 참가자 100명분 HTML 이 첫 응답에 실린다.
+{% endcomment %}
+<div id="participant-modal"></div>
+
+{% endblock %}

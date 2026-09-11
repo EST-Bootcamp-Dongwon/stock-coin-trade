@@ -1,0 +1,40 @@
+{% comment %}
+  참가자 상세 **모달 껍데기** (U-02 7장). 내용은 `_participant_body.html` 이다.
+
+  ★ **닫기는 Alpine 이 한다.** 서버에 물어볼 것이 없는 열고 닫기는 Alpine 의
+    몫이라는 것이 이 프로젝트의 관례다(`_partials/_header.html` 의 드롭다운과 같다).
+    닫으려고 서버를 한 번 더 왕복하면 서버리스 환경에서 그대로 비용이 된다.
+
+  ★ `x-cloak` 은 Alpine 이 붙기 전 한순간 모달이 번쩍이는 것을 막는다
+    (`static/css/app.src.css` 가 `display:none !important` 로 정의해 둔다).
+{% endcomment %}
+<div x-data="{ open: true }"
+     x-show="open"
+     x-cloak
+     x-transition.opacity
+     @click.self="open = false"
+     @keydown.escape.window="open = false"
+     class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:p-8"
+     role="dialog" aria-modal="true" aria-label="참가자 포트폴리오">
+
+  <div class="card w-full max-w-4xl">
+
+    <div class="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="text-base font-bold">{{ participation.nickname }}</h2>
+        {% if not participation.is_ranked %}
+          <span class="badge-stale">순위 제외</span>
+        {% endif %}
+        {% if snapshot %}
+          <span class="text-xs text-slate-400">{{ snapshot.date|date:"Y.m.d" }} 정산 기준</span>
+        {% endif %}
+      </div>
+      <button type="button" class="btn-ghost btn-sm shrink-0"
+              @click="open = false" aria-label="닫기">✕</button>
+    </div>
+
+    <div class="max-h-[75vh] overflow-y-auto p-4">
+      {% include "contests/_participant_body.html" %}
+    </div>
+  </div>
+</div>

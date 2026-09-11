@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% load form_extras humanize %}
+
+{% block title %}{{ contest.name }} 참가 신청 · 모의투자 대회 플랫폼{% endblock %}
+
+{% comment %} ── 참가 신청 (F-02 6장 · 화면 목록 #8) ─────────────────────────
+
+  받는 것은 두 가지뿐이다 — **별칭 + 규칙 동의**. 나머지(대회 계좌·시작 자본·
+  참가 상태)는 전부 서버가 정한다.
+
+  ★ 규칙 요약을 신청 화면에도 다시 보여준다. "동의합니다" 를 누르기 전에
+    무엇에 동의하는지 같은 화면에 있어야 한다 — 상세 화면으로 돌아가서 읽고
+    오라고 하면 아무도 읽지 않는다.
+{% endcomment %}
+
+{% block content %}
+<div class="mx-auto w-full max-w-2xl py-2">
+
+  <nav class="mb-2 text-xs text-slate-400">
+    <a href="{% url 'contests:list' %}" class="hover:text-brand hover:underline">대회</a>
+    <span class="mx-1">/</span>
+    <a href="{% url 'contests:detail' contest.slug %}" class="hover:text-brand hover:underline">{{ contest.name }}</a>
+    <span class="mx-1">/</span>참가 신청
+  </nav>
+
+  <h1 class="mb-1 text-2xl font-bold">{{ contest.name }} 참가 신청</h1>
+  <p class="mb-5 text-sm text-slate-500">
+    {{ contest.start_date|date:"Y.m.d" }} ~ {{ contest.end_date|date:"Y.m.d" }}
+    <span class="mx-1 text-slate-300">·</span>
+    시작 자본 <b class="num">{{ contest.initial_capital|intcomma }}</b>원
+    <span class="mx-1 text-slate-300">·</span>
+    신청 마감 <b class="num">{{ entry_deadline|date:"Y.m.d" }}</b>
+    {% if capacity_left is not None %}
+      <span class="mx-1 text-slate-300">·</span>
+      남은 자리 <b class="num">{{ capacity_left }}</b>명
+    {% endif %}
+  </p>
+
+  {# ── 규칙 요약 ──────────────────────────────────────── #}
+  <section class="card mb-5 overflow-hidden">
+    <h2 class="card-title">대회 규칙</h2>
+    <dl class="divide-y divide-slate-100">
+      {% for label, value in rule_rows %}
+        <div class="flex flex-col gap-0.5 px-4 py-2.5 text-sm sm:flex-row sm:items-baseline sm:gap-4">
+          <dt class="shrink-0 font-medium text-slate-500 sm:w-28">{{ label }}</dt>
+          <dd class="text-slate-900">{{ value }}</dd>
+        </div>
+      {% endfor %}
+    </dl>
+  </section>
+
+  {% comment %}
+    ★ 랭킹 공개 사실을 신청 전에 알린다. 참가한 뒤에 "내 보유 종목이 다 보이네" 를
+      알게 되면 늦다. 이것이 v2.0 의 설계 선택이라는 점도 함께 적는다.
+  {% endcomment %}
+  <p class="mb-5 rounded-lg bg-warn-soft px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-300">
+    참가하면 <b>내 보유 종목·비중·수익 종목이 다른 참가자에게 공개</b>됩니다
+    (현금·잔고 금액은 공개되지 않습니다). 서로의 전략을 보고 배우는 것이 이 대회의
+    목적입니다.
+  </p>
+
+  <div class="card p-5">
+    {% include "contests/_join_form.html" %}
+  </div>
+
+  <p class="mt-4 text-center text-xs text-slate-400">
+    별칭은 대회마다 따로 정할 수 있고, 랭킹에는 별칭만 표시됩니다.
+  </p>
+</div>
+{% endblock %}

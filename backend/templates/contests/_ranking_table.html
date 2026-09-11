@@ -1,0 +1,131 @@
+{% load form_extras humanize %}{% comment %}
+  랭킹 표 — 60초 폴링 프래그먼트 (U-02 6.3 · HTMX 규약 3.3).
+
+  ★★ **폴링 속성이 이 조각의 바깥 요소에 다시 들어 있어야 한다.**
+    `hx-swap="outerHTML"` 로 통째로 교체되기 때문에, 페이지 쪽에만 적으면
+    한 번 갱신되고 폴링이 영구히 멈춘다 (`web/_market.html` 과 같은 규약).
+
+  ★★ **여기 숫자는 전부 `ContestRanking` 을 그대로 읽은 것이다** (F-05 7장).
+    조회 시점에 순위를 매기거나 수익률을 다시 계산하지 않는다. 그러면 홈 위젯과
+    이 화면이 서로 다른 숫자를 말한다.
+
+  ★ 대회가 끝나면 폴링을 걸지 않는다 (`is_live`). 더 바뀔 값이 없는데 60초마다
+    당기는 것은 서버리스 환경에서 그대로 비용이다 (HTMX 규약 5.2).
+{% endcomment %}
+<div id="ranking-table"
+     {% if is_live %}hx-get="{% url 'contests:frag_ranking' contest.slug %}"
+     hx-trigger="every 60s [document.visibilityState === 'visible']"
+     hx-swap="outerHTML"{% endif %}>
+
+  {% comment %} ── 기준 시각 ────────────────────────────────────────
+       ★★ 이것이 없으면 참가자는 방금 낸 주문이 순위에 없는 것을 버그로 읽는다.
+         `ContestRanking` 은 영업일 15:40 정산(잡 7)에만 갱신된다.
+  {% endcomment %}
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+    <span class="text-slate-500">
+      {% if as_of %}
+        <b class="num">{{ as_of|date:"Y.m.d" }} 15:40</b> 정산 기준
+        <span class="text-slate-400">· 전체 {{ rows|length }}명</span>
+      {% else %}
+        아직 정산된 순위가 없습니다
+      {% endif %}
+    </span>
+    {% if is_live %}
+      <span class="text-slate-400">60초마다 자동 갱신</span>
+    {% endif %}
+  </div>
+
+  {% if rows %}
+    {% comment %} ── 표 ───────────────────────────────────────────
+         ★ 모바일에서 열이 많아 접히지 않도록 **가로 스크롤 컨테이너**에 담는다.
+           `<main>` 이 가로로 밀리면 페이지 전체가 흔들린다.
+    {% endcomment %}
+    <div class="card overflow-x-auto">
+      <table class="w-full min-w-[680px] text-sm">
+        <thead class="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
+          <tr>
+            <th scope="col" class="px-3 py-2 text-left font-medium">순위</th>
+            <th scope="col" class="px-3 py-2 text-left font-medium">등락</th>
+            <th scope="col" class="px-3 py-2 text-left font-medium">별칭</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">기준가</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">누적</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">당일</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">편입비</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">종목수</th>
+            <th scope="col" class="px-3 py-2 text-right font-medium">포트폴리오</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for row in rows %}
+            {% comment %}
+              ★ 내 행은 하이라이트하고 `id` 를 붙인다 — 목록이 길어도 "내 순위로"
+                버튼이 여기로 데려온다 (U-02 6.3).
+              ★ 실격·포기자(`rank` 없음)는 회색으로 낮춘다. **숨기지는 않는다** —
+                아예 빠지면 "내가 왜 없지?" 문의가 온다 (F-05 3.2).
+            {% endcomment %}
+            <tr {% if row.is_me %}id="my-rank" class="bg-brand-soft"{% elif not row.ranking.rank %}class="text-slate-400"{% endif %}>
+              <td class="num px-3 py-2 font-semibold">
+                {% if row.ranking.rank %}{{ row.ranking.rank }}{% else %}-{% endif %}
+              </td>
+              <td class="num px-3 py-2 text-xs">
+                {% if row.rank_delta > 0 %}
+                  <span class="text-up">{{ row.rank_delta }}↑</span>
+                {% elif row.rank_delta < 0 %}
+                  <span class="text-down">{{ row.rank_delta|stringformat:"d"|slice:"1:" }}↓</span>
+                {% else %}
+                  <span class="text-slate-300">-</span>
+                {% endif %}
+              </td>
+              <td class="px-3 py-2">
+                {{ row.participation.nickname }}
+                {% if row.is_me %}<span class="badge-contest ml-1">나</span>{% endif %}
+                {% if not row.participation.is_ranked %}
+                  <span class="badge-stale ml-1" title="실격 또는 포기 — 기록은 남지만 순위에서 제외됩니다">순위 제외</span>
+                {% endif %}
+              </td>
+              <td class="num px-3 py-2 text-right">{{ row.ranking.nav|floatformat:2|intcomma }}</td>
+              <td class="num px-3 py-2 text-right {{ row.ranking.cumulative_return_pct|pnl_class }}">
+                {{ row.ranking.cumulative_return_pct|signed_pct }}
+              </td>
+              <td class="num px-3 py-2 text-right {{ row.ranking.daily_return_pct|pnl_class }}">
+                {{ row.ranking.daily_return_pct|signed_pct }}
+              </td>
+              <td class="num px-3 py-2 text-right">{{ row.ranking.invested_ratio_pct|floatformat:1 }}%</td>
+              <td class="num px-3 py-2 text-right">{{ row.ranking.position_count }}</td>
+              <td class="px-3 py-2 text-right">
+                {% if row.can_view_portfolio %}
+                  {% comment %}
+                    모달은 클릭할 때만 당긴다 (HTMX 규약 — 이벤트 갱신).
+                    `hx-target="#participant-modal"` 로 페이지 하단의 빈 자리를 채운다.
+                  {% endcomment %}
+                  <button type="button"
+                          class="btn-ghost btn-sm"
+                          hx-get="{% url 'contests:participant' contest.slug row.participation.pk %}"
+                          hx-target="#participant-modal"
+                          hx-swap="innerHTML">
+                    열기
+                  </button>
+                {% else %}
+                  <span class="text-xs text-slate-300" title="{{ block_reason }}">비공개</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if block_reason %}
+      {# 왜 어떤 행이 '비공개' 인지 표 아래에 한 번 설명한다 (규약 원칙 2). #}
+      <p class="mt-2 text-xs text-slate-400">{{ block_reason }}</p>
+    {% endif %}
+
+  {% else %}
+    <p class="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+      아직 정산된 순위가 없습니다.
+      <span class="mt-1 block text-xs text-slate-400">
+        순위는 대회가 시작된 뒤 매 영업일 15:40 정산에서 만들어집니다.
+      </span>
+    </p>
+  {% endif %}
+</div>

@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% load form_extras humanize %}
+
+{% block title %}{{ contest.name }} · 모의투자 대회 플랫폼{% endblock %}
+{% block description %}{{ contest.name }} — {{ contest.start_date|date:"Y.m.d" }}부터 {{ contest.end_date|date:"Y.m.d" }}까지. 시작 자본 {{ contest.initial_capital|krw_short }}.{% endblock %}
+
+{% comment %} ── 대회 상세 (U-02 4.2) ───────────────────────────────────────
+
+  섹션 순서는 명세 표 그대로다:
+    헤더 → 규칙 요약 표 → 규칙 전문 → 데이터 출처 고지 → 참가자 수 → 액션
+
+  ★★ **데이터 출처 고지를 빼지 않는다.** 특히 "섹터: KRX 업종분류(GICS 아님)".
+    참가자가 다른 서비스의 섹터 비중과 우리 숫자를 비교하다 우리가 틀렸다고
+    생각하는 일을 막는다 (U-02 4.2 · U-01 6장이 그대로 넣으라고 못박은 문구).
+{% endcomment %}
+
+{% block content %}
+
+{# ── 헤더 ────────────────────────────────────────────────── #}
+<div class="mb-6">
+  <nav class="mb-2 text-xs text-slate-400">
+    <a href="{% url 'contests:list' %}" class="hover:text-brand hover:underline">대회</a>
+    <span class="mx-1">/</span>{{ contest.name }}
+  </nav>
+
+  <div class="flex flex-wrap items-center gap-2">
+    <h1 class="text-2xl font-bold">{{ contest.name }}</h1>
+    <span class="badge badge-contest">{{ contest.get_status_display }}</span>
+    <span class="badge badge-practice">{{ contest.get_asset_class_display }}</span>
+  </div>
+
+  <p class="mt-2 text-sm text-slate-500">
+    {{ contest.start_date|date:"Y.m.d" }} ~ {{ contest.end_date|date:"Y.m.d" }}
+    <span class="num ml-1">{{ d_day|d_day }}</span> 종료
+    <span class="mx-2 text-slate-300">·</span>
+    참가자 <b class="num">{{ participant_count }}</b>{% if contest.capacity %} / {{ contest.capacity }}{% endif %}명
+  </p>
+</div>
+
+{% comment %} ── 액션 ─────────────────────────────────────────────────
+     ★ 상태에 따라 할 수 있는 일이 다르다 (F-02 3장 생명주기 표).
+       "왜 못 하는지" 를 항상 함께 적는다 — 버튼만 사라지면 고장으로 읽힌다.
+{% endcomment %}
+<div class="card mb-6 flex flex-wrap items-center justify-between gap-3 p-4">
+  <div class="text-sm">
+    {% if notice %}
+      {% comment %}
+        색은 서비스가 넘긴 `tone` 하나로 고른다. 템플릿이 참가 상태 값을 직접
+        비교하지 않는 이유는 services.participation_notice 주석에 있다.
+      {% endcomment %}
+      <b class="{% if notice.tone == 'brand' %}text-brand{% elif notice.tone == 'warn' %}text-amber-700{% elif notice.tone == 'danger' %}text-danger{% else %}text-slate-500{% endif %}">
+        {{ notice.title }}
+      </b>
+      {% if notice.detail %}<span class="text-slate-500">— {{ notice.detail }}</span>{% endif %}
+    {% elif entry_open %}
+      <span class="text-slate-600">
+        신청 마감 <b class="num">{{ entry_deadline|date:"Y.m.d" }}</b>
+        {% if contest.capacity %}<span class="text-slate-400">· 정원 {{ contest.capacity }}명</span>{% endif %}
+      </span>
+    {% else %}
+      <span class="text-slate-500">
+        지금은 참가 신청을 받지 않습니다
+        <span class="text-slate-400">({{ contest.get_status_display }} · 마감 {{ entry_deadline|date:"Y.m.d" }})</span>
+      </span>
+    {% endif %}
+  </div>
+
+  <div class="flex gap-2">
+    {% if has_ranking %}
+      <a href="{% url 'contests:ranking' contest.slug %}" class="btn-ghost btn-sm">랭킹 보기</a>
+    {% endif %}
+    {% if not participation and entry_open %}
+      <a href="{% url 'contests:join' contest.slug %}" class="btn-primary btn-sm">참가 신청</a>
+    {% endif %}
+  </div>
+</div>
+
+{# ── 규칙 요약 표 (U-02 4.2) ─────────────────────────────── #}
+<section class="mb-6">
+  <h2 class="mb-3 text-lg font-bold">규칙 요약</h2>
+  <div class="card overflow-hidden">
+    <dl class="divide-y divide-slate-100">
+      {% for label, value in rule_rows %}
+        <div class="flex flex-col gap-0.5 px-4 py-3 text-sm sm:flex-row sm:items-baseline sm:gap-4">
+          <dt class="shrink-0 font-medium text-slate-500 sm:w-32">{{ label }}</dt>
+          <dd class="text-slate-900">{{ value }}</dd>
+        </div>
+      {% endfor %}
+    </dl>
+  </div>
+  <p class="mt-2 text-xs text-slate-400">
+    종목·섹터 한도는 <b>주문 시점에 사전 차단</b>됩니다. 가격이 올라 한도를 넘은 경우에는
+    거래를 막지 않고 경고만 표시합니다 (F-04).
+  </p>
+</section>
+
+{# ── 규칙 전문 ───────────────────────────────────────────── #}
+{% if contest.description %}
+  <section class="mb-6">
+    <h2 class="mb-3 text-lg font-bold">안내</h2>
+    {% comment %}
+      ★ `linebreaks` 는 줄바꿈만 <p>·<br> 로 바꾼다. 마크다운을 HTML 로 렌더하지
+        않는 이유는 **운영자가 쓴 글이라도 HTML 을 그대로 실행하면 XSS 경로**가
+        되기 때문이다. 마크다운 렌더는 살균기(bleach 등)와 함께 도입해야 한다.
+    {% endcomment %}
+    <div class="card p-4 text-sm leading-relaxed text-slate-700">
+      {{ contest.description|linebreaks }}
+    </div>
+  </section>
+{% endif %}
+
+{# ── 데이터 출처 고지 (U-02 4.2) ─────────────────────────── #}
+<section class="mb-6">
+  <h2 class="mb-3 text-lg font-bold">데이터 출처</h2>
+  <ul class="card divide-y divide-slate-100 text-sm">
+    {% for label, source in data_sources %}
+      <li class="flex gap-4 px-4 py-2.5">
+        <span class="w-20 shrink-0 font-medium text-slate-500">{{ label }}</span>
+        <span class="text-slate-700">{{ source }}</span>
+      </li>
+    {% endfor %}
+  </ul>
+  <p class="mt-2 text-xs text-slate-400">
+    시세·호가는 조회 시점의 캐시 값이며, 순위와 수익률은 매 영업일 15:40 정산 결과입니다.
+  </p>
+</section>
+
+{% comment %} ── 아직 없는 화면 안내 ─────────────────────────────────
+     ★ 규약 8.5 — 막다른 길로 만들지 않는다. 무엇이 준비 중인지 적어 두면
+       참가자가 "내 화면만 안 보이나" 를 의심하지 않는다.
+{% endcomment %}
+{% if is_approved %}
+  <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-400">
+    대회 대시보드 · 주문 · 포트폴리오 화면은 준비 중입니다. 지금은 랭킹에서 순위와
+    참가자 포트폴리오를 볼 수 있습니다.
+  </p>
+{% endif %}
+
+{% endblock %}
