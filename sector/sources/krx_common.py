@@ -42,6 +42,7 @@ __all__ = [
     "RESULT_BLOCK",
     "SECRET_NAME",
     "assert_raw_output_allowed",
+    "assert_ignored_output",
     "fetch_json",
     "parse_bp",
     "parse_decimal",
@@ -350,6 +351,25 @@ def _git_ignores(directory: str) -> bool | None:
     if proc.returncode == 1:
         return False
     return None  # 2 이상 = git 이 판단 못 함(저장소 밖 등)
+
+
+def assert_ignored_output(path: Path, *, what: str) -> None:
+    """🔒 **git 이 무시하는 곳에만 쓴다.** `assert_raw_output_allowed` 의 일반형이다.
+
+    원천(KRX)만 새면 안 되는 것이 아니다 — 조 이름·토론 글·확정 사유도 Public
+    저장소에 올라갈 이유가 없다. 저쪽은 *경로까지* 고정하지만(원천은 `data/raw/`
+    한 곳뿐이어야 하므로) 이쪽은 **무시 여부만** 본다. 파생 산출물은 여러 곳에
+    생길 수 있고, 공통 조건은 "커밋되지 않는다" 하나다.
+
+    🔴 `.gitignore` 규칙이 사라졌는지를 **사람이 기억하는 대신 git 에게 묻는다.**
+    """
+    resolved = path.resolve()
+    if _git_ignores(str(resolved.parent)) is False:
+        raise RuntimeError(
+            f".gitignore 가 {resolved} 를 무시하지 않는다. 지금 쓰면 {what} 이(가) "
+            f"Public 저장소에 커밋될 수 있다.\n"
+            f"  → `.gitignore` 를 먼저 확인한다 (`git check-ignore -v <경로>`)"
+        )
 
 
 def assert_raw_output_allowed(path: Path) -> None:

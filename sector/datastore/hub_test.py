@@ -120,6 +120,36 @@ def test_허용목록에_없는_경로를_막고_무엇이_허용인지_말한�
 
 # ── private 게이트 ──────────────────────────────────────────────────────────
 
+def test_등록되지_않은_저장소로는_한_파일도_안_나간다():
+    """🔒 기본값으로 통과시키지 않는다.
+
+    통과시키면 "어디에 무엇이 나가는가" 를 아무도 결정하지 않은 채 파일이 올라간다.
+    저장소를 늘리는 것은 `_PATH_POLICY` 에 한 줄을 더하는 **명시적 결정**이어야 한다.
+    """
+    with pytest.raises(hub.PublishBlocked, match="경로 정책이 등록되지 않은"):
+        hub.assert_publishable_path("README.md", repo_id="x/y")
+
+
+def test_저장소가_다르면_허용목록도_다르다():
+    """경로가 맞아도 **저장소가 틀리면** 막는다. 둘 다 사고다."""
+    # 점수 저장소에 이벤트를 올리려 한다
+    with pytest.raises(hub.PublishBlocked):
+        hub.assert_publishable_path("events/e.json", repo_id=hub.REPO_ID)
+    # 워크스페이스에 점수를 올리려 한다
+    with pytest.raises(hub.PublishBlocked):
+        hub.assert_publishable_path("score_daily/x.parquet", repo_id=hub.WORKSPACE_REPO_ID)
+    # 각자의 자리에서는 지나간다
+    hub.assert_publishable_path("events/e.json", repo_id=hub.WORKSPACE_REPO_ID)
+    hub.assert_publishable_path("score_daily/x.parquet", repo_id=hub.REPO_ID)
+
+
+def test_원천_이름_검사는_저장소를_가리지_않는다():
+    """🔴 KRX 원천은 **어느 저장소로도** 나가지 않는다 (약관 제11조②)."""
+    for repo_id in (hub.REPO_ID, hub.WORKSPACE_REPO_ID):
+        with pytest.raises(hub.PublishBlocked, match="원천 파일로 보이는"):
+            hub.assert_publishable_path("events/etf_bydd_trd.json", repo_id=repo_id)
+
+
 def test_private_이면_지나간다():
     hub.assert_private(FakeApi(private=True), "x/y")
 
@@ -155,7 +185,7 @@ def test_private_확인이_커밋보다_먼저다():
     """순서가 뒤집히면 '올린 뒤에 막았다'가 된다. 그건 막은 것이 아니다."""
     api = FakeApi(private=False)
     with pytest.raises(hub.PublishBlocked):
-        hub.commit(api, [Add("README.md")], message="m", repo_id="x/y")
+        hub.commit(api, [Add("README.md")], message="m", repo_id=hub.REPO_ID)
     assert api.info_calls >= 1 and api.commits == []
 
 
@@ -163,7 +193,7 @@ def test_단일_커밋으로_올린다():
     """🔴 파일마다 올리면 중간 실패가 '절반만 갱신된' 상태를 남긴다."""
     api = FakeApi(private=True)
     ops = [Add("README.md"), Add("MANIFEST.json"), Add("latest/snapshot.json")]
-    oid = hub.commit(api, ops, message="m", repo_id="x/y")
+    oid = hub.commit(api, ops, message="m", repo_id=hub.REPO_ID)
     assert len(api.commits) == 1
     assert len(api.commits[0]["operations"]) == 3
     assert oid.startswith("deadbeef")

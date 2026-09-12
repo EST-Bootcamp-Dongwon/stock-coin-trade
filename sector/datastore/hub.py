@@ -53,6 +53,7 @@ __all__ = [
     "TOKEN_ENV_WRITE",
     "TOKEN_ENV_READ",
     "assert_publishable_path",
+    "WORKSPACE_REPO_ID",
     "assert_private",
     "commit",
     "dataset_api",
@@ -70,6 +71,11 @@ REPO_ID = "stock-coin-trade/sector-scores"
 #: 팀 노트(M13). 여기서는 쓰지 않고, 토큰이 갈린다는 사실만 남긴다.
 NOTES_REPO_ID = "stock-coin-trade/team-notes"
 
+#: 조별 협업 상태(조 · 참가 · 섹터 확정 · 코멘트)가 사는 곳 — M8.
+#: 🔒 **점수 저장소와 갈라 둔 것이 의도다.** 이쪽은 앱이 **쓰기**를 하고 저쪽은 읽기만
+#:    한다. 한 저장소에 두면 앱에 준 토큰 하나가 점수까지 덮어쓸 수 있다 (→ V29).
+WORKSPACE_REPO_ID = "stock-coin-trade/team-workspace"
+
 TOKEN_ENV_WRITE = "HF_TOKEN_WRITE"
 TOKEN_ENV_READ = "HF_TOKEN_READ"
 
@@ -84,6 +90,20 @@ ALLOWED_PATH_PREFIXES: tuple[str, ...] = (
     "latest/",
 )
 ALLOWED_EXACT_PATHS: tuple[str, ...] = ("MANIFEST.json", "README.md")
+
+#: 워크스페이스 저장소의 허용 경로. 이벤트 1건 = 파일 1개라 접두 하나면 충분하다.
+#: 🔒 여기에 `latest/` 같은 **집계 스냅샷을 두지 않는다** — 상태는 이벤트를 접어서
+#:    만든다. 스냅샷을 같이 두면 둘이 어긋났을 때 어느 쪽이 사실인지 알 수 없다.
+WORKSPACE_ALLOWED_PREFIXES: tuple[str, ...] = ("events/",)
+WORKSPACE_ALLOWED_EXACT: tuple[str, ...] = ("README.md",)
+
+#: `repo_id` → (허용 정확 경로, 허용 접두).
+#: 🔒 **저장소를 늘리는 것은 여기 한 줄을 더하는 명시적 결정이다.** 등록되지 않은
+#:    저장소로는 한 파일도 올라가지 않는다 — 기본값으로 통과시키지 않는다.
+_PATH_POLICY: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    REPO_ID: (ALLOWED_EXACT_PATHS, ALLOWED_PATH_PREFIXES),
+    WORKSPACE_REPO_ID: (WORKSPACE_ALLOWED_EXACT, WORKSPACE_ALLOWED_PREFIXES),
+}
 
 #: 원천 파일 이름 조각. 경로가 어디에 있든 이름만으로 거부한다 (ADR-SC-0006 ①).
 #: `sector/sources/*.RAW_PREFIX` 와 같은 값이지만 **일부러 여기 다시 적는다** —
@@ -196,8 +216,13 @@ def assert_private(api: Any, repo_id: str = REPO_ID) -> None:
 
 # ── 경로 게이트 ─────────────────────────────────────────────────────────────
 
-def assert_publishable_path(path_in_repo: str) -> None:
-    """🔒 **문 앞의 검사.** `commit()` 이 모든 작업에 대해 부른다."""
+def assert_publishable_path(path_in_repo: str, *, repo_id: str = REPO_ID) -> None:
+    """🔒 **문 앞의 검사.** `commit()` 이 모든 작업에 대해 부른다.
+
+    ★ 허용목록이 **저장소마다 다르다.** 점수 저장소에 `events/` 를 올리거나 반대로
+      워크스페이스에 `score_daily/` 를 올리는 것은 둘 다 사고다 — 경로가 맞아도
+      *저장소가 틀리면* 막는다. 원천 이름 검사(아래)만은 저장소를 가리지 않는다.
+    """
     path = str(path_in_repo)
     if not path or path != path.strip():
         raise PublishBlocked(f"경로가 비었거나 공백이 붙어 있다: {path!r}")
@@ -213,15 +238,25 @@ def assert_publishable_path(path_in_repo: str) -> None:
                     "ADR-SC-0006 ①). 올릴 것은 집계·파생값뿐이다"
                 ),
             )
-    if path in ALLOWED_EXACT_PATHS:
+    policy = _PATH_POLICY.get(repo_id)
+    if policy is None:
+        raise PublishBlocked(
+            f"경로 정책이 등록되지 않은 저장소다: {repo_id!r}",
+            hint=(
+                "`sector/datastore/hub.py` 의 `_PATH_POLICY` 에 허용목록을 **명시로** "
+                "추가한다. 등록 없이 통과시키면 '어디에 무엇이 나가는가'를 아무도 "
+                "결정하지 않은 채 파일이 올라간다"
+            ),
+        )
+    exact, prefixes = policy
+    if path in exact:
         return
-    if any(path.startswith(prefix) for prefix in ALLOWED_PATH_PREFIXES):
+    if any(path.startswith(prefix) for prefix in prefixes):
         return
     raise PublishBlocked(
-        f"허용목록에 없는 경로다: {path!r}",
+        f"{repo_id} 의 허용목록에 없는 경로다: {path!r}",
         hint=(
-            f"허용: {', '.join(ALLOWED_EXACT_PATHS)} · "
-            f"{', '.join(ALLOWED_PATH_PREFIXES)}\n"
+            f"허용: {', '.join(exact)} · {', '.join(prefixes)}\n"
             "     늘리려면 `sector/datastore/hub.py` 에 **명시로** 추가한다"
         ),
     )
@@ -284,7 +319,7 @@ def commit(
     if not operations:
         raise ValueError("올릴 작업이 없다. 호출부가 0건을 걸러야 한다")
     for operation in operations:
-        assert_publishable_path(getattr(operation, "path_in_repo", ""))
+        assert_publishable_path(getattr(operation, "path_in_repo", ""), repo_id=repo_id)
 
     assert_private(api, repo_id)
 
