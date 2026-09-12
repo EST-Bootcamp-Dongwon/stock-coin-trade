@@ -63,6 +63,10 @@ temp/
 #           패턴 `/requirements.txt` → 루트만 제외)
 /requirements.txt
 streamlit_app.py
+# ⚠️ **렌더러 B(섹터 화면)를 쓰는 날 아래 둘을 푼다** — Django 가 `sector/`·`dashboard/`
+#   를 import 해야 한다(ADR-SC-0010 ②). 그때 `vercel.json` 의 `includeFiles` 도
+#   `backend/**` 에서 함께 넓힌다. 지금은 v2.0 화면이 import 하지 않으므로 빼는 게 맞다.
+# 🔒 `batch/` 는 **풀지 않는다** — 수집·집계는 로컬이고, 번들에 두면 돌릴 수 있어 보인다.
 sector/
 batch/
 dashboard/

@@ -1,31 +1,77 @@
 # Vercel 배포 메모 (v2.0)
 
-> 🔴 **연동 해제됨 (2026-09-11).** v3.0 배포는 Streamlit Community Cloud 다.
-> 코드(`api/index.py` · `vercel.json` · `backend/`)는 **지우지 않고 보존한다** —
-> 되살리려면 연동만 다시 걸면 된다. (→ [ADR-SC-0008](docs/decisions/0008-배포-streamlit-전환과-원격-재구성.md) ②)
+> ✅ **살아 있다 (2026-09-12 실측).** `https://stock-coin-trade.vercel.app` 가 200 이고
+> Git 연동은 **`gitlab.com/dev-dongwon05253/stock-coin-trade` · `main`**(정본)이다.
+> Streamlit Community Cloud(v3.0 · 팀용 정본)와 **공존**한다.
+> → [ADR-SC-0010](docs/decisions/0010-두-배포-공존과-쓰기-상태-분리.md) ①③
 >
-> 아래 1~장은 **당시 구성의 기록**이다. 배포 구성의 **왜**를 적어 둔다.
+> ⚠️ ~~"연동 해제됨(2026-09-11)"~~ 은 **사실이 아니었다.** 같은 날 14:38 빌드 로그가
+> `Cloning gitlab.com/dev-dongwon05253/stock-coin-trade (Branch: main)` 이라고 적는다.
+> 대시보드를 보지 않고 적은 문장이었다. **ADR-SC-0008 ② 는 폐기됐다.**
 
 ---
 
-## 0. 되살리는 법 — 이 장만 읽으면 된다
+## 0. 이 장만 읽으면 된다 — 🔴 건드리면 깨지는 것 하나
 
-해제한 이유는 Vercel 이 나빠서가 아니라 **워크로드가 달라져서**다. v3.0 은 매일 데이터를
-모으고 차트를 그리는 앱이라 서버리스와 맞지 않는다.
+### 0.1 🔴 **Root Directory 를 비워 둔다 (저장소 루트)**
 
-되살릴 때 **순서대로** 해야 하는 것:
+Vercel → Settings → General → Root Directory 는 **빈칸이어야 한다.** `backend/` 로
+바꾸면 **배포가 조용히 죽는다** — 빌드는 `Ready` 로 뜨는데 **함수가 0개**가 되고 모든
+경로가 404 다. 2026-09-12 실측:
 
-| # | 무엇 | 왜 |
+| Root Directory | Builds | `/` |
 |---|---|---|
-| 1 | **Supabase 프로젝트 restore** | 프로젝트 4개가 전부 `INACTIVE` 였다. 배포가 깨진 게 아니라 DB 가 잠들어 `/` 만 500 이었다. ⚠️ **되살려도 7일 무활동이면 또 멈춘다** |
-| 2 | 🔴 **`api/requirements.txt` 를 저장소 루트로 되돌린다** | 2026-09-11 에 루트에서 `api/` 로 옮겼다. 루트는 **Streamlit Cloud 가 독점**한다(의존성 파일을 처음 만난 하나만 쓴다). Vercel 문서는 의존성 파일을 프로젝트 루트 기준으로만 설명하고 **`api/` 안을 자동으로 읽는다는 보장을 확인하지 못했다** — 그래서 그 자리는 동작하는 설정이 아니라 **보관본**이다 |
-| 3 | `.vercelignore` 의 `/requirements.txt` 줄을 지운다 | 2번으로 루트에 돌아온 파일이 번들에서 빠지지 않게. 🔒 **앞의 슬래시가 있는 줄만** 지운다 |
-| 4 | Vercel 대시보드에서 Git 연동을 다시 건다 | 해제는 대시보드에서 했다. 저장소에는 연동 흔적이 없다(`.vercel/` 은 gitignore) |
-| 5 | 첫 빌드 로그에서 `requirements.txt` 가 설치됐는지 확인한다 | 2·3번을 빠뜨리면 의존성 0개로 빌드가 통과했다가 런타임에 죽는다 |
+| (빈칸) | `λ api/index.py (33.71MB)` | **200** |
+| `backend/` | **`. [0ms]`** | **404** |
 
-⚠️ **Streamlit 과 Vercel 을 동시에 유지하려면** 루트 의존성 파일을 나눠야 한다.
-`pyproject.toml` 이 Streamlit 우선순위에서 `requirements.txt` **뒤**라 여지가 있으나
-**검증하지 않았다.** 둘 중 하나만 쓰는 것이 지금의 결정이다.
+왜 — `vercel.json` 의 `builds` 가 `src: "api/index.py"` 를 **Root Directory 기준으로**
+푼다. `backend/api/index.py` 는 없으므로 빌드가 **6ms 에 산출물 없이** 끝난다. 로그는
+`WARNING! Build output contains no "functions", "static", or "services" directory` 다.
+
+🔒 **그 로그의 다른 한 줄도 같은 뜻이다** — `WARNING! Due to 'builds' existing in your
+configuration file, the Build and Development Settings defined in your Project Settings
+will not apply`. `builds` 가 있으면 Project Settings(프레임워크 감지·빌드 커맨드)가
+**통째로 무시**된다. 그래서 "Django 를 자동 감지한다"(ADR-SC-0010 W7)에 기대면 안 된다 —
+`builds` 를 지우지 않는 한 그 경로는 열리지 않는다.
+
+🔒 **`.vercelignore` 도 Root Directory 를 따라간다.** 루트 `.vercelignore` 가
+`/data/`(KRX 원천 · 제약 10)와 `.streamlit/`(시크릿)을 막고 있다 — Root Directory 를
+옮기면 **그 방어가 같이 사라진다.** 이것이 0.1 을 🔴 로 적은 진짜 이유다.
+
+### 0.2 ✅ 의존성은 이미 갈려 있다 — `api/requirements.txt` 를 옮기지 않는다
+
+2026-09-11 프로덕션 빌드 로그:
+
+```
+Found .vercelignore
+Removed 112 ignored files defined in .vercelignore
+Installing required dependencies from api/requirements.txt...
+```
+
+**Vercel 이 `api/` 안의 `requirements.txt` 를 읽는다.** 옛 메모는 *"`api/` 안을 자동으로
+읽는다는 보장을 확인하지 못했다 → 그 자리는 보관본이다"* 였으나 **로그가 반증한다.**
+따라서:
+
+- 🔒 **`api/requirements.txt` 를 저장소 루트로 되돌리지 않는다.** 루트는 Streamlit Cloud
+  가 독점한다(의존성 파일을 처음 만난 하나만 쓴다) — 되돌리면 **그쪽이 깨진다.**
+- 🔒 **`.vercelignore` 의 `/requirements.txt` 줄을 지우지 않는다.** 그 한 줄이 Streamlit
+  목록을 Vercel 번들에서 빼 준다. **앞의 슬래시가 핵심이다**(그 파일 주석 참조).
+- ✅ 두 배포가 **의존성 파일을 공유하지 않는다.** ADR-SC-0008 ② 의 *"둘 중 하나만 쓴다"*
+  는 전제가 여기서 무너졌다 — `pyproject.toml` 우선순위를 검증할 필요도 없었다.
+
+### 0.3 Supabase 가 잠들면 `/` 만 500 이 된다
+
+프로젝트가 `INACTIVE` 면 빌드는 멀쩡하고 **`/` 만 500** 이다(`/static/…` 200 ·
+`/admin/` 302 — 2026-09-11 V17 의 그 증상). 2026-09-12 현재 `stock-coin-trade`
+(`sgbhrahtewojmicwmxxu`)는 `ACTIVE_HEALTHY` 고, 7일 pause 는 **매일 도는
+`batch.publish` 가 한 줄 써서** 푼다(ADR-SC-0010 ④).
+
+### 0.4 ⚠️ `sector/`·`dashboard/` 는 아직 번들에 없다
+
+`.vercelignore` 가 `sector/`·`dashboard/`·`batch/`·`streamlit_app.py` 를 뺀다. v2.0
+화면이 import 하지 않으므로 **지금은 맞다.** 렌더러 B(섹터 화면)를 쓰는 날
+`sector/`·`dashboard/` 두 줄을 풀고 `vercel.json` 의 `includeFiles` 를 넓힌다.
+🔒 `batch/` 는 **풀지 않는다** — 수집·집계는 로컬이다(ADR-SC-0010 ①).
 
 ---
 

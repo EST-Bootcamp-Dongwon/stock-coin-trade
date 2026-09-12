@@ -180,9 +180,13 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
 - **배포는 둘을 공존시킨다** ★ (2026-09-12 개정 · [ADR-SC-0010](docs/decisions/0010-두-배포-공존과-쓰기-상태-분리.md))
   — **Streamlit Cloud = 팀용 정본**(대회 기간 매일 쓴다) · **Django + Vercel = 확장·쇼케이스**.
   🔒 **Streamlit 을 먼저 끄지 않는다.** 대회가 도는 중이다
-  - 의존성 분리는 **Vercel 의 Root Directory = `backend/`** 로 한다. 루트 `requirements.txt`
-    는 Streamlit 전용으로 **그대로 둔다.** 🔒 엔트리포인트를 하위 폴더로 옮기지 않는다 —
-    Streamlit 은 스크립트 폴더만 `sys.path` 에 넣어서 `import sector` 가 깨진다
+  - ★ **의존성은 이미 갈려 있다** (2026-09-12 실측 · ADR-SC-0010 ③ 개정) — Vercel 은
+    **`api/requirements.txt`**(slim)를, Streamlit 은 루트 `requirements.txt` 를 읽는다.
+    🔴 **Vercel Root Directory 를 비워 둔다** — `backend/` 로 바꾸면 `vercel.json` 의
+    `builds` 가 `backend/api/index.py` 를 찾다 실패해 **함수 0개**로 배포되고,
+    `.vercelignore` 가 따라가 `/data/`(KRX 원천)·`.streamlit/`(시크릿) 방어까지 사라진다
+    (→ `VERCEL.md` 0.1). 🔒 엔트리포인트를 하위 폴더로 옮기지 않는다 — Streamlit 은
+    스크립트 폴더만 `sys.path` 에 넣어서 `import sector` 가 깨진다
   - 🔒 **두 화면이 점수·서술을 각자 구현하지 않는다.** `sector/` 와 `dashboard/view.py`·
     `explain.py` 가 공유 코어다. 렌더러 B 가 코어를 안 쓰면 **검증되지 않은 화면**이다
   - ⚠️ `backend/` 26,597줄은 *다른 제품*(모의투자 플랫폼)이다. 물려받는 것은
