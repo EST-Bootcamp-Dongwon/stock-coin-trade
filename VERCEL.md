@@ -170,6 +170,33 @@ env $SUPA POSTGRES_PASSWORD='...' ALLOW_DEMO_SEED=1 DJANGO_DEBUG=False \
 
 프로젝트 링크 후 대시보드(Settings → Environment Variables) 또는 CLI 로 넣는다.
 
+#### 🔴 Supabase 의 "Install Vercel integration" 을 쓰지 않는다 — 2026-09-12
+
+Supabase → Settings → Integrations 의 Vercel 카드는 *"Supabase keeps environment
+variables up to date in each connected Vercel project"* 다. 즉 **이 표를 자동으로
+덮어쓰겠다는 기능**이다. 누르지 않는다 —
+
+1. 🔴 **얻는 것이 0 이다.** `backend/` 는 `SUPABASE_*` 변수를 **한 줄도 읽지 않는다**
+   (2026-09-12 실측 · `grep -rn SUPABASE backend --include=*.py` → 0건). Django 는
+   아래 `POSTGRES_*` 만 읽고, 연동이 주는 `SUPABASE_URL`·`SUPABASE_ANON_KEY` 를 쓰는
+   것은 **Streamlit 쪽(v3.0)이고 거기는 Vercel 이 아니다.** 쓸모 있는 값이 엉뚱한 곳에 꽂힌다
+2. 🔴 **이름이 겹쳐서 이 표를 깨뜨린다.** 연동은 `POSTGRES_HOST`·`POSTGRES_USER`·
+   `POSTGRES_PASSWORD` 를 **다이렉트 연결 형태로** 넣고 `POSTGRES_DATABASE`(우리는
+   `POSTGRES_DB`)를 쓰며 `POSTGRES_PORT`·`POSTGRES_PGBOUNCER` 는 주지 않는다.
+   → 풀러 유저명(`postgres.<ref>`)이 `postgres` 로 덮이면 **`Tenant or user not found`**,
+     운 좋게 붙으면 `POSTGRES_PGBOUNCER` 가 빠진 채로 돌아 **2.3 의 그 간헐적 500**
+     (`prepared statement … already exists`)이 트래픽 붙은 뒤에 시작된다.
+   🔒 **부분 덮어쓰기가 전부 덮어쓰기보다 나쁘다** — 절반은 우리 값, 절반은 기본값이라
+      어느 DB 에 어떤 모드로 붙었는지 아무도 말할 수 없게 된다
+3. 🔴 **`SUPABASE_SERVICE_ROLE_KEY`·`SUPABASE_JWT_SECRET` 을 Vercel 환경에 심는다.**
+   ADR-SC-0011 ⑤ 가 금지한 바로 그것이다 — 그 키는 RLS 를 통째로 우회하고 v2.0 유산
+   53개 테이블 전부에 닿는다. 쓰지도 않을 키를 환경에 두는 것은 노출면만 넓히는 일이다
+4. **절대 제약 6** — 배포 설정을 자동으로 바꾸는 것을 필수 경로에 두지 않는다
+
+⚠️ 정확한 주입 변수 목록은 연동 버전마다 달라졌다. **install 화면에 나오는 목록을 먼저
+   읽는다** — 위 ①③ 은 목록과 무관하게 성립하지만 ② 의 이름은 확인이 낫다.
+🔒 환경변수는 **손으로 넣는다.** 아래 표가 그 정본이고, 열세 줄이라 자동화할 값이 없다.
+
 | 변수 | 값 | 비고 |
 |---|---|---|
 | `DJANGO_SECRET_KEY` | 랜덤 50자 | `python -c "import secrets;print(secrets.token_urlsafe(50))"` |
