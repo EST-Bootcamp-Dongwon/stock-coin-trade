@@ -20,6 +20,7 @@ from typing import Any, Mapping
 from sector.scoring import AXES, PRESETS
 
 __all__ = ["PROFILES", "Names", "latest_frame", "rank_stability", "stability_window",
+           "sector_story", "podium", "score_bars", "arithmetic_table",
            "ranking_table", "axis_breakdown"]
 
 
@@ -183,3 +184,138 @@ def _axis_rank(latest: Any, axis: str, z_bp: int | None) -> int | None:
         return None
     column = latest[f"{_AXIS_PREFIX[axis]}_z_bp"].dropna()
     return int((column > z_bp).sum()) + 1
+
+
+# ── 등수와 서술을 위한 재료 ──────────────────────────────────────────────────
+# 🔴 **페이지마다 조립하지 않는다.** 랭킹·확정·읽는법 세 화면이 같은 섹터를 두고
+#    서로 다른 재료로 서로 다른 말을 하면, 팀원은 어느 쪽이 맞는지 판단할 방법이
+#    없다. 조립은 여기 한 곳이고 화면은 그리기만 한다 (머리주석과 같은 이유).
+
+def sector_story(frame: Any, sector_id: str, *, profile: str = "balanced",
+                 days: int = 20, names: Names | None = None) -> dict[str, Any]:
+    """`explain.narrative(**story)` 에 그대로 넘길 재료.
+
+    🔒 없는 값은 **`None` 으로 남긴다.** 0 으로 바꾸면 서술이 "자금흐름이 0 이다"
+       라고 단언하는데, 실제로는 재지 못한 것이다 (ADR-SC-0007).
+    """
+    names = names or Names.empty()
+    latest = latest_frame(frame).set_index("sector_id")
+    if sector_id not in latest.index:
+        return {}
+    row = latest.loc[sector_id]
+    stability = rank_stability(frame, profile=profile, days=days)
+    stat = stability.loc[sector_id] if sector_id in stability.index else None
+
+    return {
+        "label": names.sector_label(sector_id),
+        "rank": _int_or_none(row.get(f"rank_{profile}")),
+        "total": len(latest),
+        "score_bp": _int_or_none(row.get(f"score_{profile}_bp")),
+        "parts": axis_breakdown(frame, sector_id, profile=profile),
+        "mean_rank": _float_or_none(stat["rank_mean"]) if stat is not None else None,
+        "spread": _float_or_none(stat["rank_spread"]) if stat is not None else None,
+        "window": stability_window(frame, days=days),
+        "liquidity_ok": _bool_or_none(row.get("liquidity_ok")),
+        "etf_n": _int_or_none(row.get("etf_n")),
+        "missing": row.get("axes_missing") or None,
+        "degraded": row.get("axes_degraded") or None,
+    }
+
+
+def podium(frame: Any, *, profile: str = "balanced", top: int = 3,
+           names: Names | None = None) -> list[dict[str, Any]]:
+    """상위 `top` 섹터 — **등수 카드가 그리는 것.**
+
+    🔴 표만 있으면 21행을 눈으로 훑어야 "1등이 누구인가" 를 안다. 개발자가 아닌
+       팀원 7명에게 그 훑기가 곧 진입 장벽이다. 그래서 맨 위 셋을 크게 뽑는다.
+
+    🔒 등수만 크게 그리고 끝내지 않는다 — `lead_axis`(무엇이 끌어올렸나)와
+       `liquidity_ok`(실제로 살 수 있나)를 함께 담는다. 등수만 보면 "1위 = 사면
+       오른다" 로 읽히고, 그것이 이 도구의 가장 큰 위험이다.
+    """
+    names = names or Names.empty()
+    latest = latest_frame(frame).set_index("sector_id")
+    column = f"rank_{profile}"
+    ordered = latest[latest[column].notna()].nsmallest(top, column)
+
+    out = []
+    for sector_id in ordered.index:
+        row = ordered.loc[sector_id]
+        parts = axis_breakdown(frame, sector_id, profile=profile)
+        scored = [p for p in parts if p["contribution_bp"] is not None]
+        best = max(scored, key=lambda p: p["contribution_bp"]) if scored else None
+        out.append({
+            "sector_id": sector_id,
+            "label": names.sector_label(sector_id),
+            "rank": _int_or_none(row[column]),
+            "score_bp": _int_or_none(row[f"score_{profile}_bp"]),
+            # 🔒 기여가 음수뿐이면 "끌어올린 축" 은 없다. 지어내지 않는다
+            "lead_axis": best["axis"] if best and best["contribution_bp"] > 0 else None,
+            "liquidity_ok": _bool_or_none(row.get("liquidity_ok")),
+            "etf_n": _int_or_none(row.get("etf_n")),
+        })
+    return out
+
+
+def score_bars(frame: Any, *, profile: str = "balanced",
+               names: Names | None = None) -> Any:
+    """막대 차트가 그대로 받는 프레임 — 색인은 한국어 이름, 값은 σ.
+
+    🔴 **bp 가 아니라 σ 로 넘긴다.** 막대는 눈금을 읽히려고 두는 것이 아니라
+       간격을 보이려고 두는 것이고, `12522` 는 사람이 즉시 못 읽는다. σ 는
+       읽는법 화면이 이미 가르친 단위다.
+
+    🔒 순위 순서 그대로 돌려준다. 화면은 `sort=False` 로 그려 이 순서를 지킨다 —
+       알파벳순으로 다시 정렬되면 "위에서부터 1등" 이라는 유일한 읽는 법이 깨진다.
+    """
+    import pandas as pd
+
+    names = names or Names.empty()
+    latest = latest_frame(frame).set_index("sector_id")
+    column = f"score_{profile}_bp"
+    ordered = latest[latest[f"rank_{profile}"].notna()].sort_values(f"rank_{profile}")
+    return pd.DataFrame(
+        {"점수(σ)": [_float_or_none(v) / 10000 if _float_or_none(v) is not None else None
+                     for v in ordered[column]]},
+        index=pd.Index([names.sector_label(s) for s in ordered.index], name="섹터"),
+    )
+
+
+def _int_or_none(value: Any) -> int | None:
+    return int(value) if _notna(value) else None
+
+
+def _float_or_none(value: Any) -> float | None:
+    return float(value) if _notna(value) else None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    return bool(value) if _notna(value) else None
+
+
+def arithmetic_table(frame: Any, sector_id: str, *, profile: str = "balanced") -> Any:
+    """한 섹터의 **산수를 그대로 편 표** — 원시값 → σ → 가중치 → 기여.
+
+    🔴 읽는법 화면의 예시가 이것을 쓴다. 팀원이 가장 자주 묻는 것은 "이 숫자가
+       어디서 나왔나" 이고, 그 답은 설명이 아니라 **덧셈이 맞아떨어지는 것을
+       보여주는 일**이다 — 기여의 합이 총점과 정확히 같다
+       (`test_기여도_합이_점수와_같다` 가 그것을 고정한다).
+
+    🔒 결측 축은 기여가 `None` 이라 합에서 빠진다. 0 으로 적으면 덧셈은 맞아 보이지만
+       "재지 못한 축" 과 "0 인 축" 이 화면에서 같아진다.
+    """
+    import pandas as pd
+
+    from dashboard.explain import axis_raw_text
+    from sector.scoring import AXIS_NAMES
+
+    parts = axis_breakdown(frame, sector_id, profile=profile)
+    return pd.DataFrame(
+        [{
+            "축": f"{AXIS_NAMES[p['axis']]} ({p['axis']})",
+            "① 원시값": axis_raw_text(p["axis"], p["raw_bp"]),
+            "② σ": None if p["z_bp"] is None else p["z_bp"] / 10000,
+            "③ 가중치": p["weight"],
+            "④ 기여(bp)": p["contribution_bp"],
+        } for p in parts]
+    ).set_index("축")

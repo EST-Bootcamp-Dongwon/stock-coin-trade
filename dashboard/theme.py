@@ -47,6 +47,12 @@ div[data-testid="stMetric"], .sc-panel {
   border-radius: 8px;
   padding: 14px 16px;
 }
+/* 등수 카드 — 🔴 숫자를 크게 두는 것이 요점이다. 표에서 1등을 눈으로 찾는 일이
+   개발자가 아닌 팀원에게는 진입 장벽이다. 🔒 색으로 순위를 매기지 않는다 —
+   금·은·동은 "좋다/나쁘다" 를 말하고, 이 도구는 그 말을 하지 않는다 */
+.sc-rank { font-size: 1.9rem; font-weight: 700; line-height: 1.1;
+           font-feature-settings: "tnum" 1; }
+.sc-rank-name { font-size: 1.05rem; font-weight: 600; margin-bottom: 2px; }
 .sc-muted { color: #8B93A1; font-size: 0.88rem; line-height: 1.5; }
 .sc-note  { color: #8B93A1; font-size: 0.86rem; white-space: pre-wrap; }
 .sc-warn  { color: #FF6B6B; font-weight: 600; }

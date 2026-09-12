@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from sector.datastore import hub
 from sector.sources.krx_common import repo_root
 
-__all__ = ["DataUnavailable", "Source", "load_scores", "load_sectors", "latest_day"]
+__all__ = ["DataUnavailable", "Source", "load_scores", "load_sectors", "latest_day",
+           "sector_names", "sector_notes"]
 
 #: HF 에 게시된 앱 전용 파일. 🔒 앱은 `latest/` 만 읽는다 — 월별 샤드를 전부
 #:    받으면 메모리 2.7GB 한도에 닿는다.
@@ -148,3 +150,38 @@ def workspace_store() -> tuple[Any, Source]:
             label="로컬 원장 — 🔴 이 컴퓨터에만 남고 팀원에게 보이지 않는다",
             detail=str(repo_root() / "data" / "workspace"),
         )
+
+
+# ── 한국어 이름과 사람이 쓴 근거 ────────────────────────────────────────────
+# 🔴 **여기 한 곳에서만 읽는다.** 페이지마다 `load_sectors()` 를 부르면 캐시가
+#    갈라지고, 어떤 화면은 `steel` 을 어떤 화면은 `철강` 을 그리게 된다 —
+#    실제로 M8 직후가 그 상태였다(랭킹·확정 둘 다 코드를 그렸다).
+
+@lru_cache(maxsize=1)
+def _master() -> Any:
+    """`sectors.yaml`. 🔒 못 읽어도 화면은 살아 있어야 한다 — `None` 을 돌려준다.
+
+    🔒 `st.cache_data` 가 아니라 `lru_cache` 다 — `SectorMaster` 는 직렬화 대상이
+       아니고, 이 모듈은 `streamlit` 을 import 하지 않아 화면 없이 테스트된다.
+
+    이름이 없는 것은 **점수가 없는 것과 다르다.** 점수를 못 읽으면 화면이 멈추지만
+    (`DataUnavailable`), 이름을 못 읽으면 코드로라도 그릴 수 있다.
+    """
+    try:
+        return load_sectors()
+    except Exception:                    # noqa: BLE001 — 설정 파일 문제. 코드로 그린다
+        return None
+
+
+def sector_names() -> Any:
+    """식별자 → 한국어 이름. 🔒 실패하면 빈 이름표라 `sector_label()` 이 코드를 준다."""
+    from dashboard.view import Names
+
+    master = _master()
+    return Names.of(master) if master is not None else Names.empty()
+
+
+def sector_notes() -> dict[str, str]:
+    """`sectors.yaml` 의 `note` — 왜 이렇게 묶었나. 🔒 이 줄이 화면에 그대로 나간다."""
+    master = _master()
+    return {s.id: s.note for s in master.sectors} if master is not None else {}

@@ -18,8 +18,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from dashboard import data, session, theme, view
-from dashboard.explain import liquidity_text, score_text
+from dashboard import data, evidence, explain, session, theme, view
 from sector.workspace import events, fold
 
 
@@ -45,13 +44,15 @@ def render() -> None:
             return
 
         scores = _scores()
-        _render_status(team)
+        names = data.sector_names()
+        _render_status(team, names)
         st.divider()
         if team.is_confirmed:
+            _render_confirmed_evidence(scores, team, names)
             _render_cancel(store, team, actor)
         else:
-            _render_confirm(store, team, actor, scores)
-        _render_history(workspace, team_id)
+            _render_confirm(store, team, actor, scores, names)
+        _render_history(workspace, team_id, names)
     finally:
         theme.footer(source_label)
 
@@ -64,40 +65,53 @@ def _scores():
         return None
 
 
-def _render_status(team: fold.Team) -> None:
+def _render_status(team: fold.Team, names) -> None:
     with theme.panel(f"{team.name} (`{team.id}`)"):
         if not team.is_confirmed:
             st.markdown("핵심 섹터 **미정**")
             return
-        st.markdown(f"핵심 섹터 **{team.core_sector}**")
+        st.markdown(f"핵심 섹터 **{names.sector_full(team.core_sector)}**")
         st.markdown(f"<div class='sc-note'>{team.core_reason}</div>", unsafe_allow_html=True)
         st.markdown(
             f"<div class='sc-muted'>{team.confirmed_by} · {team.confirmed_at}</div>",
             unsafe_allow_html=True)
 
 
-def _render_confirm(store, team: fold.Team, actor: str, frame) -> None:
+def _render_confirmed_evidence(frame, team: fold.Team, names) -> None:
+    """확정한 뒤에도 근거를 계속 보여준다.
+
+    🔴 확정은 끝이 아니라 **3개월 운용의 시작**이다. 확정 화면이 사유 한 줄만
+       남기고 근거를 감추면, 다음 주에 "왜 이걸 골랐더라" 를 다시 랭킹 화면에서
+       찾아야 한다.
+    """
+    if frame is None:
+        return
+    st.subheader("이 섹터의 근거")
+    evidence.render_evidence(frame, team.core_sector, names=names)
+
+
+def _render_confirm(store, team: fold.Team, actor: str, frame, names) -> None:
     st.subheader("확정하기")
     if frame is None:
         st.error("섹터 점수를 불러올 수 없어 후보를 보여줄 수 없다.")
         return
 
-    table = view.ranking_table(frame, profile="balanced")
+    table = view.ranking_table(frame, profile="balanced", names=names)
     latest = view.latest_frame(frame).set_index("sector_id")
 
     def label(sid: str) -> str:
         row = latest.loc[sid]
         badge = "" if bool(row["liquidity_ok"]) else " 🔴유동성"
-        return f"{int(row['rank_balanced'])}위 · {sid}{badge}"
+        return f"{int(row['rank_balanced'])}위 · {names.sector_label(sid)}{badge}"
 
     sector_id = st.selectbox("핵심 섹터", list(table.index), key="confirm_sector",
                              format_func=label)
     if sector_id:
-        row = latest.loc[sector_id]
-        st.markdown(
-            f"{score_text(int(row['score_balanced_bp']), int(row['rank_balanced']), len(latest))}"
-            f" · {liquidity_text(bool(row['liquidity_ok']))}")
-        if not bool(row["liquidity_ok"]):
+        # 🔴 여기가 M8 의 빈 자리였다 — 점수 한 줄만 있었다. 사유를 쓰라고 하면서
+        #    무엇을 근거로 쓸지는 안 보여주면, 사유 칸이 빈 채로 남거나 "1위라서"
+        #    로 채워진다. 랭킹 화면과 **같은 함수**를 부른다
+        evidence.render_evidence(frame, sector_id, names=names)
+        if not bool(latest.loc[sector_id]["liquidity_ok"]):
             st.markdown(
                 "<div class='sc-warn'>🔴 ETF 거래가 적어 실제 매수가 어렵다. "
                 "구성종목으로 담을 수 있는지 먼저 확인한다.</div>", unsafe_allow_html=True)
@@ -119,7 +133,8 @@ def _render_confirm(store, team: fold.Team, actor: str, frame) -> None:
             st.error(str(exc))
             return
         if _write(store, event):
-            st.success(f"{sector_id} 을(를) 핵심 섹터로 확정했다.")
+            label_ko = names.sector_label(sector_id)
+            st.success(f"{label_ko}{explain.josa(label_ko, '을를')} 핵심 섹터로 확정했다.")
             st.rerun()
 
 
@@ -140,7 +155,7 @@ def _render_cancel(store, team: fold.Team, actor: str) -> None:
             st.rerun()
 
 
-def _render_history(workspace: fold.Workspace, team_id: str) -> None:
+def _render_history(workspace: fold.Workspace, team_id: str, names) -> None:
     history = workspace.history_of(team_id)
     if not history:
         return
@@ -154,7 +169,8 @@ def _render_history(workspace: fold.Workspace, team_id: str) -> None:
         "comment.posted": "코멘트",
     }
     for event in reversed(history):
-        detail = event.payload.get("sector_id") or ""
+        sector_id = event.payload.get("sector_id") or ""
+        detail = names.sector_label(sector_id) if sector_id else ""
         reason = event.payload.get("reason") or event.payload.get("member") or ""
         head = f"**{labels.get(event.kind, event.kind)}**"
         if detail:

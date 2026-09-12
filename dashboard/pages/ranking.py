@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from dashboard import data, theme, view
-from dashboard.explain import (
-    AXIS_NOT, axis_line, degraded_text, liquidity_text, preset_label,
-    rank_stability_text, score_text,
-)
+from dashboard import data, evidence, theme, view
+from dashboard.explain import AXIS_NOT, lead_axis_text, preset_label, rank_badge
 from sector.scoring import AXES, AXIS_NAMES
 
 _STABILITY_DAYS = 20
@@ -44,16 +41,27 @@ def render() -> None:
             format_func=preset_label, key="rank_profile",
         )
 
+        names = data.sector_names()
+
+        st.subheader("상위 3")
+        _render_podium(frame, profile, names)
+
         st.subheader("순위")
-        table = view.ranking_table(frame, profile=profile, days=_STABILITY_DAYS)
+        table = view.ranking_table(frame, profile=profile, days=_STABILITY_DAYS,
+                                   names=names)
         # 🔴 요청한 20일이 다 없을 수 있다. 있는 만큼으로 이름 붙인다
         window = view.stability_window(frame, days=_STABILITY_DAYS)
         st.dataframe(
             table,
             width="stretch",
             column_config={
-                "점수bp": st.column_config.NumberColumn(
-                    "점수", help="Σ(가중치×z)/Σ가중치 × 10000. ±30000 = ±3σ", format="%d"),
+                # 🔴 숫자와 **막대를 같이** 준다. `12522` 는 즉시 못 읽지만 막대 길이는
+                #    읽힌다. 🔒 눈금은 이 날의 최소~최대라 절대 크기가 아니라 간격이다
+                "점수bp": st.column_config.ProgressColumn(
+                    "점수", help="Σ(가중치×z)/Σ가중치 × 10000. ±30000 = ±3σ. "
+                                "막대는 이 날 21개 섹터의 최소~최대 안에서의 자리다",
+                    format="%d", min_value=_floor(table["점수bp"]),
+                    max_value=_ceil(table["점수bp"])),
                 "평균순위": st.column_config.NumberColumn(
                     f"최근{window}일 평균순위",
                     help="🔴 '오늘만 1등' 과 '계속 1등' 을 가른다. "
@@ -72,21 +80,71 @@ def render() -> None:
             unsafe_allow_html=True,
         )
 
+        st.subheader("점수를 한눈에")
+        _render_bars(frame, profile, names)
+
         st.subheader("셋 다 상위인 섹터")
-        _render_consensus(frame)
+        _render_consensus(frame, names)
 
         st.subheader("왜 이 점수인가")
         chosen = st.selectbox(
             "섹터", list(table.index), key="rank_detail",
-            format_func=lambda sid: f"{table.loc[sid, '순위']}위 · {sid}",
+            format_func=lambda sid: f"{int(table.loc[sid, '순위'])}위 · "
+                                    f"{names.sector_full(sid)}",
         )
         if chosen:
-            _render_breakdown(frame, table, chosen, profile)
+            _render_breakdown(frame, chosen, profile, names)
     finally:
         theme.footer(source_label)
 
 
-def _render_consensus(frame) -> None:
+def _render_podium(frame, profile: str, names) -> None:
+    """상위 3 — **등수를 크게, 이유를 옆에.**
+
+    🔴 21행 표에서 1등을 눈으로 찾는 일이 개발자가 아닌 팀원에게는 진입 장벽이다.
+    🔒 그렇다고 등수만 크게 그리지 않는다. "무엇이 끌어올렸나" 와 유동성 경고를
+       같은 카드에 둔다 — 등수만 보이면 "1위 = 사면 오른다" 로 읽힌다.
+    """
+    entries = view.podium(frame, profile=profile, names=names)
+    if not entries:
+        st.markdown("<div class='sc-muted'>순위를 낼 수 있는 섹터가 없다.</div>",
+                    unsafe_allow_html=True)
+        return
+    for column, entry in zip(st.columns(len(entries)), entries, strict=True):
+        with column, theme.panel():
+            st.markdown(
+                f"<div class='sc-rank'>{rank_badge(entry['rank'])}</div>"
+                f"<div class='sc-rank-name'>{entry['label']}</div>",
+                unsafe_allow_html=True)
+            score = entry["score_bp"]
+            st.markdown(f"**{score / 10000:+.2f}σ**" if score is not None
+                        else theme.missing("점수 없음"), unsafe_allow_html=True)
+            st.markdown(f"<div class='sc-muted'>{lead_axis_text(entry['lead_axis'])}</div>",
+                        unsafe_allow_html=True)
+            if entry["liquidity_ok"] is False:
+                st.markdown("<div class='sc-warn'>🔴 유동성 미달</div>",
+                            unsafe_allow_html=True)
+            elif entry["etf_n"] == 1:
+                st.markdown("<div class='sc-warn'>🔴 ETF 1종</div>",
+                            unsafe_allow_html=True)
+
+
+def _render_bars(frame, profile: str, names) -> None:
+    """21개 섹터 점수를 가로 막대로. 🔒 순위 순서를 지킨다(`sort=False`).
+
+    🔴 0 을 기준으로 좌우로 갈린다 — 음수 섹터가 왼쪽으로 뻗는 그림이 "평균보다
+       아래" 를 표보다 빨리 말한다.
+    """
+    bars = view.score_bars(frame, profile=profile, names=names)
+    st.bar_chart(bars, horizontal=True, sort=False, height=460,
+                 x_label="점수(σ) — 0 이 21개 섹터의 가운데다", y_label="")
+    st.markdown(
+        "<div class='sc-muted'>위에서부터 1위다. 막대가 왼쪽이면 그날 섹터들의 "
+        "가운데보다 낮았다는 뜻이고, 앞으로 오른다·내린다는 뜻이 아니다.</div>",
+        unsafe_allow_html=True)
+
+
+def _render_consensus(frame, names) -> None:
     """🔒 가중치에 기대지 않는 신호. 셋 다 상위 5 안이면 배지를 준다."""
     latest = view.latest_frame(frame).set_index("sector_id")
     top = {p: set(latest.nsmallest(5, f"rank_{p}").index) for p in view.PROFILES}
@@ -101,62 +159,19 @@ def _render_consensus(frame) -> None:
     for sid in consensus:
         row = latest.loc[sid]
         ranks = " · ".join(f"{p} {int(row[f'rank_{p}'])}위" for p in view.PROFILES)
-        st.markdown(f"- **{sid}** — {ranks}")
+        st.markdown(f"- **{names.sector_label(sid)}** — {ranks}")
 
 
-def _render_breakdown(frame, table, sector_id: str, profile: str) -> None:
-    latest = view.latest_frame(frame).set_index("sector_id")
-    row = latest.loc[sector_id]
-    total = len(latest)
-
-    with theme.panel(f"{sector_id}"):
-        st.markdown(
-            "**총점** " + score_text(int(row[f"score_{profile}_bp"]),
-                                     int(row[f"rank_{profile}"]), total))
-        stability = table.loc[sector_id]
-        st.markdown(rank_stability_text(
-            _num(stability["평균순위"]), _num(stability["진폭"]),
-            view.stability_window(frame, days=_STABILITY_DAYS)))
-
-        for item in view.axis_breakdown(frame, sector_id, profile=profile):
-            axis = item["axis"]
-            line = axis_line(axis, raw_bp=item["raw_bp"], z_bp=item["z_bp"],
-                             rank=item["rank"], total=total)
-            share = (f" → 기여 **{item['contribution_bp']:+d}**"
-                     if item["contribution_bp"] is not None else "")
-            st.markdown(f"- {line} · 가중치 {item['weight']}{share}")
-
-        st.markdown(f"<div class='sc-muted'>{liquidity_text(_bool(row['liquidity_ok']))}</div>",
-                    unsafe_allow_html=True)
-        warning = degraded_text(row.get("axes_missing"), row.get("axes_degraded"))
-        if warning:
-            st.markdown(f"<div class='sc-warn'>{warning}</div>", unsafe_allow_html=True)
-        if int(row["etf_n"]) == 1:
-            st.markdown(
-                "<div class='sc-warn'>🔴 ETF 가 하나뿐이라 자금흐름이 그 한 종목에 달려 있다"
-                "</div>", unsafe_allow_html=True)
-
-        note = _note_of(sector_id)
-        if note:
-            st.markdown("**사람이 쓴 근거** (`sectors.yaml`)")
-            st.markdown(f"<div class='sc-note'>{note}</div>", unsafe_allow_html=True)
+def _render_breakdown(frame, sector_id: str, profile: str, names) -> None:
+    with theme.panel(names.sector_full(sector_id)):
+        evidence.render_evidence(frame, sector_id, profile=profile, names=names,
+                                 days=_STABILITY_DAYS)
 
 
-@st.cache_data(ttl=None, max_entries=4, show_spinner=False)
-def _notes() -> dict[str, str]:
-    """`sectors.yaml` 의 `note` — 왜 이렇게 묶었나. 🔒 이 줄이 화면에 그대로 나간다."""
-    return {s.id: s.note for s in data.load_sectors().sectors}
+def _floor(column) -> int:
+    """막대 눈금의 아래끝. 🔒 0 으로 고정하지 않는다 — 음수 점수가 잘린다."""
+    return int(min(column.min(), 0))
 
 
-def _note_of(sector_id: str) -> str:
-    return _notes().get(sector_id, "")
-
-
-def _num(value) -> float | None:
-    import pandas as pd
-    return None if value is None or pd.isna(value) else float(value)
-
-
-def _bool(value) -> bool | None:
-    import pandas as pd
-    return None if value is None or pd.isna(value) else bool(value)
+def _ceil(column) -> int:
+    return int(max(column.max(), 1))

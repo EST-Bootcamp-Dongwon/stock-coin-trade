@@ -27,7 +27,7 @@ __all__ = [
     "AXIS_MEANING", "AXIS_NOT", "AXIS_UNIT",
     "axis_raw_text", "axis_line", "score_text", "rank_stability_text",
     "josa", "sigma_words", "axis_plain", "narrative",
-    "liquidity_text", "degraded_text",
+    "liquidity_text", "degraded_text", "lead_axis_text", "rank_badge",
 ]
 
 #: 축이 **묻는 것**. 한 줄로 끝낸다 — 길면 안 읽힌다.
@@ -302,3 +302,20 @@ def narrative(
         "앞으로 오른다는 뜻이 아니고, 무엇을 사라는 뜻도 아니다."
     )
     return lines
+
+
+def lead_axis_text(axis: str | None) -> str:
+    """등수 카드의 한 줄 — **무엇이 이 섹터를 끌어올렸나.**
+
+    🔴 등수만 크게 그리면 "1위 = 사면 오른다" 로 읽힌다. 그래서 카드마다 이유를
+       한 축으로 붙인다. 🔒 끌어올린 축이 없으면(전부 감점) 지어내지 않는다.
+    """
+    if axis is None:
+        return "끌어올린 축이 없다 — 다른 섹터가 더 많이 깎였을 뿐이다"
+    name = AXIS_NAMES.get(axis, axis)
+    return f"**{name}**{josa(name, '이가')} 끌어올렸다"
+
+
+def rank_badge(rank: int | None) -> str:
+    """`1위` — 🔒 메달 이모지를 쓰지 않는다. 등수는 상장이 아니라 좌표다."""
+    return f"{rank}위" if rank else "—"

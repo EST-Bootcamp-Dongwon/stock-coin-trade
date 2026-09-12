@@ -111,6 +111,89 @@ def test_프리셋마다_표가_나온다(profile):
     assert len(table) == 3 and "순위" in table.columns
 
 
+# ── 등수 · 막대 · 서술의 재료 ───────────────────────────────────────────────
+# 🔴 M8 직후 `narrative()` 와 `Names` 는 **정의만 되고 아무도 부르지 않았다.**
+#    화면은 `steel` 을 그렸고 서술은 죽은 코드였다. 아래가 그 회귀를 막는다.
+
+KOREAN = view.Names(sector={"sec_0": "가", "sec_1": "나", "sec_2": "철강"},
+                    gics={"Industrials": "산업재"})
+
+
+def test_랭킹표에_한국어_이름이_들어간다():
+    """🔴 `names=` 를 빠뜨리면 표가 조용히 코드를 그린다 — 실제로 그랬다."""
+    table = view.ranking_table(frame(), names=KOREAN)
+    assert list(table["섹터"]) == [KOREAN.sector_label(s) for s in table.index]
+    assert "철강" in set(table["섹터"])
+    assert set(table["GICS"]) == {"산업재"}
+
+
+def test_이름을_모르면_코드를_그대로_준다():
+    """🔒 지어내지 않는다. `sectors.yaml` 을 못 읽어도 화면은 산다."""
+    table = view.ranking_table(frame(), names=view.Names.empty())
+    assert list(table["섹터"]) == list(table.index)
+
+
+def test_등수_카드는_순위_순서로_상위만_준다():
+    entries = view.podium(frame(), top=2, names=KOREAN)
+    assert [e["rank"] for e in entries] == [1, 2]
+    assert entries[0]["label"] == "철강"          # sec_2 가 1위다
+    assert all(e["sector_id"] in KOREAN.sector for e in entries)
+
+
+def test_끌어올린_축이_없으면_지어내지_않는다():
+    """🔒 기여가 전부 음수면 `lead_axis` 는 `None` 이고 문구가 그 사실을 말한다."""
+    data = frame()
+    for column in ("m_z_bp", "f_z_bp", "b_z_bp", "v_z_bp"):
+        data[column] = -5000
+    entry = view.podium(data, top=1)[0]
+    assert entry["lead_axis"] is None
+    assert "지어" not in explain.lead_axis_text(None)      # 문구가 존재한다
+    assert "없다" in explain.lead_axis_text(None)
+
+
+def test_끌어올린_축은_기여가_가장_큰_축이다():
+    data = frame()
+    data["f_z_bp"] = 29000                       # 자금흐름만 크게 띄운다
+    assert view.podium(data, top=1)[0]["lead_axis"] == "F"
+
+
+def test_막대는_순위_순서와_σ_로_준다():
+    """🔒 화면이 `sort=False` 로 그리므로 이 순서가 곧 화면 순서다."""
+    bars = view.score_bars(frame(), names=KOREAN)
+    assert list(bars.index) == ["철강", "나", "가"]          # 1위부터
+    assert bars["점수(σ)"].iloc[0] == pytest.approx(
+        view.latest_frame(frame()).set_index("sector_id")
+        .loc["sec_2", "score_balanced_bp"] / 10000)
+
+
+def test_서술_재료는_없는_섹터에_빈_것을_준다():
+    assert view.sector_story(frame(), "없는섹터") == {}
+
+
+def test_서술_재료가_서술_함수에_그대로_들어간다():
+    """🔴 두 쪽이 어긋나면 화면이 `TypeError` 로 죽는다. 계약을 여기서 고정한다."""
+    story = view.sector_story(frame(), "sec_2", names=KOREAN)
+    lines = explain.narrative(**story)
+    assert lines and "철강" in lines[0] and "1위" in lines[0]
+    assert "투자" not in lines[0]
+    assert "앞으로 오른다는 뜻이 아니" in lines[-1]     # 🔒 마지막 줄은 언제나 이것이다
+
+
+def test_산수표의_기여합이_총점과_같다():
+    """🔴 읽는법 예시의 요점이 '덧셈이 맞아떨어진다' 는 것이다."""
+    data = frame()
+    table = view.arithmetic_table(data, "sec_2")
+    latest = view.latest_frame(data).set_index("sector_id")
+    assert table["④ 기여(bp)"].sum() == latest.loc["sec_2", "score_balanced_bp"]
+
+
+def test_조사가_붙는다():
+    """🔒 '철강은' · '가는' — 기계가 쓴 티가 나는 `은(는)` 을 쓰지 않는다."""
+    assert explain.josa("철강", "은는") == "은"
+    assert explain.josa("가", "은는") == "는"
+    assert explain.josa("철강 (steel)", "이가") == "이"
+
+
 # ── 문구 ────────────────────────────────────────────────────────────────────
 
 def test_값이_없으면_0_이_아니라_대시다():
@@ -457,3 +540,81 @@ def test_마스터는_남의_조도_보관할_수_있다(ledger, monkeypatch):
     at.text_input(key="archive_reason_team_a").input("마스터가 정리").run()
     at.button(key="archive_team_a").click().run()
     assert "team_a" not in fold.fold(ledger.read_all()).active_teams
+
+# ── 근거를 두 화면이 같이 그린다 ────────────────────────────────────────────
+# 🔴 M8 직후 확정 화면에는 점수 한 줄뿐이었다. 사유를 쓰라고 하면서 무엇을 근거로
+#    쓸지는 안 보여주면, 사유 칸은 "1위라서" 로 채워진다.
+
+
+def _markdown(at) -> str:
+    return "\n".join(str(m.value) for m in at.markdown)
+
+
+def test_확정_화면이_근거를_보여준다(ledger):
+    """🔒 랭킹과 **같은 함수**를 부르므로 두 화면의 문구가 갈라지지 않는다."""
+    _make_team(_run(_teams_page, ledger))
+    at = _run(_confirm_page, ledger)
+    at.session_state["sc_actor"] = "동원"
+    at.session_state["sc_team_id"] = "team_a"
+    at.run()
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+
+    body = _markdown(at)
+    # 서술 마지막 줄은 언제나 이 문장이다 — 근거 블록이 실제로 그려졌다는 뜻
+    assert "앞으로 오른다는 뜻이 아니" in body
+    assert "사람이 쓴 근거" in body        # `sectors.yaml` 의 note 까지 왔다
+
+
+def test_확정한_뒤에도_근거가_남는다(ledger):
+    """🔴 확정은 끝이 아니라 3개월 운용의 시작이다."""
+    _make_team(_run(_teams_page, ledger))
+    at = _run(_confirm_page, ledger)
+    at.session_state["sc_actor"] = "동원"
+    at.session_state["sc_team_id"] = "team_a"
+    at.run()
+    at.text_area(key="confirm_reason").input("자금흐름이 압도적이다").run()
+    at.button(key="confirm_submit").click().run()
+
+    at = _run(_confirm_page, ledger)
+    at.session_state["sc_actor"] = "동원"
+    at.session_state["sc_team_id"] = "team_a"
+    at.run()
+    assert any("이 섹터의 근거" in h.value for h in at.subheader)
+
+
+def test_확정_화면이_코드가_아니라_한국어_이름을_쓴다(ledger):
+    """🔴 팀은 `steel` 이 아니라 `철강` 으로 말한다."""
+    _make_team(_run(_teams_page, ledger))
+    at = _run(_confirm_page, ledger)
+    at.session_state["sc_actor"] = "동원"
+    at.session_state["sc_team_id"] = "team_a"
+    at.run()
+    # 🔒 `AppTest` 의 `options` 는 이미 `format_func` 를 거친 문자열이다
+    shown = " ".join(at.selectbox(key="confirm_sector").options)
+    from dashboard import data as _data
+
+    known = set(_data.sector_names().sector.values())
+    if not known:
+        pytest.skip("이 환경에서 `sectors.yaml` 을 읽을 수 없다")
+    assert any(name in shown for name in known), shown
+
+
+def test_읽는법이_예시를_지어내지_않는다():
+    """🔴 예시 숫자를 만들어 두면 팀원이 그 숫자를 실제로 인용한다.
+
+    데이터가 있으면 **실제 값**으로 네 걸음을 그리고, 없으면 예시를 **빼고**
+    그 사실을 말한다 (ADR-SC-0007). 어느 쪽이든 가짜 숫자는 나오지 않는다.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "dashboard" / "pages" / "howto.py"),
+                           default_timeout=180)
+    at.run()
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+
+
+def test_등수_카드와_막대가_랭킹에_있다(app):
+    """#3 — 표만으로는 21행에서 1등을 눈으로 찾아야 한다."""
+    heads = [h.value for h in app.subheader]
+    assert "상위 3" in heads and "점수를 한눈에" in heads
+    assert "sc-rank" in _markdown(app)
