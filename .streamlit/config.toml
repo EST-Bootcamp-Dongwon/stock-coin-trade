@@ -30,10 +30,100 @@ gatherUsageStats = false
 # 안 박으면 팀원 7명의 OS 다크모드 설정에 따라 화면이 갈린다 —
 # "왜 내 화면만 다르냐"가 첫 질문이 된다.
 #
-# ★ `dark` 인 이유 — M8 팔레트가 이미 **어두운 배경으로 확정**돼 있다
-#   (계획서 F-4: 배경 `#121519` 4단 `#121519 / #191D23 / #21262E / #2A3039`).
-#   `light` 로 박아 두면 M8 에서 화면이 통째로 뒤집히고, 팀원이 M2 에서 본 화면과
-#   반대색이 된다 — base 를 박은 취지를 스스로 깨는 셈이다.
-# ★ 색·폰트·[theme.light]·[theme.dark]·[theme.sidebar] 는 **M8**
-#   (`dashboard/theme.py` · Pretendard) 소관이다. 여기서 팔레트를 정하지 않는다.
+# ★ `dark` 인 이유 — M8 팔레트가 **어두운 배경으로 확정**돼 있다 (계획서 F-4).
+# 🔒 **`[theme.light]` 를 만들지 않는다.** 이 파일은 `[theme]` 한 벌만 채운다.
+#    Streamlit 은 섹션의 값이 전부 비어 있으면 그 하위 테마를 **아예 보내지 않고**,
+#    그래야 화면이 OS 설정과 무관하게 **고정**된다. light 를 채우는 순간 갈린다.
+#    (`streamlit/runtime/app_session.py::_populate_theme_msg` — 전부 None 이면 early return)
 base = "dark"
+
+# ── 배경 4단 (F-4 ①) ────────────────────────────────────────────────
+# 🔴 순검정(#0a0c10)을 버린 이유 — 블룸버그 터미널 클리셰다. hue 220 · sat 6% 로
+#    살짝 푸르게 눕히면 중성회색의 죽은 느낌이 빠진다.
+# ★ **경계선이 아니라 단차로 패널을 가른다.** 선이 줄면 화면이 조용해진다.
+#   1단 앱 바탕 → 2단 패널·사이드바 → 3단 코드·표 머리 → 4단 경계.
+backgroundColor = "#121519"           # 1단
+secondaryBackgroundColor = "#191D23"  # 2단 — st.metric · container(border) · 코드
+codeBackgroundColor = "#21262E"       # 3단
+dataframeHeaderBackgroundColor = "#21262E"
+borderColor = "#2A3039"               # 4단
+dataframeBorderColor = "#2A3039"
+
+# 본문 글자색은 F-4 에 없어 **팔레트에서 파생**했다 — 배경과 같은 hue(≈218)로
+# 눕힌 밝은 회색이다. 기본 다크의 순백(#FAFAFA)을 그대로 두면 푸른 배경 위에서
+# 혼자 중성이라 튄다. 대비는 #121519 대비 약 15:1 로 WCAG AAA 를 넘는다.
+textColor = "#E8EBF0"
+
+# ── 의미색 3개 (F-4 ②) ──────────────────────────────────────────────
+# 🔒 **의미색과 범주색을 섞지 않는다.** "상승 초록"과 "차트 2번 초록"이 같은 색이면
+#    색이 아무 말도 하지 않게 된다. 아래 셋은 **뜻을 가진 색**이고,
+#    chartCategoricalColors 는 **뜻이 없는 색**이다.
+# ⬜ 🔴 한국 관습은 상승=빨강이다. 토글 + query_params 는 아직 없다 → M8 후속
+greenColor = "#3DDC97"   # 상승
+redColor = "#FF6B6B"     # 하락
+grayColor = "#8B93A1"    # 중립 · 보조 설명
+# ★ `*BackgroundColor`·`*TextColor` 변종은 **일부러 비워 둔다.** 지금 화면이
+#   `:green[…]` 배지를 쓰지 않아서, 채우면 F-4 에 없는 색을 6개 지어내게 된다.
+
+# primaryColor 는 버튼·포커스링·슬라이더를 칠한다 — 즉 **UI 강조**지 판단이 아니다.
+# 🔴 여기에 상승 초록(#3DDC97)을 쓰면 "확정" 버튼이 상승색이 된다. 이 도구는
+#    "사라"고 말하지 않는다. 그래서 뜻이 없는 파랑을 쓴다.
+primaryColor = "#5B8FF9"
+linkColor = "#5B8FF9"
+
+# ── 범주색 5 (F-4 ②) ────────────────────────────────────────────────
+# 🔴 **CSS 로는 여기에 닿지 못한다.** st.bar_chart 는 Vega-Lite canvas 라
+#    `<style>` 이 안으로 들어가지 않는다. 차트 색을 바꾸는 길은 이 키 하나뿐이다.
+# ★ 색약(적록) 안전 조합. 상위 5개에만 색을 주고 나머지는 회색으로 둔다.
+# ★ 길이 제약이 없다(sequential·diverging 만 정확히 10개를 요구한다).
+chartCategoricalColors = ["#5B8FF9", "#61DDAA", "#F6BD16", "#7262FD", "#78D3F8"]
+
+# ── 타이포 (F-4 ③④) ────────────────────────────────────────────────
+# 🔴 Inter·JetBrains Mono 에는 **한글 글리프가 없다.** 한글이 시스템 폰트로 떨어지면
+#    무게·베이스라인이 어긋나고, 그것이 한국어 대시보드가 "싸구려"로 보이는 가장 큰
+#    단일 원인이다. Pretendard 는 한글·라틴을 한 벌로 갖고 Inter 메트릭과 호환된다.
+# 🔒 `dashboard/theme.py` 의 `@import` 를 여기로 옮겼다. **둘을 같이 두지 않는다** —
+#    같은 폰트를 두 경로로 받게 되고, 어느 쪽이 이겼는지 아무도 모르게 된다.
+baseFontSize = 14   # 본문 14px. rem 의 기준이 이 값이다
+
+# 12/14/16/20/26/34 (F-4 ④ — 13/16/22 는 위계가 얕아 스캔이 안 된다).
+# baseFontSize=14 기준 rem 이라 h5 가 정확히 본문 크기(1rem)다.
+headingFontSizes = ["2.429rem", "1.857rem", "1.429rem", "1.143rem", "1rem", "0.857rem"]
+metricValueFontSize = "30px"   # 지표값 30
+
+# ★ 폰트 폴백 — 🔒 **CDN 이 막혀도 화면은 살아 있어야 한다.** CDN 차단은 사고가
+#   아니라 흔한 일이다. 쉼표 목록을 통째로 넘기면 그대로 font-family 가 된다.
+#   (`<이름>:<URL>` 형식은 폴백을 못 적는다 — 첫 콜론에서 갈라 이름 하나만 남는다)
+font = "Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif"
+# ★ codeFont 는 건드리지 않는다 — F-4 는 "모노스페이스는 표 안 숫자에만" 이다.
+#   전역 모노스페이스가 바로 그 터미널 클리셰다.
+
+# ── 모양새 (F-4 ①, 레이아웃) ────────────────────────────────────────
+baseRadius = "8px"     # 🔴 2px 는 터미널 클리셰의 나머지 절반이다
+buttonRadius = "6px"
+showWidgetBorder = false   # 입력 테두리를 끄고 **배경 단차**로 가른다
+showSidebarBorder = false  # 사이드바도 선이 아니라 단차(2단)로 갈린다
+
+[[theme.fontFaces]]
+# 🔴 실제로 200 을 주는 경로다. 저장소가 모노레포라 `dist/web/...` 이 아니라
+#    **`packages/pretendard/dist/web/...`** 이다 (`dist/web/*.css` 는 거기로
+#    상대경로를 건다). 2026-09-12 확인 — 200 · `font/woff2` ·
+#    `access-control-allow-origin: *` · `immutable`(1년 캐시).
+# ★ **가변 폰트 한 벌로 45~920 을 다 덮는다.** 정적 파일로 400/600/700 을 따로
+#   받으면 766KB × 3 이라 오히려 크다.
+# ⬜ 2.0MB 가 부담되면 `packages/pretendard-std/.../PretendardStdVariable.woff2`
+#    (292KB)로 한 줄 바꾸면 된다. 지금 쓰지 않는 이유 — std 는 KS X 1001 2350자
+#    묶음이라 **팀원이 직접 쓰는 자유 한국어**(확정 사유·코멘트)에서 드문 음절이
+#    빠지고, 그 글자만 시스템 폰트로 떨어져 문장 중간에 서체가 갈린다.
+#    그게 바로 위에서 피하려던 그 증상이다.
+family = "Pretendard"
+url = "https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/packages/pretendard/dist/web/variable/woff2/PretendardVariable.woff2"
+weight = "45 920"
+style = "normal"
+
+[theme.sidebar]
+# 🔒 사이드바는 본문보다 **한 단 위**다. 선 없이도 갈라 보이는 이유가 이것이다.
+# ★ 사이드바 폭 260px 은 여기서 못 정한다 — 그 한 줄만 `theme.py` 의 CSS 에 남는다.
+backgroundColor = "#191D23"           # 2단
+secondaryBackgroundColor = "#21262E"  # 3단
+borderColor = "#2A3039"
