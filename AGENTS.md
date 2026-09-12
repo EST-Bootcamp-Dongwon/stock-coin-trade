@@ -173,7 +173,32 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
 - **섹터 구성종목은 `sector/config/sectors.yaml` 에 사람이 손으로 적는다.**
   KRX Open API 에 지수 구성종목·ETF PDF 가 없다. 🔒 **모든 섹터에 `note`(왜 이렇게 묶었나)를
   1줄 이상 쓴다** — 근거 없는 묶음을 막는 게이트다
-- **Supabase 를 쓰지 않는다.** 무료 티어 7일 무활동 pause 가 치명적이다
-- **Vercel 연동은 해제됐다.** `api/`·`vercel.json` 코드는 보존 — 되살리려면 연동만 다시 건다
+- **배포는 둘을 공존시킨다** ★ (2026-09-12 개정 · [ADR-SC-0010](docs/decisions/0010-두-배포-공존과-쓰기-상태-분리.md))
+  — **Streamlit Cloud = 팀용 정본**(대회 기간 매일 쓴다) · **Django + Vercel = 확장·쇼케이스**.
+  🔒 **Streamlit 을 먼저 끄지 않는다.** 대회가 도는 중이다
+  - 의존성 분리는 **Vercel 의 Root Directory = `backend/`** 로 한다. 루트 `requirements.txt`
+    는 Streamlit 전용으로 **그대로 둔다.** 🔒 엔트리포인트를 하위 폴더로 옮기지 않는다 —
+    Streamlit 은 스크립트 폴더만 `sys.path` 에 넣어서 `import sector` 가 깨진다
+  - 🔒 **두 화면이 점수·서술을 각자 구현하지 않는다.** `sector/` 와 `dashboard/view.py`·
+    `explain.py` 가 공유 코어다. 렌더러 B 가 코어를 안 쓰면 **검증되지 않은 화면**이다
+  - ⚠️ `backend/` 26,597줄은 *다른 제품*(모의투자 플랫폼)이다. 물려받는 것은
+    `templates/base.html`·`_partials/`·Tailwind·HTMX/Alpine **패턴뿐**이고 섹터 화면은 새로 쓴다
+  - ⚠️ ~~ADR-SC-0008 ②③(Vercel 해제 · Supabase 미사용)~~ 은 **폐기됐다.** 근거로 삼지 마라
+- **쓰기 상태는 Supabase, 파생값은 HF — 이중 보관** ★ (2026-09-12 · ADR-SC-0010)
+  - **팀 원장**(조·참가·확정·코멘트) → Supabase `stock-coin-trade`(`sgbhrahtewojmicwmxxu`).
+    동시 쓰기·실시간·RLS 가 여기서 값을 한다
+  - **파생 집계·점수** → HF private dataset. 🔴 **Supabase Free 는 DB 500MB 다**
+    (5GB 는 egress). `score_daily` 는 3개월이면 수십MB로 자라 여기 둘 물건이 아니다
+  - 🔴 **제약 10 은 Supabase 에도 붙는다.** 올라가는 것은 **파생값뿐**이다
+  - 7일 pause 는 **매일 도는 `batch.publish` 가 한 줄 써서** 푼다.
+    🔒 GitHub Actions keep-alive 를 쓰지 않는다 (제약 6)
+  - 🔴🔴 **RLS 없이 원장을 넣지 않는다.** 현재 53개 테이블 전부 RLS 가 꺼져 있다
+    (0행이라 지금은 무해). 순서는 **스키마 → RLS 정책 → 마이그레이션 → 데이터**.
+    ⚠️ 정책 없이 `ENABLE ROW LEVEL SECURITY` 만 켜면 전 접근이 막혀 앱이 죽는다
+- **디자인 토큰은 한 벌이다** ★ (2026-09-12 · ADR-SC-0010 ⑦)
+  F-4 팔레트를 **`.streamlit/config.toml` 에서 먼저 확정**하고 같은 값을 Django 쪽
+  Tailwind 로 옮긴다. 🔴 **CSS 만으로 디자인하지 않는다** — `st.bar_chart` 는 canvas 라
+  CSS 가 닿지 않고, 차트 색은 `chartCategoricalColors` 로만 바뀐다.
+  `theme.py` 의 `_CSS` 에는 **`config.toml` 이 표현 못 하는 것만** 남긴다
 - **팀원은 개발자가 아니라 사용자다.** 설치 0, URL 하나. 화면이 용어를 설명해야 하고
   **"과거 데이터의 요약이다. 투자 권유가 아니다"** 를 상시 표시한다

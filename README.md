@@ -140,7 +140,7 @@ private 저장소라도 팀원 7명은 제3자다.
 | `dashboard/` | 테마 · 차트 · 설명 문구 |
 | `docs/decisions/` | ADR — **왜 그렇게 정했는지** |
 | `backend/` | v2.0 Django (**동결** — 아래) |
-| `api/` · `vercel.json` | Vercel 잔여 코드 (연동 해제됨 · 보존) |
+| `api/` · `vercel.json` | Vercel 코드 (재연동 예정 → ADR-SC-0010) |
 
 `AGENTS.md` 가 작업 규칙의 정본이고 `CLAUDE.md` 가 그것을 임포트한다.
 현재 어디까지 왔는지는 `세션-시작-프롬프트.md` 가 답한다.
@@ -164,9 +164,13 @@ cd backend && .venv/bin/python manage.py test    # DB 필요
 이 조건을 마일스톤 완료 조건에 넣었다. 넣지 않으면 "동결"이 거짓말이 된다.
 동결 해제 시점은 대회 종료 후에 다시 판단한다.
 
-**Vercel 배포는 2026-09 중단했다.** 빌드가 깨진 것이 아니라 Supabase 무료 티어의
-7일 무활동 자동 pause 로 DB 가 잠든 것이 원인이었다. `api/index.py`·`vercel.json`·`backend/`
-가 그대로 남아 있으므로 연동만 다시 걸면 되살아난다 → [ADR-SC-0008](docs/decisions/0008-배포-streamlit-전환과-원격-재구성.md).
+**Vercel 배포는 2026-09-11 에 중단했다가 2026-09-12 에 되살리기로 했다.**
+중단 원인은 빌드가 아니라 Supabase 무료 티어의 7일 무활동 pause 였는데, 매일 도는
+배치가 그것을 해결한다. `api/index.py`·`vercel.json`·`backend/` 가 그대로 남아 있다.
+
+⚠️ **동결은 그대로다.** 되살아나는 것은 *배포*이고, 새로 붙는 섹터 화면은 **새 앱**으로
+쓴다 — `contests`·`trading`·`market` 은 계속 개발하지 않는다.
+→ [ADR-SC-0010](docs/decisions/0010-두-배포-공존과-쓰기-상태-분리.md)
 
 ---
 
