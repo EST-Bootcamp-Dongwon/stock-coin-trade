@@ -192,9 +192,27 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
   - 🔴 **제약 10 은 Supabase 에도 붙는다.** 올라가는 것은 **파생값뿐**이다
   - 7일 pause 는 **매일 도는 `batch.publish` 가 한 줄 써서** 푼다.
     🔒 GitHub Actions keep-alive 를 쓰지 않는다 (제약 6)
-  - 🔴🔴 **RLS 없이 원장을 넣지 않는다.** 현재 53개 테이블 전부 RLS 가 꺼져 있다
-    (0행이라 지금은 무해). 순서는 **스키마 → RLS 정책 → 마이그레이션 → 데이터**.
-    ⚠️ 정책 없이 `ENABLE ROW LEVEL SECURITY` 만 켜면 전 접근이 막혀 앱이 죽는다
+  - 🔴🔴 **RLS 없이 원장을 넣지 않는다.** 순서는 **스키마 → RLS 정책 → 마이그레이션 → 데이터**
+- **원장 스키마와 RLS** ★ (2026-09-12 · [ADR-SC-0011](docs/decisions/0011-팀-원장-supabase-스키마와-rls.md))
+  마이그레이션은 `supabase/migrations/` 에 **SQL 로 남는다** (Vercel 설정과 달리 코드로 남는다)
+  - 🔴 **W12 는 과소평가였다.** "0행이라 무해" 는 *읽기* 관점이고, 실제로는 `anon` 에게
+    53개 전부 **INSERT·UPDATE·DELETE·TRUNCATE** 가 있었다. `external_token`·`api_key`
+    가 그 안에 있다 — **비어 있을 때 닫는다**
+  - ⚠️ ~~"정책 없이 RLS 만 켜면 앱이 죽는다"~~ 는 **anon 경로에만** 해당한다.
+    실측상 53개 소유자는 `postgres` 이고 **`rolbypassrls = true`** 다 — Django 는 우회한다.
+    그래서 v2.0 유산은 **정책 0개로 전면 차단**한다. 정책을 안 두는 것이 곧 정책이다
+  - 🔒 **원장은 테이블 하나**(`workspace_event`)다. 정규화하면 `fold.py` 를 버리게 된다
+  - 🔒 **`at` 은 `timestamptz` 가 아니라 `text`** — `event_id` 가 `at` **문자열**의
+    해시라 표기가 한 글자만 바뀌어도 `parse_event` 가 원장 전체를 거부한다
+  - 🔴 **passcode 해시는 원장 밖**(`workspace_team_secret` · 정책 0개 · GRANT 0).
+    원장 쪽에 `check (not (payload ? 'passcode_hash'))` 를 걸어 DB 가 규칙을 지킨다
+  - 🔴 **쓰기는 RPC 하나뿐이다.** anon 키는 공개 전제이므로 테이블 INSERT 를 열면
+    passcode 가 지키기로 한 것이 뚫린다. 🔒 **`service_role` 키를 앱에 두지 않는다**
+    (HF 토큰을 `WRITE`/`READ` 로 가른 것과 같은 판단)
+  - ⚠️ **원장 읽기는 공개다** — HF private 대비 실질 변화다. **코멘트에 비밀을 적지 않는다**
+  - 🔒 append-only 는 **트리거**가 지킨다. 소유자도 못 지운다. 되돌리기는 반대 이벤트
+  - 🔒 클라이언트는 **`requests` + PostgREST**. `supabase-py`·`psycopg` 를 넣지 않는다
+    (루트 `requirements.txt` 는 4줄이고 Streamlit Cloud 메모리를 직접 깎는다)
 - **디자인 토큰은 한 벌이다** ★ (2026-09-12 · ADR-SC-0010 ⑦)
   F-4 팔레트를 **`.streamlit/config.toml` 에서 먼저 확정**하고 같은 값을 Django 쪽
   Tailwind 로 옮긴다. 🔴 **CSS 만으로 디자인하지 않는다** — `st.bar_chart` 는 canvas 라

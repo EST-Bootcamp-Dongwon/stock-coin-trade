@@ -1,0 +1,20 @@
+-- 트리거 함수의 PUBLIC 기본 EXECUTE 를 거둔다
+--
+-- ## 🔴 왜 이것이 별도 마이그레이션인가 — `from anon` 만으로는 함수가 안 닫힌다
+--
+-- 앞의 두 마이그레이션을 적용한 뒤 권한을 재 보니 `workspace_event_append_only`
+-- 하나만 `anon` 이 실행할 수 있었다. 원인은 둘이 겹친 자리다 —
+--
+-- 1. `alter default privileges ... revoke ... from anon` (20260912095105)은
+--    **anon 에게 명시적으로 주던 것**만 없앤다
+-- 2. 그런데 Postgres 는 함수 생성 시 **`PUBLIC` 에 EXECUTE 를 기본 부여**하고,
+--    `anon` 은 PUBLIC 의 일원이다. 즉 1번으로는 이 경로가 닫히지 않는다
+--
+-- RPC 넷은 `revoke ... from public, anon, authenticated` 로 적었기에 정확히
+-- 닫혔는데, 트리거 함수만 그 목록에서 빠져 있었다.
+--
+-- 🔒 **실질 위험은 없다** — `returns trigger` 함수는 일반 SQL 에서 호출할 수 없다
+--    (Postgres 가 거부한다). 그래도 닫는 이유는 권한 목록을 읽는 사람이
+--    "왜 이것만 열려 있지" 를 묻지 않아야 하기 때문이다. 설명되지 않는 예외가
+--    하나 있으면, 다음 사람은 나머지도 의심하게 된다.
+revoke all on function public.workspace_event_append_only() from public, anon, authenticated;
