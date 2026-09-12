@@ -15,9 +15,10 @@
 
 ### 0.1 🔴 **Root Directory 를 비워 둔다 (저장소 루트)**
 
-Vercel → Settings → General → Root Directory 는 **빈칸이어야 한다.** `backend/` 로
-바꾸면 **배포가 조용히 죽는다** — 빌드는 `Ready` 로 뜨는데 **함수가 0개**가 되고 모든
-경로가 404 다. 2026-09-12 실측:
+Vercel → Settings → General → Root Directory 는 **빈칸이어야 한다**(`vercel project
+inspect` 가 `Root Directory .` 로 보여 준다 — 2026-09-12 확인). `backend/` 로 바꾸면
+**배포가 조용히 죽는다** — 빌드는 `Ready` 로 뜨는데 **함수가 0개**가 되고 모든 경로가
+404 다. 2026-09-12 실측:
 
 | Root Directory | Builds | `/` |
 |---|---|---|
@@ -267,12 +268,42 @@ vercel env ls production          # 확인
 
 > KIS·KRX·업비트 키는 **넣지 않는다.** 배포된 앱은 외부 API 를 부르지 않는다(2.1).
 
-### 3.3 배포
+### 3.3 배포 — ★ 평소에는 **push 가 배포다**
+
+`git push origin main`(GitLab 정본) 하면 **약 1분 뒤** 프로덕션이 바뀐다. 2026-09-12 실측:
+
+```
+20:45 KST  git push origin main            (ab8117e)
+20:47 KST  Cloning gitlab.com/dev-dongwon05253/stock-coin-trade (Branch: main, Commit: ab8117e)
+           Found .vercelignore → Removed 165 ignored files
+           Installing required dependencies from api/requirements.txt...
+           Build Completed in /vercel/output [8s]
+           λ api/index.py (34.76MB) · target production
+           별칭 stock-coin-trade.vercel.app 가 새 배포로 이동
+```
+
+🔒 **CLI 로 프로덕션에 올리지 않는다.** `vercel --prod` 는 **로컬 디렉터리를 업로드**하므로
+`.gitignore` 를 보지 않는다 — gitignore 된 `data/`(KRX 원천 · 제약 10)와 `.env` 를
+`.vercelignore` 가 **다시** 막아야 하는 이유가 그것이다. Git 경로는 clone 이라 커밋 안 된
+것이 애초에 존재하지 않는다. **같은 것을 두 번 막는 대신, 한 번도 노출되지 않는 경로를 쓴다.**
+
+검증용 preview 는 CLI 로 올려도 된다. 🔒 단 **저장소를 clone 한 깨끗한 폴더에서** 한다:
+
+```bash
+git clone --depth 1 --no-local file://$PWD /tmp/vtest
+mkdir -p /tmp/vtest/.vercel && cp .vercel/project.json /tmp/vtest/.vercel/   # .vercel/ 은 gitignore
+cd /tmp/vtest && vercel deploy --yes        # preview — 프로덕션 별칭을 건드리지 않는다
+```
+
+⚠️ preview 는 Deployment Protection 때문에 `curl` 이 302(SSO)로 돈다. **응답 대신
+`vercel inspect` 의 `Builds` 줄을 본다** — `λ api/index.py (…MB)` 가 있으면 성공,
+`. [0ms]` 만 있으면 0.1 의 그 실패다.
+
+최초 1회 링크만 CLI 로 한다:
 
 ```bash
 cd /path/to/stock-coin-trade
-vercel link          # 최초 1회 — 프로젝트 이름을 정한다
-vercel --prod
+vercel link
 ```
 
 ---
@@ -296,17 +327,20 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<주소>/internal/jobs/       #
 | `Network is unreachable` (마이그레이션) | 다이렉트 주소를 썼다. 세션 풀러로 바꾼다 (2.3) |
 | 간헐적 500 · `prepared statement … already exists` | `POSTGRES_PGBOUNCER=1` 이 빠졌다 (2.3) |
 
-**2026-08-14 최초 배포 실측 결과**
+**2026-08-14 최초 배포 실측 결과 — 🔁 2026-09-12 재실측에서 일곱 줄 전부 동일**
 
 ```
-/                          200
+/                          200      <title>모의투자 대회 플랫폼</title> 렌더
 /account/login/            200      로그인 → 302 → 홈에 대회 현황·계좌 요약 렌더
 /account/register/         200
 /fragments/market/         200      지수·상승/하락 TOP·코인 TOP + 시뮬레이션 배지
-/static/css/app.css        200      Tailwind v4.3.3 빌드본
+/static/css/app.css        200      Tailwind v4.3.3 빌드본 (본문까지 확인)
 /internal/jobs/            404      토큰 없음 — fail closed 정상
 /admin/                    302      로그인으로 리다이렉트 — 정상
 ```
+
+★ **`/` 가 200 이면 Supabase 도 살아 있다는 뜻이다** — 홈이 DB 를 읽는다(0.3).
+이 일곱 줄이 배포 점검의 전부다. 하나라도 어긋나면 아래 표로 간다.
 
 ---
 
