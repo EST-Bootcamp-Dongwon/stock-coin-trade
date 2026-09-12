@@ -17,11 +17,10 @@ from datetime import datetime, timezone
 import streamlit as st
 
 __all__ = ["now_utc", "actor", "set_actor", "team_id", "set_team", "leave",
-           "is_master", "set_master", "credential", "set_credential"]
+           "credential", "set_credential"]
 
 _ACTOR = "sc_actor"
 _TEAM = "sc_team_id"
-_MASTER = "sc_master"
 _CREDENTIAL = "sc_credential"
 
 
@@ -66,15 +65,6 @@ def credential() -> str | None:
 
 def set_credential(value: str) -> None:
     st.session_state[_CREDENTIAL] = value
-
-
-def is_master() -> bool:
-    """🔒 **이 브라우저 세션에서만** 열려 있다. 원장에 기록되지 않는다."""
-    return bool(st.session_state.get(_MASTER))
-
-
-def set_master(value: bool) -> None:
-    st.session_state[_MASTER] = bool(value)
 
 
 def leave() -> None:

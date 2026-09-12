@@ -610,31 +610,6 @@ def test_목록을_못_받으면_던진다():
         store.HubStore(Broken()).read_all()
 
 
-# ── 마스터 계정 ─────────────────────────────────────────────────────────────
-
-def test_시크릿이_없으면_아무도_마스터가_아니다(monkeypatch):
-    """🔴 '설정 안 했으니 모두 통과' 가 되면 정반대가 된다."""
-    monkeypatch.setattr(auth, "master_hash", lambda: None)
-    assert auth.is_master("무엇이든") is False
-    assert auth.is_master("") is False
-
-
-def test_마스터_해시가_있으면_맞는_것만_통과한다(monkeypatch):
-    stored = auth.hash_passcode("마스터-산-바다-강", salt=b"0" * 16)
-    monkeypatch.setattr(auth, "master_hash", lambda: stored)
-    assert auth.is_master("마스터-산-바다-강")
-    assert not auth.is_master("마스터-산-바다-숲")
-
-
-def test_평문이_들어오면_해시로_인정하지_않는다(monkeypatch):
-    """🔒 `.env` 에 평문을 넣어도 마스터가 되지 않는다 — 형식을 본다."""
-    from sector import secret_access
-
-    monkeypatch.setattr(secret_access, "get_secret",
-                        lambda name, **kw: "마스터-산-바다-강")
-    assert auth.master_hash() is None
-
-
 # ── 보관 ────────────────────────────────────────────────────────────────────
 
 def test_보관하면_목록에서_빠지되_기록은_남는다():

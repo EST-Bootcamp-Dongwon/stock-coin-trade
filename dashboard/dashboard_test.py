@@ -344,6 +344,63 @@ def ledger(tmp_path, monkeypatch):
     return store
 
 
+# ── 원장을 어디에 붙이는가 ──────────────────────────────────────────────────
+# 🔴 여기서 조용히 폴백하면 팀이 **서로 다른 원장**에 쓰면서 같은 것을 본다고
+#    믿게 된다. 못 붙는 것과 잘못 붙는 것을 다르게 다룬다 (`data.workspace_store`).
+
+
+def _supabase_secrets(monkeypatch, **values):
+    """`get_secret` 을 **두 자리에서** 가로챈다.
+
+    🔒 `store.py` 는 `from … import get_secret` 로 **이름을 묶어 뒀다.** 모듈
+       하나만 patch 하면 다른 쪽이 진짜 `.env` 를 읽어 테스트가 그 컴퓨터의 설정에
+       따라 달라진다.
+    """
+    from sector import secret_access
+    from sector.workspace import store as store_mod
+
+    def fake(name, **_kw):
+        return values.get(name)
+
+    monkeypatch.setattr(secret_access, "get_secret", fake)
+    monkeypatch.setattr(store_mod, "get_secret", fake)
+
+
+def test_supabase_시크릿이_있으면_그리로_붙는다(monkeypatch):
+    from dashboard import data
+
+    _supabase_secrets(monkeypatch,
+                      SUPABASE_URL="https://example.supabase.co",
+                      SUPABASE_ANON_KEY="anon-테스트-키")
+    store, source = data.workspace_store()
+    assert source.kind == "supabase"
+    assert source.detail == "example.supabase.co"       # 🔒 키는 어디에도 안 나온다
+    assert not source.is_local
+    assert store.url == "https://example.supabase.co"
+
+
+def test_시크릿이_반쪽만_있으면_던진다(monkeypatch):
+    """🔴 조용히 HF 로 내려가지 않는다 — 반쯤 옮긴 상태가 가장 위험하다."""
+    from dashboard import data
+    from sector.workspace import store as store_mod
+
+    _supabase_secrets(monkeypatch, SUPABASE_URL="https://example.supabase.co")
+    with pytest.raises(store_mod.StoreError, match="anon"):
+        data.workspace_store()
+
+
+def test_service_role_키를_넣으면_던진다(monkeypatch):
+    """🔴 앱 칸에 secret 키를 붙여넣은 사고가 **침묵에 묻히면** 안 된다."""
+    from dashboard import data
+    from sector.workspace import store as store_mod
+
+    _supabase_secrets(monkeypatch,
+                      SUPABASE_URL="https://example.supabase.co",
+                      SUPABASE_ANON_KEY="sb_secret_abcdef")
+    with pytest.raises(store_mod.StoreError, match="secret 키"):
+        data.workspace_store()
+
+
 def _run(page, ledger):
     from streamlit.testing.v1 import AppTest
 
@@ -471,7 +528,9 @@ def test_맞는_passcode_면_참가하고_원장에_남는다(ledger):
     assert fold.fold(ledger.read_all()).team("team_a").members == ("동원", "민수")
 
 
-# ── 보관 · 마스터 ───────────────────────────────────────────────────────────
+# ── 보관 · 되돌리기 ─────────────────────────────────────────────────────────
+# 🔴 마스터(개발자)는 **없다** (2026-09-12 · ADR-SC-0011 ⑫ · V42). 보관은 만든
+#    사람이 하고, 되돌리기는 그 조의 passcode 가 연다.
 
 def test_만든_사람은_자기_조를_보관할_수_있다(ledger):
     at = _make_team(_run(_teams_page, ledger), actor="동원")
@@ -497,11 +556,8 @@ def test_보관에_사유가_없으면_막힌다(ledger):
     assert "team_a" in fold.fold(ledger.read_all()).active_teams
 
 
-def test_남의_조는_보관_칸이_보이지_않는다(ledger, monkeypatch):
-    """🔒 만든 사람도 마스터도 아니면 버튼 자체가 없다."""
-    from sector.workspace import auth
-
-    monkeypatch.setattr(auth, "master_hash", lambda: None)
+def test_남의_조는_보관_칸이_보이지_않는다(ledger):
+    """🔒 만든 사람이 아니면 버튼 자체가 없다."""
     _make_team(_run(_teams_page, ledger), actor="동원", passcode="산-바다-강-들")
 
     at = _run(_teams_page, ledger)
@@ -512,34 +568,61 @@ def test_남의_조는_보관_칸이_보이지_않는다(ledger, monkeypatch):
     assert "archive_team_a" not in keys, keys
 
 
-def test_마스터_시크릿이_없으면_문_자체가_없다(ledger, monkeypatch):
-    """🔴 없는 문을 보여 주면 '여기 뭔가 있나' 만 남는다."""
-    from sector.workspace import auth
-
-    monkeypatch.setattr(auth, "master_hash", lambda: None)
-    at = _run(_teams_page, ledger)
-    assert "master_unlock" not in [b.key for b in at.button]
+def _archive(at, *, reason="테스트 조였다", team_id="team_a"):
+    at.text_input(key=f"archive_reason_{team_id}").input(reason).run()
+    at.button(key=f"archive_{team_id}").click().run()
+    return at
 
 
-def test_마스터는_남의_조도_보관할_수_있다(ledger, monkeypatch):
-    from sector.workspace import auth, fold
+def test_보관된_조는_그_조_passcode_로_되돌린다(ledger):
+    """🔴 V42 의 답이다 — 마스터가 아니라 **그 조의 passcode** 가 연다."""
+    from sector.workspace import fold
 
-    stored = auth.hash_passcode("마스터-산-바다-강", salt=b"0" * 16)
-    monkeypatch.setattr(auth, "master_hash", lambda: stored)
-    _make_team(_run(_teams_page, ledger), actor="동원", passcode="산-바다-강-들")
-
-    at = _run(_teams_page, ledger)
-    at.text_input(key="identity_name").input("개발자").run()
-    at.text_input(key="master_pass").input("마스터-산-바다-강").run()
-    at.button(key="master_unlock").click().run()
-    assert at.session_state["sc_master"] is True
-
-    # 참가하지 않아도 목록에서 보이지는 않지만, 참가하면 보관할 수 있다
-    at.text_input(key="join_passcode").input("산-바다-강-들")
-    at.button(key="FormSubmitter:join-참가").click().run()
-    at.text_input(key="archive_reason_team_a").input("마스터가 정리").run()
-    at.button(key="archive_team_a").click().run()
+    _archive(_make_team(_run(_teams_page, ledger), actor="동원", passcode="산-바다-강-들"))
     assert "team_a" not in fold.fold(ledger.read_all()).active_teams
+
+    at = _run(_teams_page, ledger)
+    at.text_input(key="identity_name").input("민수").run()
+    at.text_input(key="restore_passcode_team_a").input("산-바다-강-들")
+    at.button(key="FormSubmitter:restore_team_a-되돌리기").click().run()
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+
+    workspace = fold.fold(ledger.read_all())
+    assert "team_a" in workspace.active_teams
+    # 🔒 참가와 같은 꼬리를 쓴다 — 되돌린 사람이 조원으로 남는다
+    assert "민수" in workspace.team("team_a").members
+    assert at.session_state["sc_team_id"] == "team_a"
+
+
+def test_틀린_passcode_로는_되돌리지_못한다(ledger):
+    from sector.workspace import fold
+
+    _archive(_make_team(_run(_teams_page, ledger), actor="동원", passcode="산-바다-강-들"))
+
+    at = _run(_teams_page, ledger)
+    at.text_input(key="identity_name").input("민수").run()
+    at.text_input(key="restore_passcode_team_a").input("산-바다-강-숲")
+    at.button(key="FormSubmitter:restore_team_a-되돌리기").click().run()
+    assert any("확인한다" in e.value for e in at.error)
+    assert "team_a" not in fold.fold(ledger.read_all()).active_teams
+
+
+def test_보관된_조가_없으면_칸이_없다(ledger):
+    """🔒 평소에는 있을 일이 아니다 — 빈 칸을 그리지 않는다."""
+    at = _make_team(_run(_teams_page, ledger))
+    assert "restore_passcode_team_a" not in [t.key for t in at.text_input]
+
+
+def test_보관된_조는_아무나_볼_수_있다(ledger):
+    """🔒 원장 읽기는 이미 공개다(⑥). 감추면 자기 조를 아무도 못 찾는다.
+
+    🔴 옛 화면은 이 칸을 **마스터에게만** 보여줬다. 마스터가 없어진 지금
+       감춰 두면 보관된 조를 되돌릴 방법이 아무 데도 없다.
+    """
+    _archive(_make_team(_run(_teams_page, ledger), actor="동원"))
+    at = _run(_teams_page, ledger)          # 🔒 이름도 안 적은 새 방문자다
+    assert "restore_passcode_team_a" in [t.key for t in at.text_input]
+    assert "사유 «테스트 조였다»" in _markdown(at)
 
 # ── 근거를 두 화면이 같이 그린다 ────────────────────────────────────────────
 # 🔴 M8 직후 확정 화면에는 점수 한 줄뿐이었다. 사유를 쓰라고 하면서 무엇을 근거로

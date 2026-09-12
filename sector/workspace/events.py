@@ -317,9 +317,14 @@ def comment_posted(
 def team_archived(*, team_id: str, reason: str, actor: str, at: str) -> Event:
     """조를 **보관**한다. 목록에서 감추되 기록은 남긴다.
 
-    🔴 누가 보관할 수 있는지는 **여기서 정하지 않는다.** 원장은 쓰기를 막을 수단이
-       없고(토큰이 있으면 누구나 append 할 수 있다), 권한은 화면이 건다. 그 사실을
-       숨기지 않는 편이 낫다 — `auth` 머리주석의 위협 모델과 같은 이야기다.
+    🔴 누가 보관할 수 있는지는 **여기서 정하지 않는다.** 이벤트는 "무슨 일이
+       있었나" 이지 "누가 해도 되나" 가 아니다.
+
+    🔒 그 답은 두 층에 있다 — **저장소**가 passcode 로 가르고(`SupabaseStore` ·
+       ADR-SC-0011 ⑤), 화면은 *실수 방지*로 만든 사람에게만 버튼을 보여준다
+       (`teams._can_archive`). ⚠️ 로컬·HF 에는 앞의 층이 없다. 거기서는 실제
+       경계가 파일·토큰이고, 그 사실을 숨기지 않는다 — `auth` 머리주석의 위협
+       모델과 같은 이야기다.
     """
     return make_event(
         "team.archived", team_id=team_id, actor=actor, at=at,

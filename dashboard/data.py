@@ -50,7 +50,7 @@ class DataUnavailable(RuntimeError):
 class Source:
     """데이터가 어디서 왔는가. 화면에 그대로 나간다."""
 
-    kind: str      # "hf" | "local"
+    kind: str      # "supabase" | "hf" | "local"
     label: str     # 사람이 읽을 한 줄
     detail: str = ""
 
@@ -132,22 +132,43 @@ def latest_day(frame: Any) -> str:
 def workspace_store() -> tuple[Any, Source]:
     """조별 원장을 읽고 쓸 저장소. 🔒 출처를 함께 돌려준다 (머리주석과 같은 이유).
 
-    🔴 쓰기 토큰이 있어야 **쓸 수 있다.** 없으면 로컬 원장으로 내려가는데, 그것은
-       내 컴퓨터에만 남으므로 팀원에게 보이지 않는다 — 화면이 그 사실을 말해야 한다.
+    🔒 **순서가 의도다** — Supabase → HF → 로컬. 팀 원장의 집은 Supabase 이고
+       (ADR-SC-0010 ④) HF 는 옛 집이다. 로컬은 내 컴퓨터에만 남으므로 팀원에게
+       보이지 않는다 — 화면이 그 사실을 말해야 한다.
 
-    🔴 **`SupabaseStore` 는 아직 여기 없다** (2026-09-12). 구현과 계약 검증은 끝났으나
-       (`sector/workspace/store.py`) 돌리기 전에 결정이 하나 남았다 — **마스터가
-       남의 조를 보관·복구하는 경로가 DB 에 없다**(V42 · ADR-SC-0011 ⑪). 시크릿
-       (`SUPABASE_URL`·`SUPABASE_ANON_KEY`)도 아직 없다. 🔒 순서를 지킨다 —
-       결정 → 시크릿 → 여기 한 줄.
+    🔴 **Supabase 가 설정돼 있으면 폴백하지 않는다.** 시크릿이 **하나라도** 있으면
+       거기로 붙고, 형식이 틀렸거나 반쪽만 채워졌으면 **그대로 던진다.** 조용히 HF
+       로 내려가면 팀이 서로 다른 원장에 쓰면서 같은 것을 본다고 믿게 된다 —
+       `service_role` 키를 붙여넣은 사고도 그 침묵에 묻힌다(`_require_anon_key`).
+       못 붙는 것과 잘못 붙는 것은 다르게 다뤄야 한다.
+
+    🔴 옛 HF 원장을 **옮기지 않았다**(V43). 거기 있던 3건은 전부 같은 날
+       스모크 테스트(`test_team`)라 옮길 것이 없었다. 옛 형식은 읽히되
+       `fold.anomalies` 가 "참가할 수 없다" 고 말한다.
     """
-    from sector.workspace.store import HubStore, LocalStore
+    from sector.secret_access import get_secret
+    from sector.workspace.store import (
+        SUPABASE_ANON_KEY_SECRET,
+        SUPABASE_URL_SECRET,
+        HubStore,
+        LocalStore,
+        SupabaseStore,
+    )
+
+    if any(get_secret(name, required=False)
+           for name in (SUPABASE_URL_SECRET, SUPABASE_ANON_KEY_SECRET)):
+        store = SupabaseStore()          # 🔴 던지면 그대로 올린다 (머리주석)
+        return store, Source(
+            kind="supabase",
+            label="Supabase 팀 원장 — 팀원에게 보인다",
+            detail=store.url.removeprefix("https://"),
+        )
 
     try:
         api = hub.dataset_api(hub.write_token())
         return HubStore(api), Source(
             kind="hf",
-            label="Hugging Face(비공개) 조별 원장 — 팀원에게 보인다",
+            label="Hugging Face(비공개) 조별 원장 — 팀원에게 보인다 (옛 집)",
             detail=hub.WORKSPACE_REPO_ID,
         )
     except hub.HubError:

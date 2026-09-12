@@ -19,6 +19,23 @@
 
 그 결과 원장에 쓸 때마다 자격증명이 필요하고, 그것을 세션이 들고 있는다
 (`session.credential`).
+
+## 🔴 마스터(개발자)가 없다 (2026-09-12 · ADR-SC-0011 ⑫ · V42)
+
+옛 화면에는 `ADMIN_PASSCODE_HASH` 로 열리는 마스터가 있었고 **남의 조를 자격증명
+없이** 보관·복구했다. 그것이 되던 이유는 원장에 쓰기 관문이 아예 없었기 때문이다.
+Supabase 로 옮기면 그 경로가 막힌다 — DB 에 마스터 개념이 없다(⑤).
+
+셋 중 **"보관·복구를 조 안으로 되돌린다"** 를 골랐다. 마스터 RPC 를 더했다면 해시
+하나가 **모든 조**에 대한 쓰기 권한이 됐을 것이고, 그것은 `service_role` 키를 앱에
+두는 것과 같은 모양이다. 그래서 —
+
+- 보관은 **만든 사람**이 한다 (`_can_archive`)
+- 복구는 **그 조의 passcode** 가 연다 (`_render_archived`) — 마스터가 아니다
+- 🔒 `ADMIN_PASSCODE_HASH` 는 이제 아무것도 열지 않는다. 시크릿에서 지운다
+
+대가는 숨기지 않고 적는다 — **잘못 만든 조를 개발자가 치울 수 없다.** 대회 기간에
+조는 7개뿐이고, 그런 조는 만든 사람이 보관하면 된다.
 """
 
 from __future__ import annotations
@@ -36,7 +53,9 @@ def render() -> None:
         store, source = data.workspace_store()
         source_label = source.label
         if source.is_local:
-            st.warning(f"⚠️ {source.label}\n\n`HF_TOKEN_WRITE` 가 없어 로컬 원장을 쓴다.")
+            st.warning(f"⚠️ {source.label}\n\n"
+                       "`SUPABASE_URL`·`SUPABASE_ANON_KEY` 도 `HF_TOKEN_WRITE` 도 없어 "
+                       "로컬 원장을 쓴다.")
 
         try:
             workspace = fold.fold(store.read_all())
@@ -50,7 +69,6 @@ def render() -> None:
                     st.markdown(f"- {line}")
 
         _render_identity()
-        _render_master_gate()
         _render_current(store, workspace)
         st.divider()
         left, right = st.columns(2)
@@ -59,7 +77,8 @@ def render() -> None:
         with right:
             _render_create(store, workspace)
         _render_list(workspace)
-        if session.is_master():
+        # 🔒 보관된 조가 없으면 칸을 그리지 않는다 — 평소에는 있을 일이 아니다
+        if workspace.archived_teams:
             _render_archived(store, workspace)
     finally:
         theme.footer(source_label)
@@ -125,13 +144,22 @@ def _render_join(store, workspace: fold.Workspace) -> None:
     credential = _credential(store, team_id, passcode)
     if credential is None:
         return                      # 🔒 이유는 `_credential` 이 이미 그렸다
-    session.set_team(team_id)
+    _enter_team(store, team, actor, credential)
+    st.success(f"{team.name} 에 참가했다.")
+    st.rerun()
+
+
+def _enter_team(store, team: fold.Team, actor: str, credential: str) -> None:
+    """세션을 이 조에 묶는다. 🔒 **참가와 복구가 같은 꼬리를 쓴다.**
+
+    둘 다 passcode 를 방금 증명한 직후다. 갈라 두면 한쪽에서만 조원 기록이 빠지고,
+    3개월 뒤 "누가 참가했었나" 가 조용히 비어 있게 된다.
+    """
+    session.set_team(team.id)
     session.set_credential(credential)
     if actor not in team.members:
         _write(store, events.member_joined(
-            team_id=team_id, member=actor, actor=actor, at=session.now_utc()))
-    st.success(f"{team.name} 에 참가했다.")
-    st.rerun()
+            team_id=team.id, member=actor, actor=actor, at=session.now_utc()), credential)
 
 
 def _credential(store, team_id: str, passcode: str) -> str | None:
@@ -214,38 +242,17 @@ def _render_list(workspace: fold.Workspace) -> None:
             f"조원 {len(team.members)}명 · 만든이 {team.created_by}")
 
 
-# ── 마스터(개발자) ──────────────────────────────────────────────────────────
-
-def _render_master_gate() -> None:
-    """🔴 마스터는 **시크릿이 설정돼 있을 때만** 존재한다.
-
-    `ADMIN_PASSCODE_HASH` 가 없으면 이 칸을 아예 그리지 않는다 — 없는 문을
-    보여 주면 "여기 뭔가 있나" 만 남는다.
-    """
-    if auth.master_hash() is None:
-        return
-    if session.is_master():
-        left, right = st.columns([4, 1])
-        left.markdown("<div class='sc-muted'>🔑 <b>마스터</b>로 열려 있다 — "
-                      "모든 조를 보관·복구할 수 있다.</div>", unsafe_allow_html=True)
-        if right.button("잠그기", key="master_lock"):
-            session.set_master(False)
-            st.rerun()
-        return
-    with st.expander("🔑 마스터로 열기 (개발자)"):
-        passcode = st.text_input("마스터 passcode", type="password", key="master_pass")
-        if st.button("열기", key="master_unlock"):
-            if auth.is_master(passcode):
-                session.set_master(True)
-                st.rerun()
-            else:
-                st.error("열지 못했다.")     # 🔒 이유를 말하지 않는다
-
+# ── 보관과 되돌리기 ─────────────────────────────────────────────────────────
 
 def _can_archive(team: fold.Team, actor: str | None) -> bool:
-    """만든 사람이거나 마스터. 🔴 **원장이 아니라 화면이 거는 권한**이다 —
-    토큰이 있으면 누구나 이벤트를 append 할 수 있다. 숨기지 않고 적어 둔다."""
-    return session.is_master() or (actor is not None and actor == team.created_by)
+    """만든 사람만. 🔒 **마스터는 없다** (2026-09-12 · ADR-SC-0011 ⑫ · V42).
+
+    옛 주석은 *"권한은 원장이 아니라 화면이 건다"* 였다 — 원장에 쓰기 관문이 아예
+    없었기 때문이다. 이제는 원장이 passcode 로 가른다(⑤). 그래서 이 함수가 거는
+    것은 **권한이 아니라 실수 방지**다: 쓸 수 있는지는 `_write` 가 보내는 자격증명이
+    정하고, 여기서는 "내가 만든 조" 에만 버튼을 보여 준다.
+    """
+    return actor is not None and actor == team.created_by
 
 
 def _render_archive(store, team: fold.Team, actor: str | None) -> None:
@@ -254,7 +261,8 @@ def _render_archive(store, team: fold.Team, actor: str | None) -> None:
     with st.expander(f"🗃 «{team.name}» 보관하기"):
         st.markdown(
             "<div class='sc-muted'>목록에서 감춘다. <b>지우는 것이 아니다</b> — "
-            "무엇을 정했었는지는 원장에 그대로 남고, 마스터가 되돌릴 수 있다.</div>",
+            "무엇을 정했었는지는 원장에 그대로 남고, <b>passcode 를 아는 사람이</b> "
+            "아래 «보관된 조» 에서 되돌릴 수 있다.</div>",
             unsafe_allow_html=True)
         reason = st.text_input("왜 보관하나", key=f"archive_reason_{team.id}")
         if st.button("보관", key=f"archive_{team.id}"):
@@ -264,28 +272,52 @@ def _render_archive(store, team: fold.Team, actor: str | None) -> None:
             except events.EventError as exc:
                 st.error(str(exc))
                 return
-            if _write(store, event):
+            if _write(store, event, session.credential()):
                 session.leave()
                 st.success(f"«{team.name}» 을(를) 보관했다.")
                 st.rerun()
 
 
 def _render_archived(store, workspace: fold.Workspace) -> None:
-    st.subheader("보관된 조 (마스터)")
-    archived = workspace.archived_teams
-    if not archived:
-        st.markdown("<div class='sc-muted'>없다.</div>", unsafe_allow_html=True)
-        return
-    for team in sorted(archived.values(), key=lambda t: t.archived_at or ""):
+    """보관된 조와 **되돌리기**. 🔴 마스터가 아니라 **그 조의 passcode** 가 연다.
+
+    🔒 목록은 누구에게나 보인다. 원장 읽기는 이미 공개고(ADR-SC-0011 ⑥) 감추면
+       자기 조가 어디로 갔는지 아무도 못 찾는다.
+    🔒 보관은 만든 사람만(`_can_archive`)이지만 되돌리기는 passcode 만 묻는다 —
+       **되살리는 쪽을 더 쉽게 둔다.** 되돌린 조는 원장에 그대로 남아 있던 것이고,
+       잘못 되돌려도 다시 보관하면 된다.
+    """
+    st.subheader("보관된 조")
+    st.markdown(
+        "<div class='sc-muted'>목록에서 감춰졌을 뿐 기록은 그대로다. "
+        "그 조의 passcode 를 알면 되돌릴 수 있다.</div>", unsafe_allow_html=True)
+    for team in sorted(workspace.archived_teams.values(), key=lambda t: t.archived_at or ""):
         st.markdown(
             f"- **{team.name}** (`{team.id}`) · 보관 {team.archived_by} · "
             f"{(team.archived_at or '')[:10]} · 사유 «{team.archived_reason}»")
-        if st.button("복구", key=f"restore_{team.id}"):
-            event = events.team_restored(
-                team_id=team.id, reason="마스터 복구", actor=session.actor() or "master",
-                at=session.now_utc())
-            if _write_as_master(store, event):
-                st.rerun()
+        with st.form(f"restore_{team.id}"):
+            passcode = st.text_input("passcode", type="password",
+                                     key=f"restore_passcode_{team.id}")
+            submitted = st.form_submit_button("되돌리기")
+        if not submitted:
+            continue
+        actor = _require_actor()
+        if actor is None:
+            continue
+        credential = _credential(store, team.id, passcode)
+        if credential is None:
+            continue                    # 🔒 이유는 `_credential` 이 이미 그렸다
+        try:
+            event = events.team_restored(team_id=team.id, reason="passcode 로 되돌렸다",
+                                         actor=actor, at=session.now_utc())
+        except events.EventError as exc:
+            st.error(str(exc))
+            continue
+        if _write(store, event, credential):
+            # 🔒 방금 passcode 를 증명했다 — 참가와 같은 꼬리를 쓴다
+            _enter_team(store, team, actor, credential)
+            st.success(f"«{team.name}» 을(를) 되돌렸다.")
+            st.rerun()
 
 
 def _require_actor() -> str | None:
@@ -296,38 +328,21 @@ def _require_actor() -> str | None:
     return actor
 
 
-def _write(store, event) -> bool:
+def _write(store, event, credential: str | None) -> bool:
     """원장에 쓴다. 🔴 실패를 삼키지 않는다 — 화면이 '됐다' 고 거짓말하면 안 된다.
 
-    🔒 자격증명을 함께 보낸다 — 쓰기 권한이 키가 아니라 passcode 에 걸려 있다
-       (ADR-SC-0011 ⑤). 세션에 없으면 `None` 이고, 그때 어떻게 될지는 저장소가
-       정한다: 로컬·HF 는 쓰고(실제 경계가 파일·토큰이다) Supabase 는 거부한다.
+    🔒 **자격증명을 인자로 받는다.** 예전에는 `session.credential()` 을 안에서
+       읽었는데, 그러면 지금 참가 중인 조의 것밖에 못 쓴다 — 보관된 조를 되돌릴
+       때는 *그 조의* 자격증명이 필요하다(`_render_archived`). 어느 조에 쓰는지는
+       부르는 쪽이 안다.
+
+    🔒 쓰기 권한은 키가 아니라 passcode 에 걸려 있다 (ADR-SC-0011 ⑤). `None` 이면
+       어떻게 될지는 저장소가 정한다: 로컬·HF 는 쓰고(거기서는 실제 경계가
+       파일·토큰이다) Supabase 는 거부하면서 무엇을 해야 하는지 말한다.
     """
     try:
-        store.append([event], credential=session.credential())
+        store.append([event], credential=credential)
         return True
     except Exception as exc:                          # noqa: BLE001 — 그대로 보여준다
-        st.error(f"원장에 쓰지 못했다: {exc}")
-        return False
-
-
-def _write_as_master(store, event) -> bool:
-    """마스터가 **남의 조**에 쓴다. 🔴 자격증명 없이 보낸다.
-
-    마스터는 그 조의 passcode 를 갖고 있지 않다 — 가질 수도 없다(해시만 저장하고
-    평문은 어디에도 없다). 지금까지 이것이 되던 이유는 원장에 쓰기 관문이 없었기
-    때문이고, 그 사실은 `_can_archive` 주석이 이미 적어 뒀다: **권한은 원장이
-    아니라 화면이 건다.**
-
-    🔴 **Supabase 로 옮기면 이 경로가 막힌다.** DB 에 마스터 개념이 없다
-       (ADR-SC-0011 ⑤ — 쓰기는 passcode 를 통과한 RPC 하나뿐이다). 앱을 그쪽으로
-       돌리기 전에 정해야 한다: 마스터 RPC 를 더할지, 보관·복구를 조 안으로
-       되돌릴지. 🔒 **여기서 조용히 우회하지 않는다** — 저장소가 거부하면 화면이
-       그 문장을 그대로 보여준다.
-    """
-    try:
-        store.append([event])
-        return True
-    except Exception as exc:                          # noqa: BLE001
         st.error(f"원장에 쓰지 못했다: {exc}")
         return False

@@ -269,29 +269,3 @@ def suggest_passcode(*, words: int = 4) -> str:
     while len("-".join(chosen)) < MIN_LENGTH:
         chosen.append(secrets.choice(pool))
     return "-".join(chosen)
-
-
-# ── 마스터(개발자) 계정 ─────────────────────────────────────────────────────
-
-MASTER_SECRET = "ADMIN_PASSCODE_HASH"
-
-
-def master_hash() -> str | None:
-    """마스터 passcode 의 **해시**. 없으면 `None` — 마스터 기능이 잠긴 것이다.
-
-    🔴 **해시를 시크릿에 넣는다. 평문이 아니다.** 평문을 `.env` 에 두면 그 파일을
-       여는 모든 경로가 곧 마스터 권한이 된다. 해시만 두면 파일을 봐도 쓸 수 없다.
-
-    🔒 시크릿이 없을 때 `None` 을 돌려주는 것이 중요하다 — "설정 안 했으니 모두
-       마스터" 가 되면 정반대가 된다. 호출부는 `None` 을 **잠김**으로 읽는다.
-    """
-    from sector.secret_access import get_secret
-
-    value = get_secret(MASTER_SECRET, required=False)
-    return value if value and value.startswith(f"{_PREFIX}$") else None
-
-
-def is_master(passcode: str) -> bool:
-    """마스터인가. 🔒 시크릿이 없으면 **언제나 거짓**이다."""
-    stored = master_hash()
-    return bool(stored) and verify_passcode(passcode, stored)
