@@ -116,6 +116,10 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
   🔴 옛 이름 `HUGGINGFACE_ACCESS_TOKEN` 을 버린 이유 — "ACCESS" 가 read 인지 write 인지
   이름으로 알 수 없어 **org 전체 쓰기 토큰이 앱용 칸에 들어가 있었다.** 그대로 배포했다면
   쓰기 권한이 Streamlit Secrets 로 넘어간다. 시크릿은 `sector/secret_access.py` 하나로만 읽는다.
+- 🔒 **Supabase 키도 이름이 역할을 말한다** (2026-09-12 · M8): `SUPABASE_URL` ·
+  `SUPABASE_ANON_KEY`(앱·배치 공용 · 공개 전제). 🔴 **`service_role`·`sb_secret_` 키를
+  어느 칸에도 넣지 않는다** — RLS 를 통째로 우회하고 v2.0 유산 53개 테이블 전부에 닿는다.
+  `sector/workspace/store.py` 가 그 두 형태를 생성 시점에 거부한다.
 - `.env` 가 둘이다 — 루트 `.env`(v3.0·v1.0) / `backend/.env`(v2.0 Django 가 읽는 유일한 것).
 - push 전 `git status --short` 로 PDF·ZIP·데이터 원본 혼입을 확인한다.
 
@@ -208,8 +212,20 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
     원장 쪽에 `check (not (payload ? 'passcode_hash'))` 를 걸어 DB 가 규칙을 지킨다
   - 🔴 **쓰기는 RPC 하나뿐이다.** anon 키는 공개 전제이므로 테이블 INSERT 를 열면
     passcode 가 지키기로 한 것이 뚫린다. 🔒 **`service_role` 키를 앱에 두지 않는다**
-    (HF 토큰을 `WRITE`/`READ` 로 가른 것과 같은 판단)
+    (HF 토큰을 `WRITE`/`READ` 로 가른 것과 같은 판단). `SupabaseStore` 가 `sb_secret_`
+    와 `role≠anon` JWT 를 **생성 시점에 거부**한다
   - ⚠️ **원장 읽기는 공개다** — HF private 대비 실질 변화다. **코멘트에 비밀을 적지 않는다**
+- **passcode 검증은 화면이 아니라 저장소가 한다** ★ (2026-09-12 · ADR-SC-0011 ⑨⑩⑪)
+  - 화면은 해시를 손에 들지 않는다. `passcode_params`(digest 없음) → `auth.recompute_passcode`
+    → `store.verify` 순이고 **참·거짓만 받는다**. `fold.Team` 에 `passcode_hash` 가 없다
+  - 🔒 **`append` 로는 조를 만들 수 없다.** `create_team` 만이 만든다 — 안 막으면
+    passcode 없는 조가 목록에 보이면서 아무도 참가할 수 없다
+  - 🔒 원장에 쓸 때마다 **자격증명**(`scrypt$…$digest`)이 필요하고 세션이 들고 있다.
+    평문이 아니고, 그 조에서만 쓸 수 있다
+  - 🔴 **마스터가 남의 조에 쓰는 경로가 DB 에 없다.** 앱을 Supabase 로 돌리기 전에
+    정해야 한다(ADR-SC-0011 ⑪ · 기본값은 "보관·복구를 조 안으로 되돌린다")
+  - 🔒 옛 원장(payload 에 해시가 있는 것)은 **읽히되** `fold.anomalies` 가 "옛 형식 ·
+    참가할 수 없다" 고 말한다. 읽기를 막으면 한 줄이 팀 전체 화면을 죽인다
   - 🔒 append-only 는 **트리거**가 지킨다. 소유자도 못 지운다. 되돌리기는 반대 이벤트
   - 🔒 클라이언트는 **`requests` + PostgREST**. `supabase-py`·`psycopg` 를 넣지 않는다
     (루트 `requirements.txt` 는 4줄이고 Streamlit Cloud 메모리를 직접 깎는다)

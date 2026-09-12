@@ -7,6 +7,18 @@
 앱은 public 이다. passcode 는 **쓰기 권한을 가르는 것**이지 기밀을 지키는 것이
 아니다 — 섹터 점수 화면은 어차피 누구나 본다. `sector/workspace/auth.py` 의
 머리주석에 위협 모델을 적어 뒀다.
+
+## 🔴 검증을 화면이 하지 않는다 (2026-09-12 · ADR-SC-0011 ④)
+
+옛 구조는 `fold` 결과에 실려 온 해시로 **이 화면이** 직접 검증했다. 원장 읽기가
+공개가 되면서 해시를 화면까지 들고 오는 것 자체가 노출 경로가 됐다. 지금은 —
+
+1. 저장소에서 `scrypt$n$r$p$salt$` 까지만 받는다 (**digest 는 오지 않는다**)
+2. 사람이 적은 passcode 로 같은 해시를 **다시 계산**한다 (`auth.recompute_passcode`)
+3. 맞는지는 **저장소가** 답한다 (`store.verify`) — Supabase 에서는 DB 안에서 판정한다
+
+그 결과 원장에 쓸 때마다 자격증명이 필요하고, 그것을 세션이 들고 있는다
+(`session.credential`).
 """
 
 from __future__ import annotations
@@ -110,16 +122,42 @@ def _render_join(store, workspace: fold.Workspace) -> None:
     if actor is None:
         return
     team = workspace.active_teams[team_id]
-    # 🔒 틀린 이유를 말하지 않는다 — 구별해 주면 그것이 곧 정보다
-    if not auth.verify_passcode(passcode, team.passcode_hash):
-        st.error("참가하지 못했다. passcode 를 확인한다.")
-        return
+    credential = _credential(store, team_id, passcode)
+    if credential is None:
+        return                      # 🔒 이유는 `_credential` 이 이미 그렸다
     session.set_team(team_id)
+    session.set_credential(credential)
     if actor not in team.members:
         _write(store, events.member_joined(
             team_id=team_id, member=actor, actor=actor, at=session.now_utc()))
     st.success(f"{team.name} 에 참가했다.")
     st.rerun()
+
+
+def _credential(store, team_id: str, passcode: str) -> str | None:
+    """passcode 를 자격증명으로 바꾼다. 못 하면 `None` 이고 화면에 이유를 적는다.
+
+    🔒 **틀린 이유를 구별해 주지 않는다** — "그 조가 없다" 와 "passcode 가 틀렸다"
+       가 같은 문장이다. 구별해 주면 그것이 곧 정보다(`auth.verify_passcode` 와
+       같은 규율이고, `workspace_append` 도 DB 에서 같게 답한다).
+    """
+    try:
+        params = store.passcode_params(team_id)
+        if params is None:
+            st.error("참가하지 못했다. 조와 passcode 를 확인한다.")
+            return None
+        credential = auth.recompute_passcode(passcode, params)
+        if not store.verify(team_id, credential):
+            st.error("참가하지 못했다. 조와 passcode 를 확인한다.")
+            return None
+    except auth.PasscodeError:
+        # 🔒 길이·형식 문제도 같은 문장으로 답한다
+        st.error("참가하지 못했다. 조와 passcode 를 확인한다.")
+        return None
+    except Exception as exc:            # noqa: BLE001 — 원장에 닿지 못한 것은 삼키지 않는다
+        st.error(f"원장에 닿지 못해 참가를 확인할 수 없다: {exc}")
+        return None
+    return credential
 
 
 def _render_create(store, workspace: fold.Workspace) -> None:
@@ -143,15 +181,24 @@ def _render_create(store, workspace: fold.Workspace) -> None:
         return
     try:
         hashed = auth.hash_passcode(passcode)
-        event = events.team_created(team_id=team_id, name=name, passcode_hash=hashed,
+        event = events.team_created(team_id=team_id, name=name,
                                     actor=actor, at=session.now_utc())
     except (auth.PasscodeError, events.EventError) as exc:
         st.error(str(exc))
         return
-    if _write(store, event):
-        session.set_team(team_id)
-        st.success(f"{name} 을(를) 만들었다.")
-        st.rerun()
+    # 🔒 이벤트와 해시가 함께 들어간다 — `append` 로는 조를 만들 수 없다.
+    #    갈라지면 "passcode 없는 조" 나 "조 없는 passcode" 가 남는다.
+    try:
+        store.create_team(event, passcode_hash=hashed)
+    except Exception as exc:            # noqa: BLE001 — 실패를 삼키지 않는다
+        st.error(f"조를 만들지 못했다: {exc}")
+        return
+    session.set_team(team_id)
+    # 🔒 방금 만든 해시가 곧 자격증명이다 — 만든 사람은 바로 쓸 수 있어야 한다.
+    #    (DB 에 다시 물어 salt 를 받아올 필요가 없다. 같은 값이다)
+    session.set_credential(hashed)
+    st.success(f"{name} 을(를) 만들었다.")
+    st.rerun()
 
 
 def _render_list(workspace: fold.Workspace) -> None:
@@ -237,7 +284,7 @@ def _render_archived(store, workspace: fold.Workspace) -> None:
             event = events.team_restored(
                 team_id=team.id, reason="마스터 복구", actor=session.actor() or "master",
                 at=session.now_utc())
-            if _write(store, event):
+            if _write_as_master(store, event):
                 st.rerun()
 
 
@@ -250,10 +297,37 @@ def _require_actor() -> str | None:
 
 
 def _write(store, event) -> bool:
-    """원장에 쓴다. 🔴 실패를 삼키지 않는다 — 화면이 '됐다' 고 거짓말하면 안 된다."""
+    """원장에 쓴다. 🔴 실패를 삼키지 않는다 — 화면이 '됐다' 고 거짓말하면 안 된다.
+
+    🔒 자격증명을 함께 보낸다 — 쓰기 권한이 키가 아니라 passcode 에 걸려 있다
+       (ADR-SC-0011 ⑤). 세션에 없으면 `None` 이고, 그때 어떻게 될지는 저장소가
+       정한다: 로컬·HF 는 쓰고(실제 경계가 파일·토큰이다) Supabase 는 거부한다.
+    """
+    try:
+        store.append([event], credential=session.credential())
+        return True
+    except Exception as exc:                          # noqa: BLE001 — 그대로 보여준다
+        st.error(f"원장에 쓰지 못했다: {exc}")
+        return False
+
+
+def _write_as_master(store, event) -> bool:
+    """마스터가 **남의 조**에 쓴다. 🔴 자격증명 없이 보낸다.
+
+    마스터는 그 조의 passcode 를 갖고 있지 않다 — 가질 수도 없다(해시만 저장하고
+    평문은 어디에도 없다). 지금까지 이것이 되던 이유는 원장에 쓰기 관문이 없었기
+    때문이고, 그 사실은 `_can_archive` 주석이 이미 적어 뒀다: **권한은 원장이
+    아니라 화면이 건다.**
+
+    🔴 **Supabase 로 옮기면 이 경로가 막힌다.** DB 에 마스터 개념이 없다
+       (ADR-SC-0011 ⑤ — 쓰기는 passcode 를 통과한 RPC 하나뿐이다). 앱을 그쪽으로
+       돌리기 전에 정해야 한다: 마스터 RPC 를 더할지, 보관·복구를 조 안으로
+       되돌릴지. 🔒 **여기서 조용히 우회하지 않는다** — 저장소가 거부하면 화면이
+       그 문장을 그대로 보여준다.
+    """
     try:
         store.append([event])
         return True
-    except Exception as exc:                          # noqa: BLE001 — 그대로 보여준다
+    except Exception as exc:                          # noqa: BLE001
         st.error(f"원장에 쓰지 못했다: {exc}")
         return False

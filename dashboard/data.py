@@ -134,6 +134,12 @@ def workspace_store() -> tuple[Any, Source]:
 
     🔴 쓰기 토큰이 있어야 **쓸 수 있다.** 없으면 로컬 원장으로 내려가는데, 그것은
        내 컴퓨터에만 남으므로 팀원에게 보이지 않는다 — 화면이 그 사실을 말해야 한다.
+
+    🔴 **`SupabaseStore` 는 아직 여기 없다** (2026-09-12). 구현과 계약 검증은 끝났으나
+       (`sector/workspace/store.py`) 돌리기 전에 결정이 하나 남았다 — **마스터가
+       남의 조를 보관·복구하는 경로가 DB 에 없다**(V42 · ADR-SC-0011 ⑪). 시크릿
+       (`SUPABASE_URL`·`SUPABASE_ANON_KEY`)도 아직 없다. 🔒 순서를 지킨다 —
+       결정 → 시크릿 → 여기 한 줄.
     """
     from sector.workspace.store import HubStore, LocalStore
 

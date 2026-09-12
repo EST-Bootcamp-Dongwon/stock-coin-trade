@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -23,8 +24,15 @@ HASH = "scrypt$16384$8$1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNo"
 
 
 def team(at: str = AT1, *, team_id: str = "team_a", actor: str = "동원") -> events.Event:
-    return events.team_created(
-        team_id=team_id, name="A조", passcode_hash=HASH, actor=actor, at=at)
+    return events.team_created(team_id=team_id, name="A조", actor=actor, at=at)
+
+
+def make(store_, at: str = AT1, *, team_id: str = "team_a", actor: str = "동원",
+         passcode_hash: str = HASH) -> events.Event:
+    """조를 만든다 — 🔒 `create_team` 을 지난다. `append` 로는 만들 수 없다."""
+    event = team(at, team_id=team_id, actor=actor)
+    store_.create_team(event, passcode_hash=passcode_hash)
+    return event
 
 
 # ── 이벤트 ──────────────────────────────────────────────────────────────────
@@ -79,11 +87,43 @@ def test_확정에_사유가_없으면_받지_않는다():
                                     reason=reason, actor="동원", at=AT1)
 
 
-def test_평문_passcode_는_이벤트에_들어갈_수_없다():
-    """🔒 규칙을 사람의 기억이 아니라 코드로 지킨다."""
-    with pytest.raises(events.EventError, match="해시"):
-        events.team_created(team_id="team_a", name="A조",
-                            passcode_hash="산-바다-강-들", actor="동원", at=AT1)
+@pytest.mark.parametrize("key", ["passcode_hash", "passcode", "PASSCODE", "team_passcode"])
+def test_passcode_는_어떤_payload_에도_들어갈_수_없다(key):
+    """🔴 DB 의 `check (not (payload ? 'passcode_hash'))` 와 **같은 것**을 막는다.
+
+    이쪽이 더 넓다(`passcode` 를 품은 모든 키). 넓은 쪽이 먼저 거부하므로 "앱이
+    만든 이벤트를 DB 가 거부한다" 는 일이 생기지 않는다 — 좁으면 생긴다.
+    """
+    with pytest.raises(events.EventError, match="passcode"):
+        events.make_event("comment.posted", team_id="team_a", actor="동원", at=AT1,
+                          payload={"body": "x", key: "scrypt$1$2$3$a$b"})
+
+
+def test_조_생성_이벤트에_해시가_없다():
+    """🔒 원장 읽기가 공개다 — 해시가 원장에 있으면 그것이 곧 노출이다."""
+    assert "passcode_hash" not in team().payload
+    assert set(team().payload) == {"name"}
+
+
+def test_옛_원장은_읽히고_어긋난_것으로_올라온다():
+    """🔴 읽기를 막으면 옛 원장 한 줄이 팀 전체 화면을 죽인다.
+
+    그래서 `parse_event` 는 게이트를 지나지 않고(`_make`), 대신 `fold` 가 말한다 —
+    "이 조에는 참가할 수 없다".
+    """
+    legacy = events.make_event("comment.posted", team_id="team_a", actor="동원", at=AT1,
+                               payload={"body": "옛 원장 흉내"}).to_json()
+    legacy["payload"]["passcode_hash"] = HASH
+    # id 는 내용에서 나오므로 옛 파일과 같은 방식으로 다시 계산해 넣는다
+    rebuilt = events._make(                                    # noqa: SLF001 — 옛 원장 재현
+        legacy["kind"], team_id=legacy["team_id"], actor=legacy["actor"],
+        at=legacy["at"], payload=legacy["payload"])
+    legacy["event_id"] = rebuilt.event_id
+
+    parsed = events.parse_event(legacy)                        # 🔒 던지지 않는다
+    assert events.carries_legacy_secret(parsed)
+    workspace = fold.fold([team(), parsed])
+    assert any("옛 형식" in a for a in workspace.anomalies), workspace.anomalies
 
 
 def test_모르는_종류는_만들_수_없다():
@@ -149,6 +189,51 @@ def test_저장된_파라미터로_검증한다():
     assert not auth.verify_passcode("산-바다-강-숲", stored)
 
 
+def test_파라미터에서_digest_를_뗀다():
+    """🔒 SQL `workspace_passcode_params` 와 **같은 것**을 한다."""
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    params = auth.params_of(stored)
+    assert stored.startswith(params) and params.endswith("$")
+    assert params.count("$") == 5                  # scrypt$n$r$p$salt$
+    assert stored.split("$")[5] not in params      # 🔴 digest 가 없다
+    assert auth.params_of(params + "x") == params  # 무엇이 붙어 있어도 떼어 낸다
+
+
+def test_저장된_salt_로_재계산하면_바이트가_같다():
+    """🔴 DB 는 문자열을 **상수시간으로 통째 비교**한다 — 한 글자만 달라도 거부다."""
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    again = auth.recompute_passcode("산-바다-강-들", auth.params_of(stored))
+    assert again == stored
+    assert auth.recompute_passcode("산-바다-강-숲", auth.params_of(stored)) != stored
+
+
+def test_재계산에_digest_를_넘기면_거부한다():
+    """🔴 호출부가 저장된 해시를 통째로 들고 있다는 뜻이다 — ④ 가 깨진 상태다."""
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    with pytest.raises(auth.PasscodeError, match="digest"):
+        auth.recompute_passcode("산-바다-강-들", stored)
+
+
+@pytest.mark.parametrize("params", ["", "garbage", "scrypt$16384$8$1$",
+                                    "bcrypt$1$2$3$YWFhYWFhYWFhYWFh$",
+                                    "scrypt$x$y$z$YWFhYWFhYWFhYWFh$",
+                                    "scrypt$16384$8$1$$"])
+def test_깨진_파라미터는_던진다(params):
+    """🔒 여기서는 **던진다.** 검증(`verify_passcode`)과 달리 이것은 설정 문제다 —
+    조용히 `False` 로 만들면 "passcode 가 틀렸다" 로 보이고 원인을 못 찾는다."""
+    with pytest.raises(auth.PasscodeError):
+        auth.recompute_passcode("산-바다-강-들", params)
+
+
+def test_자격증명_비교가_상수시간이고_틀린_이유를_말하지_않는다():
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    assert auth.credential_matches(stored, stored) is True
+    assert auth.credential_matches(stored[:-1], stored) is False
+    for bad in ("", None, 0, stored + "x"):
+        assert auth.credential_matches(bad, stored) is False   # type: ignore[arg-type]
+    assert auth.credential_matches(stored, "") is False
+
+
 def test_제안된_passcode_가_항상_규칙을_통과한다():
     """🔴 한 번 뽑아 보는 것으로는 못 잡는다.
 
@@ -174,24 +259,75 @@ def test_제안이_매번_다르다():
 def test_두_번_써도_하나다(tmp_path: Path):
     """🔒 '확정' 을 두 번 눌러도 원장이 더러워지지 않는다."""
     st = store.LocalStore(tmp_path)
-    assert st.append([team()]) == 1
-    assert st.append([team()]) == 0
-    assert len(st.read_all()) == 1
+    make(st)
+    event = confirmed("steel", "철강 1위", AT2)
+    assert st.append([event]) == 1
+    assert st.append([event]) == 0
+    assert len(st.read_all()) == 2
 
 
 def test_시간순으로_돌려준다(tmp_path: Path):
     st = store.LocalStore(tmp_path)
-    st.append([team(AT3, team_id="team_c"), team(AT1, team_id="team_a"),
-               team(AT2, team_id="team_b")])
+    make(st, AT3, team_id="team_c")
+    make(st, AT1, team_id="team_a")
+    make(st, AT2, team_id="team_b")
     assert [e.at for e in st.read_all()] == [AT1, AT2, AT3]
 
 
 def test_읽을_수_없는_줄을_삼키지_않는다(tmp_path: Path):
     st = store.LocalStore(tmp_path)
-    st.append([team()])
+    make(st)
     (tmp_path / "events" / "broken.json").write_text("{", encoding="utf-8")
     with pytest.raises(store.StoreError):
         st.read_all()
+
+
+def test_append_로는_조를_만들_수_없다(tmp_path: Path):
+    """🔴 막지 않으면 **passcode 없는 조**가 생긴다 — 목록에 보이면서 아무도
+    참가할 수 없는 상태다. Supabase 는 구조적으로 그렇고(해시가 먼저 있어야
+    append 가 통과한다), 로컬·HF 도 같은 답을 내야 한다."""
+    st = store.LocalStore(tmp_path)
+    with pytest.raises(store.StoreError, match="create_team"):
+        st.append([team()])
+    assert st.read_all() == []
+
+
+def test_같은_조를_두_번_만들_수_없다(tmp_path: Path):
+    st = store.LocalStore(tmp_path)
+    make(st)
+    with pytest.raises(store.StoreError, match="이미 있다"):
+        make(st, AT2)
+
+
+def test_조_생성이_실패하면_해시만_남지_않는다(tmp_path: Path):
+    """🔴 해시만 남으면 같은 id 로 다시 만들 수도 없는 막다른 길이 된다."""
+    st = store.LocalStore(tmp_path)
+    st.events_dir.mkdir(parents=True)
+    # 이벤트 파일 자리를 **디렉터리**로 막아 쓰기를 실패시킨다
+    (tmp_path / team().path_in_repo).mkdir()
+    with pytest.raises(OSError):
+        make(st)
+    assert st.passcode_params("team_a") is None
+
+
+def test_평문을_해시_자리에_넣을_수_없다(tmp_path: Path):
+    """🔒 형식을 본다 — 규칙을 사람의 기억이 아니라 코드가 지킨다."""
+    st = store.LocalStore(tmp_path)
+    with pytest.raises(store.StoreError, match="해시"):
+        st.create_team(team(), passcode_hash="산-바다-강-들")
+    assert st.read_all() == []
+
+
+def test_한_번에_두_조를_쓸_수_없다(tmp_path: Path):
+    """🔒 자격증명은 그 조의 것이다 — `workspace_append` 가 DB 에서 막는 것과 같다."""
+    st = store.LocalStore(tmp_path)
+    make(st, team_id="team_a")
+    make(st, AT2, team_id="team_b")
+    mixed = [confirmed("steel", "a", AT2),
+             events.sector_confirmed(team_id="team_b", sector_id="steel", reason="b",
+                                     actor="동원", at=AT2)]
+    with pytest.raises(store.StoreError, match="섞였다"):
+        st.append(mixed, credential=HASH)
 
 
 def test_빈_원장은_빈_목록이다(tmp_path: Path):
@@ -200,10 +336,17 @@ def test_빈_원장은_빈_목록이다(tmp_path: Path):
 
 def test_워크스페이스_경로가_점수_저장소로_못_간다():
     """🔒 경로가 맞아도 **저장소가 틀리면** 막는다."""
-    event = team()
-    hub.assert_publishable_path(event.path_in_repo, repo_id=hub.WORKSPACE_REPO_ID)
-    with pytest.raises(hub.PublishBlocked):
-        hub.assert_publishable_path(event.path_in_repo, repo_id=hub.REPO_ID)
+    for path in (team().path_in_repo, store.secret_path_in_repo("team_a")):
+        hub.assert_publishable_path(path, repo_id=hub.WORKSPACE_REPO_ID)
+        with pytest.raises(hub.PublishBlocked):
+            hub.assert_publishable_path(path, repo_id=hub.REPO_ID)
+
+
+def test_조_id_가_경로로_새지_않는다():
+    """🔴 이 문자열이 곧 파일 경로이고 조회 필터다."""
+    for bad in ("../../etc/passwd", "team a", "Team_A", "", "a" * 41):
+        with pytest.raises(events.EventError):
+            store.secret_path_in_repo(bad)
 
 
 # ── fold ────────────────────────────────────────────────────────────────────
@@ -322,14 +465,18 @@ def test_워크스페이스_계층이_벽시계를_읽지_않는다():
             assert banned not in body, f"`{banned}` 가 {module.__name__} 에 있다"
 
 
-def test_이벤트_JSON_에_평문_passcode_가_없다(tmp_path: Path):
-    """🔒 원장에 쓰이는 실제 바이트를 본다 — 계약이 아니라 결과를 확인한다."""
+def test_평문_passcode_가_디스크에_없다(tmp_path: Path):
+    """🔒 실제 바이트를 본다 — 계약이 아니라 결과를 확인한다.
+
+    ★ `events/` 만 보지 않는다. 해시가 `secrets/` 로 옮겨 갔으므로 **원장 폴더
+      전체**를 훑는다 — 새 파일이 생기면 자동으로 검사 범위에 든다.
+    """
     secret = "산-바다-강-들"
     st = store.LocalStore(tmp_path)
-    st.append([events.team_created(team_id="team_a", name="A조",
-                                   passcode_hash=auth.hash_passcode(secret),
-                                   actor="동원", at=AT1)])
-    for path in (tmp_path / "events").glob("*.json"):
+    make(st, passcode_hash=auth.hash_passcode(secret))
+    written = [p for p in tmp_path.rglob("*.json")]
+    assert written
+    for path in written:
         assert secret not in path.read_text(encoding="utf-8")
 
 
@@ -355,10 +502,21 @@ class FakeHubApi:
         return type("Commit", (), {"oid": "fake"})()
 
     def hf_hub_download(self, *, filename: str, **_: object) -> str:
+        """🔒 없는 파일은 **`EntryNotFoundError`** 다 — `hub.download_bytes` 가 그것만
+        `None` 으로 바꾼다. `KeyError` 를 던지면 "없음"이 사고로 올라간다."""
         import tempfile
+
+        from huggingface_hub.errors import EntryNotFoundError
+
+        if filename not in self.files:
+            raise EntryNotFoundError(filename)
         path = Path(tempfile.mkdtemp()) / "f"
         path.write_bytes(self.files[filename])
         return str(path)
+
+
+def both(tmp_path: Path) -> tuple[store.LocalStore, store.HubStore]:
+    return store.LocalStore(tmp_path), store.HubStore(FakeHubApi())
 
 
 def test_두_구현이_멱등에_같은_답을_낸다(tmp_path: Path):
@@ -368,28 +526,78 @@ def test_두_구현이_멱등에_같은_답을_낸다(tmp_path: Path):
     *"No files have been modified"* 로 건너뛰는데, 우리는 "N건 올렸다" 고 답했다.
     **0건 쓰고 N건이라 답하는 것**은 화면이 "기록됐다" 고 거짓말하게 만든다.
     """
-    event = team()
-    local, remote = store.LocalStore(tmp_path), store.HubStore(FakeHubApi())
+    local, remote = both(tmp_path)
+    for st in (local, remote):
+        make(st)
+    event = confirmed("steel", "철강 1위", AT2)
 
     assert local.append([event]) == remote.append([event]) == 1
     assert local.append([event]) == remote.append([event]) == 0      # ← 여기가 어긋났었다
-    assert len(local.read_all()) == len(remote.read_all()) == 1
+    assert len(local.read_all()) == len(remote.read_all()) == 2
+
+
+def test_두_구현이_자격증명에_같은_답을_낸다(tmp_path: Path):
+    """🔒 로컬에서만 통과하는 코드는 배포에서 처음 깨진다."""
+    local, remote = both(tmp_path)
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    for st in (local, remote):
+        make(st, passcode_hash=stored)
+
+    good = auth.recompute_passcode("산-바다-강-들", auth.params_of(stored))
+    bad = auth.recompute_passcode("산-바다-강-숲", auth.params_of(stored))
+    event = confirmed("steel", "철강 1위", AT2)
+
+    for st in (local, remote):
+        assert st.passcode_params("team_a") == auth.params_of(stored)
+        assert st.passcode_params("team_zzz") is None
+        assert st.verify("team_a", good) is True
+        assert st.verify("team_a", bad) is False
+        assert st.verify("team_zzz", good) is False
+        with pytest.raises(store.PasscodeRejected):
+            st.append([event], credential=bad)
+        assert st.append([event], credential=good) == 1
+
+
+def test_저장된_해시가_원장에_없다(tmp_path: Path):
+    """🔴 이 세션의 요점이다 — 원장 읽기가 공개여도 해시는 나가지 않는다."""
+    local, remote = both(tmp_path)
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    digest = stored.split("$")[5]
+    for st in (local, remote):
+        make(st, passcode_hash=stored)
+        for event in st.read_all():
+            assert "passcode_hash" not in event.payload
+            assert digest not in events.canonical_json(event.to_json())
+        # 🔒 앱이 받는 것에도 digest 가 없다
+        assert digest not in (st.passcode_params("team_a") or "")
 
 
 def test_올릴_것이_없으면_커밋하지_않는다():
     """빈 커밋은 원장에 잡음만 남긴다."""
     api = FakeHubApi()
     remote = store.HubStore(api)
-    remote.append([team()])
+    make(remote)
     assert api.commits == 1
-    remote.append([team()])
-    assert api.commits == 1          # 늘지 않는다
+    event = confirmed("steel", "철강 1위", AT2)
+    remote.append([event])
+    assert api.commits == 2
+    remote.append([event])
+    assert api.commits == 2          # 늘지 않는다
+
+
+def test_HubStore_가_조_생성을_한_커밋으로_올린다():
+    """🔒 이벤트와 해시가 갈라지면 '참가할 수 없는 조' 나 '조 없는 passcode' 가 남는다."""
+    api = FakeHubApi()
+    make(store.HubStore(api))
+    assert api.commits == 1
+    assert sorted(api.files) == [team().path_in_repo, "secrets/team_a.json"]
 
 
 def test_HubStore_도_시간순으로_돌려준다():
     remote = store.HubStore(FakeHubApi())
-    remote.append([team(AT3, team_id="team_c"), team(AT1, team_id="team_a"),
-                   team(AT2, team_id="team_b")])
+    make(remote, AT3, team_id="team_c")
+    make(remote, AT1, team_id="team_a")
+    make(remote, AT2, team_id="team_b")
     assert [e.at for e in remote.read_all()] == [AT1, AT2, AT3]
 
 
@@ -461,3 +669,296 @@ def test_확정했던_섹터는_보관해도_기록에_남는다():
     workspace = fold.fold(evs)
     assert workspace.team("team_a").core_sector == "steel"     # 확정은 그대로다
     assert workspace.team("team_a").archived is True
+
+
+# ── Supabase — 스키마 계약 ──────────────────────────────────────────────────
+# 🔒 로컬에 `SUPABASE_*` 시크릿이 없어도(2026-09-12 현재 없다) 계약은 검증된다.
+#    `HubStore` 에 가짜 API 를 주는 것과 같은 방식이다 — 네트워크를 부르지 않는다.
+# 🔴 실동작 검증은 ADR-SC-0011 "적용" 절에서 **anon 역할로 DB 에 직접** 11항목을
+#    돌렸다(V39). 여기서 고정하는 것은 **클라이언트가 그 계약을 지키는가** 다.
+
+
+class FakeResponse:
+    """`requests.Response` 가 `SupabaseStore` 에게 보이는 만큼만."""
+
+    def __init__(self, status_code: int, body: object = None) -> None:
+        self.status_code = status_code
+        self._body = body
+        self.text = "" if body is None else json.dumps(body, ensure_ascii=False)
+
+    def json(self) -> object:
+        if self._body is None:
+            raise ValueError("본문이 없다")
+        return self._body
+
+
+class FakePostgrest:
+    """`20260912095328_workspace_ledger.sql` 의 계약만 흉내낸다.
+
+    🔴 **빈 배열을 passcode 검사 앞에서 0 으로 돌려보내는 것까지** 흉내낸다 —
+       그것이 "검증 전용 RPC 가 없다" 의 실체이고, `verify` 가 이미 있는 이벤트를
+       다시 보내는 이유다.
+    """
+
+    URL = "https://fake.supabase.co"
+    KEY = "sb_publishable_fake"
+
+    def __init__(self) -> None:
+        self.rows: dict[str, dict] = {}
+        self.secrets: dict[str, str] = {}
+        self.publish: dict[str, object] = {}
+        self.calls: list[str] = []
+
+    # 쓰기 ─────────────────────────────────────────────────────────────────
+
+    def post(self, url, *, json=None, headers=None, timeout=None):   # noqa: A002
+        assert headers["apikey"] == self.KEY, "키를 헤더에 싣지 않았다"
+        assert headers["Authorization"] == f"Bearer {self.KEY}"
+        name = url.rsplit("/", 1)[-1]
+        self.calls.append(name)
+        handler = getattr(self, f"_rpc_{name}", None)
+        if handler is None:
+            return FakeResponse(404, {"message": f"함수가 없다: {name}"})
+        return handler(json or {})
+
+    def _rpc_workspace_create_team(self, p):
+        event, hashed = p["p_event"], p["p_passcode_hash"]
+        if event.get("kind") != "team.created":
+            return FakeResponse(400, {"message": "조 생성 RPC 는 team.created 만 받는다"})
+        if not str(hashed).startswith("scrypt$"):
+            return FakeResponse(400, {"message": "passcode 는 해시로만 받는다"})
+        team_id = event["team_id"]
+        if team_id in self.secrets:
+            return FakeResponse(400, {"message": f"조 {team_id} 는 이미 있다"})
+        self.secrets[team_id] = hashed
+        self._insert(event)
+        return FakeResponse(200, 1)
+
+    def _rpc_workspace_passcode_params(self, p):
+        stored = self.secrets.get(p["p_team_id"])
+        return FakeResponse(200, None if stored is None else auth.params_of(stored))
+
+    def _rpc_workspace_append(self, p):
+        rows = p["p_events"]
+        if not isinstance(rows, list):
+            return FakeResponse(400, {"message": "이벤트는 배열로 준다"})
+        if not rows:
+            return FakeResponse(200, 0)     # 🔴 passcode 검사 **앞**이다 (머리주석)
+        if len(rows) > 50:
+            return FakeResponse(400, {"message": "한 번에 보낼 수 있는 이벤트는 50건까지다"})
+        team_id = p["p_team_id"]
+        stored = self.secrets.get(team_id)
+        if stored is None or stored != p.get("p_encoded"):
+            return FakeResponse(400, {"code": "P0001", "message": store.REJECTED_MESSAGE})
+        bad = sorted({r["team_id"] for r in rows if r["team_id"] != team_id})
+        if bad:
+            return FakeResponse(400, {"message": f"다른 조의 이벤트가 섞였다: {', '.join(bad)}"})
+        return FakeResponse(200, sum(self._insert(row) for row in rows))
+
+    def _rpc_workspace_heartbeat(self, p):
+        bas_dd = str(p["p_bas_dd"])
+        if len(bas_dd) != 8 or not bas_dd.isdigit():
+            return FakeResponse(400, {"message": "bas_dd 는 YYYYMMDD 여야 한다"})
+        self.publish[bas_dd] = p.get("p_note")
+        return FakeResponse(204)            # void — 본문이 없다
+
+    def _insert(self, row) -> int:
+        # 🔒 DB 의 `check (not (payload ? 'passcode_hash'))` 를 픽스처도 갖는다
+        assert "passcode_hash" not in (row.get("payload") or {}), "해시가 원장으로 갔다"
+        if row["event_id"] in self.rows:
+            return 0                        # on conflict (event_id) do nothing
+        self.rows[row["event_id"]] = row
+        return 1
+
+    # 읽기 ─────────────────────────────────────────────────────────────────
+
+    def get(self, url, *, params=None, headers=None, timeout=None):
+        assert headers["apikey"] == self.KEY
+        assert params["order"] == "at.asc,event_id.asc", "페이지 경계가 흔들린다"
+        rows = sorted(self.rows.values(), key=lambda r: (r["at"], r["event_id"]))
+        for field in ("team_id", "kind"):
+            want = params.get(field)
+            if want:
+                rows = [r for r in rows if r[field] == want.split("eq.", 1)[1]]
+        offset, limit = int(params.get("offset", 0)), int(params.get("limit", 1000))
+        return FakeResponse(200, rows[offset:offset + limit])
+
+
+def supabase(fake: FakePostgrest | None = None):
+    fake = fake if fake is not None else FakePostgrest()
+    return store.SupabaseStore(url=FakePostgrest.URL, key=FakePostgrest.KEY,
+                               transport=fake), fake
+
+
+def test_Supabase_도_같은_계약을_지킨다():
+    """🔒 화면은 저장소가 어느 쪽인지 몰라야 한다."""
+    st, fake = supabase()
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    assert st.create_team(team(), passcode_hash=stored) == 1
+
+    good = auth.recompute_passcode("산-바다-강-들", st.passcode_params("team_a"))
+    assert good == stored
+    assert st.passcode_params("team_zzz") is None
+    assert st.verify("team_a", good) is True
+    assert st.verify("team_a", stored[:-1] + "x") is False
+    assert st.verify("team_zzz", good) is False
+
+    event = confirmed("steel", "철강 1위", AT2)
+    assert st.append([event], credential=good) == 1
+    assert st.append([event], credential=good) == 0        # 🔒 멱등
+    assert [e.at for e in st.read_all()] == [AT1, AT2]
+    assert "passcode_hash" not in fake.rows[team().event_id]["payload"]
+
+
+def test_Supabase_검증이_원장을_늘리지_않는다():
+    """🔴 `verify` 가 쓰기 경로를 쓴다 — 그런데 **0건 쓰인다.**
+
+    이미 있는 이벤트를 다시 보내므로 passcode 는 검사되고 `on conflict do nothing`
+    이 삽입을 막는다. 원장의 멱등성을 우회가 아니라 그대로 쓰는 것이 요점이다.
+    """
+    st, fake = supabase()
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    st.create_team(team(), passcode_hash=stored)
+    before = dict(fake.rows)
+    for _ in range(3):
+        assert st.verify("team_a", stored) is True
+    assert fake.rows == before
+
+
+def test_Supabase_는_자격증명_없이_쓰지_않는다():
+    """🔴 마스터 경로가 DB 에 없다 — 조용히 우회하지 않고 무엇을 해야 하는지 말한다."""
+    st, fake = supabase()
+    st.create_team(team(), passcode_hash=HASH)
+    for credential in (None, ""):
+        with pytest.raises(store.StoreError, match="passcode"):
+            st.append([confirmed("steel", "철강 1위", AT2)], credential=credential)
+    assert len(fake.rows) == 1          # 🔒 한 건도 들어가지 않았다
+
+
+def test_Supabase_가_거부를_통신_오류와_구별한다():
+    """🔴 네트워크 문제를 'passcode 가 틀렸다' 로 바꿔 보여주면 원인을 못 찾는다."""
+    st, fake = supabase()
+    st.create_team(team(), passcode_hash=HASH)
+    event = confirmed("steel", "철강 1위", AT2)
+
+    with pytest.raises(store.PasscodeRejected):
+        st.append([event], credential="scrypt$16384$8$1$c2FsdA$dGxpbnI")
+
+    class Down(FakePostgrest):
+        def post(self, url, **kw):
+            return FakeResponse(503, {"message": "service unavailable"})
+
+    broken, _ = supabase(Down())
+    with pytest.raises(store.StoreError, match="503") as excinfo:
+        broken.append([event], credential=HASH)
+    assert not isinstance(excinfo.value, store.PasscodeRejected)
+
+
+def test_Supabase_가_digest_를_받으면_던진다():
+    """🔴 RPC 가 해시를 통째로 주기 시작했다는 뜻이다 — ④ 가 깨진 상태다."""
+    class Leaky(FakePostgrest):
+        def _rpc_workspace_passcode_params(self, p):
+            return FakeResponse(200, self.secrets.get(p["p_team_id"]))
+
+    st, _ = supabase(Leaky())
+    st.create_team(team(), passcode_hash=HASH)
+    with pytest.raises(store.StoreError, match="digest"):
+        st.passcode_params("team_a")
+
+
+def test_Supabase_가_원장을_페이지로_끝까지_읽는다(monkeypatch):
+    """🔒 PostgREST 는 한 번에 다 주지 않는다. 한 페이지만 읽으면 조가 사라진다."""
+    monkeypatch.setattr(store, "_PAGE", 2)
+    st, _ = supabase()
+    st.create_team(team(), passcode_hash=HASH)
+    ats = ["2026-09-12T0%d:00:00+00:00" % n for n in range(1, 6)]
+    st.append([events.comment_posted(team_id="team_a", body=f"글 {n}", actor="동원", at=at)
+               for n, at in enumerate(ats)], credential=HASH)
+    assert len(st.read_all()) == 6
+
+
+def test_Supabase_는_원장이_상한을_넘으면_던진다(monkeypatch):
+    """🔴 조용히 자르지 않는다 — 잘린 원장은 '가끔 조가 사라진다' 다."""
+    monkeypatch.setattr(store, "_PAGE", 2)
+    monkeypatch.setattr(store, "_MAX_EVENTS", 2)
+    st, _ = supabase()
+    st.create_team(team(), passcode_hash=HASH)
+    st.append([events.comment_posted(team_id="team_a", body=f"글 {n}", actor="동원",
+                                     at="2026-09-12T0%d:00:00+00:00" % n)
+               for n in range(1, 4)], credential=HASH)
+    with pytest.raises(store.StoreError, match="조용히 자르지 않는다"):
+        st.read_all()
+
+
+def test_Supabase_하트비트가_void_를_받아낸다():
+    """🔒 7일 pause 를 이것으로 푼다 — 본문 없는 204 에서 죽으면 안 된다."""
+    st, fake = supabase()
+    assert st.heartbeat("20260910", "게시 35건") is None
+    assert fake.publish == {"20260910": "게시 35건"}
+    with pytest.raises(store.StoreError, match="YYYYMMDD"):
+        st.heartbeat("2026-09-10")
+
+
+@pytest.mark.parametrize("key", [
+    "sb_secret_abcdef",
+    # role=service_role 인 JWT 흉내 — 서명은 보지 않는다(서버가 본다)
+    "eyJhbGciOiJIUzI1NiJ9."
+    + base64.urlsafe_b64encode(b'{"role":"service_role"}').decode().rstrip("=")
+    + ".sig",
+])
+def test_권한_큰_키를_앱에_둘_수_없다(key):
+    """🔴 HF 토큰을 `WRITE`/`READ` 로 가른 것과 같은 사고를 미리 막는다(V29).
+
+    `service_role` 은 RLS 를 통째로 우회하고 v2.0 유산 53개 테이블 전부에 닿는다.
+    """
+    with pytest.raises(store.StoreError, match="anon|secret"):
+        store.SupabaseStore(url=FakePostgrest.URL, key=key, transport=FakePostgrest())
+
+
+def test_anon_JWT_는_통과한다():
+    anon = ("eyJhbGciOiJIUzI1NiJ9."
+            + base64.urlsafe_b64encode(b'{"role":"anon"}').decode().rstrip("=")
+            + ".sig")
+    assert store.SupabaseStore(url=FakePostgrest.URL, key=anon,
+                               transport=FakePostgrest())._key == anon
+
+
+def test_역할을_읽을_수_없는_키는_막지_않는다():
+    """🔒 모르는 새 형식을 막아 앱이 아예 못 뜨게 만드는 것이 더 나쁘다.
+    우리가 막는 것은 **아는 사고**(service_role 붙여넣기)다."""
+    assert store.SupabaseStore(url=FakePostgrest.URL, key="sb_publishable_xyz",
+                               transport=FakePostgrest())
+
+
+def test_https_가_아니면_거부한다():
+    """🔒 http 면 키가 평문으로 나간다. 되돌릴 수 없는 종류의 실수다."""
+    for url in ("http://fake.supabase.co", "fake.supabase.co"):
+        with pytest.raises(store.StoreError, match="https"):
+            store.SupabaseStore(url=url, key=FakePostgrest.KEY, transport=FakePostgrest())
+
+
+def test_시크릿이_없으면_무엇을_해야_하는지_말한다(monkeypatch):
+    """🔒 `secret_access` 의 규율 — 없는 것은 없다고 말하고 다음 할 일을 준다."""
+    monkeypatch.setattr(store, "get_secret", lambda *a, **kw: None)
+    with pytest.raises(store.StoreError, match="SUPABASE_URL"):
+        store.SupabaseStore(transport=FakePostgrest())
+    with pytest.raises(store.StoreError, match="anon"):
+        store.SupabaseStore(url=FakePostgrest.URL, transport=FakePostgrest())
+
+
+def test_거부_문장이_마이그레이션과_같다():
+    """🔴 갈라지면 **거부를 통신 오류로 오인**해 화면이 엉뚱한 말을 한다.
+
+    `SupabaseStore._decode` 가 PostgREST 가 실어 보낸 문장을 보고
+    `PasscodeRejected` 로 올린다. 그 문장의 정본은 SQL 이다.
+    """
+    sql = (Path(__file__).resolve().parents[2] / "supabase" / "migrations"
+           / "20260912095328_workspace_ledger.sql").read_text(encoding="utf-8")
+    assert f"'{store.REJECTED_MESSAGE}'" in sql, store.REJECTED_MESSAGE
+
+
+def test_원장_CHECK_와_코어가_같은_키를_막는다():
+    """🔒 DB 와 코어가 같은 규칙을 갖는다 — 두 곳이 갈라지면 한쪽이 새거나 거부한다."""
+    sql = (Path(__file__).resolve().parents[2] / "supabase" / "migrations"
+           / "20260912095328_workspace_ledger.sql").read_text(encoding="utf-8")
+    assert f"payload ? '{events.LEGACY_SECRET_KEY}'" in sql

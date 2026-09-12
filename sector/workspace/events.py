@@ -39,7 +39,9 @@ __all__ = [
     "EventError",
     "Event",
     "KINDS",
+    "LEGACY_SECRET_KEY",
     "canonical_json",
+    "carries_legacy_secret",
     "make_event",
     "team_created",
     "member_joined",
@@ -49,6 +51,7 @@ __all__ = [
     "team_archived",
     "team_restored",
     "parse_event",
+    "require_team_id",
     "sort_key",
 ]
 
@@ -77,6 +80,25 @@ _ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 _AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00$")
 
 _MAX_TEXT = 4000
+
+#: 🔴 **passcode 는 payload 에 들어가지 않는다** (ADR-SC-0011 ④ · 2026-09-12).
+#:
+#: 옛 구조는 `team.created` 의 payload 에 해시를 담았다. HF private dataset 위에서는
+#: 토큰 없이 읽을 수 없었기에 성립했지만, 원장이 Supabase 로 가면 **읽기가 공개**라
+#: 그대로 옮기면 해시가 공개된다. 해시는 원장 **밖**(`EventStore.create_team`)에 쓰고
+#: 이 계층은 그 자리를 아예 막는다.
+#:
+#: 🔒 DB 도 같은 규칙을 갖는다 — `workspace_event` 의
+#:    `check (not (payload ? 'passcode_hash'))`. **두 곳이 같은 것을 막는다.**
+#:    이쪽이 더 넓다(`passcode` 를 품은 모든 키) — 넓은 쪽이 먼저 거부하므로
+#:    "앱이 만든 이벤트를 DB 가 거부한다" 는 일이 생기지 않는다. 반대로 좁으면 생긴다.
+_SECRET_KEY_MARK = "passcode"
+
+#: 옛 원장(2026-09-12 이전 HF)이 담던 키.
+#: 🔒 **읽기는 막지 않는다.** 막으면 옛 원장 한 줄 때문에 원장 전체가 예외가 되고
+#:    화면이 통째로 죽는다 (`fold` 머리주석의 "한 줄 때문에 팀 화면이 죽으면 안 된다").
+#:    대신 `fold` 가 어긋난 것으로 올려 사람에게 보인다.
+LEGACY_SECRET_KEY = "passcode_hash"
 
 
 def canonical_json(value: Any) -> str:
@@ -111,6 +133,34 @@ def _require_text(value: Any, what: str, *, max_len: int = _MAX_TEXT) -> str:
     if len(text) > max_len:
         raise EventError(f"{what} 가 너무 길다 ({len(text)}자 > {max_len}자)")
     return text
+
+
+def require_team_id(value: Any) -> str:
+    """조 id 를 규칙에 비춰 확인한다. 🔒 **저장소 계층이 쓴다.**
+
+    🔴 id 가 경로(`secrets/{team_id}.json`)와 조회 필터(`team_id=eq.{team_id}`)에
+       그대로 들어간다. 규칙을 통과하지 않은 값이 거기 닿으면 경로 탈출과 필터
+       주입이 된다 — 규칙이 이미 있으니 **문 앞에서** 한 번 더 묻는다.
+    """
+    return _require_id(value, "team_id")
+
+
+def _reject_secret_keys(payload: Mapping[str, Any]) -> None:
+    """🔴 payload 에 passcode 가 섞이는 길을 **문에서** 막는다 (`_SECRET_KEY_MARK`)."""
+    bad = sorted(str(key) for key in payload if _SECRET_KEY_MARK in str(key).lower())
+    if bad:
+        raise EventError(
+            f"passcode 를 이벤트에 담을 수 없다: {', '.join(bad)}. "
+            f"해시는 원장 밖에 둔다 — `EventStore.create_team` 이 쓴다 (ADR-SC-0011 ④)"
+        )
+
+
+def carries_legacy_secret(event: "Event") -> bool:
+    """옛 원장 형식인가 — payload 에 passcode 해시가 아직 들어 있는가.
+
+    🔒 판정을 여기 한 곳에 둔다. `fold` 가 이것으로 어긋난 것을 올린다.
+    """
+    return LEGACY_SECRET_KEY in event.payload
 
 
 def _require_at(value: Any) -> str:
@@ -170,13 +220,36 @@ def make_event(
     at: str,
     payload: Mapping[str, Any] | None = None,
 ) -> Event:
-    """이벤트 하나. 🔒 `at` 에 기본값이 없다 (머리주석)."""
+    """이벤트 하나. 🔒 `at` 에 기본값이 없다 (머리주석).
+
+    🔴 payload 에 passcode 를 담을 수 없다 (`_SECRET_KEY_MARK`). **새 이벤트는
+       전부 이 문을 지난다** — 종류별 생성자도 여기로 들어온다.
+    """
+    body = dict(payload or {})
+    _reject_secret_keys(body)
+    return _make(kind, team_id=team_id, actor=actor, at=at, payload=body)
+
+
+def _make(
+    kind: str,
+    *,
+    team_id: str,
+    actor: str,
+    at: str,
+    payload: Mapping[str, Any],
+) -> Event:
+    """검증하고 id 를 계산한다. 🔒 **passcode 게이트가 없다.**
+
+    🔴 `parse_event` 가 이쪽을 쓴다 — 옛 원장에는 payload 에 해시가 남아 있고,
+       읽는 길에 게이트를 두면 그 한 줄이 원장 전체를 예외로 만든다
+       (→ `LEGACY_SECRET_KEY`). 새 이벤트를 만들 때는 **반드시 `make_event`** 다.
+    """
     if kind not in KINDS:
         raise EventError(f"모르는 이벤트 종류다: {kind!r}. 아는 것 — {', '.join(KINDS)}")
     team = _require_id(team_id, "team_id")
     who = _require_text(actor, "actor", max_len=40)
     when = _require_at(at)
-    body = dict(payload or {})
+    body = dict(payload)
     return Event(
         event_id=_event_id(kind, team, who, when, body),
         kind=kind, team_id=team, actor=who, at=when, payload=body,
@@ -187,16 +260,20 @@ def make_event(
 # 🔒 `make_event` 를 직접 부르지 않고 이쪽을 쓴다. payload 는 사전이라 오타가
 #    조용히 지나가는데, 아래 함수들이 그 자리를 막는다.
 
-def team_created(*, team_id: str, name: str, passcode_hash: str, actor: str, at: str) -> Event:
-    """조를 만든다. 🔒 `passcode_hash` 만 받는다 — 평문은 이 계층에 들어오지 않는다."""
-    if not str(passcode_hash).startswith("scrypt$"):
-        raise EventError(
-            "passcode 는 **해시**로만 받는다. `workspace.auth.hash_passcode` 를 쓴다"
-        )
+def team_created(*, team_id: str, name: str, actor: str, at: str) -> Event:
+    """조를 만든다.
+
+    🔴 **passcode 를 받지 않는다** (ADR-SC-0011 ④ · 2026-09-12). 해시는 원장이
+       아니라 `EventStore.create_team` 이 원장 **밖**에 쓴다 — 원장 읽기가 공개이기
+       때문이다(⑥).
+
+    분리는 설계적으로도 낫다. passcode 는 **사건이 아니라 현재 상태**다. 이벤트에
+    박아 두었기 때문에 옛 구조에는 **passcode 를 바꿀 방법이 없었다**
+    (`team.created` 에만 있으니까).
+    """
     return make_event(
         "team.created", team_id=team_id, actor=actor, at=at,
-        payload={"name": _require_text(name, "조 이름", max_len=60),
-                 "passcode_hash": str(passcode_hash)},
+        payload={"name": _require_text(name, "조 이름", max_len=60)},
     )
 
 
@@ -287,6 +364,9 @@ def parse_event(data: Any) -> Event:
 
     조용히 받아들이면 손으로 고친 파일이 원장에 섞이고, 그 뒤로는 원장이
     원장이 아니게 된다.
+
+    🔒 **passcode 게이트를 통과시키지 않는다**(`_make`). 옛 원장을 읽어야 하고,
+       읽지 못하면 화면이 통째로 죽는다 — 어긋난 것은 `fold` 가 말한다.
     """
     if not isinstance(data, Mapping):
         raise EventError(f"이벤트가 사전이 아니다: {type(data).__name__}")
@@ -297,7 +377,7 @@ def parse_event(data: Any) -> Event:
     if not isinstance(payload, Mapping):
         raise EventError("payload 가 사전이 아니다")
 
-    event = make_event(
+    event = _make(
         str(data["kind"]), team_id=str(data["team_id"]), actor=str(data["actor"]),
         at=str(data["at"]), payload=dict(payload),
     )

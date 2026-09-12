@@ -17,11 +17,12 @@ from datetime import datetime, timezone
 import streamlit as st
 
 __all__ = ["now_utc", "actor", "set_actor", "team_id", "set_team", "leave",
-           "is_master", "set_master"]
+           "is_master", "set_master", "credential", "set_credential"]
 
 _ACTOR = "sc_actor"
 _TEAM = "sc_team_id"
 _MASTER = "sc_master"
+_CREDENTIAL = "sc_credential"
 
 
 def now_utc() -> str:
@@ -49,6 +50,24 @@ def set_team(value: str) -> None:
     st.session_state[_TEAM] = value
 
 
+def credential() -> str | None:
+    """이 조에 쓸 자격증명 — `scrypt$n$r$p$salt$digest`.
+
+    🔴 **평문 passcode 가 아니다.** 참가할 때 저장된 salt 로 재계산한 값이고
+       (`auth.recompute_passcode`), 원장에 쓸 때마다 저장소가 이것을 요구한다
+       (ADR-SC-0011 ⑤ — 쓰기 권한이 키가 아니라 passcode 에 걸려 있다).
+
+    🔒 `st.session_state` 는 **서버 쪽**에 있고 브라우저로 내려가지 않는다. 그래서
+       평문을 들고 있는 것보다 낫다 — 평문은 다른 조에서도 쓰일 수 있지만 이 값은
+       이 조에서만 쓸 수 있다.
+    """
+    return st.session_state.get(_CREDENTIAL)
+
+
+def set_credential(value: str) -> None:
+    st.session_state[_CREDENTIAL] = value
+
+
 def is_master() -> bool:
     """🔒 **이 브라우저 세션에서만** 열려 있다. 원장에 기록되지 않는다."""
     return bool(st.session_state.get(_MASTER))
@@ -59,5 +78,10 @@ def set_master(value: bool) -> None:
 
 
 def leave() -> None:
-    """조에서 나간다. 🔒 **원장을 건드리지 않는다** — 이 브라우저의 상태일 뿐이다."""
+    """조에서 나간다. 🔒 **원장을 건드리지 않는다** — 이 브라우저의 상태일 뿐이다.
+
+    🔒 자격증명도 함께 버린다. 조만 지우고 남겨 두면 다음 조에 옛 자격증명을
+       들고 들어간다.
+    """
     st.session_state.pop(_TEAM, None)
+    st.session_state.pop(_CREDENTIAL, None)

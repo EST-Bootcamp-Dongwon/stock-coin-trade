@@ -19,18 +19,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from sector.workspace.events import Event, sort_key
+from sector.workspace.events import Event, carries_legacy_secret, sort_key
 
 __all__ = ["Team", "Comment", "Workspace", "fold"]
 
 
 @dataclass(frozen=True, slots=True)
 class Team:
-    """조 하나의 현재 모습."""
+    """조 하나의 현재 모습.
+
+    🔴 **`passcode_hash` 가 없다** (2026-09-12 · ADR-SC-0011 ④). 해시는 원장 밖에
+       있고 검증은 저장소가 한다(`EventStore.verify`) — 화면이 해시를 손에 들면
+       원장 읽기가 공개인 순간 그것이 곧 노출 경로가 된다.
+    """
 
     id: str
     name: str
-    passcode_hash: str
     created_by: str
     created_at: str
     members: tuple[str, ...] = ()
@@ -114,6 +118,17 @@ def fold(events: Iterable[Event]) -> Workspace:
         kind = event.kind
         payload = event.payload
 
+        # 🔴 옛 원장 형식 — payload 에 passcode 해시가 남아 있다 (2026-09-12 이전).
+        #    읽기는 막지 않되(→ `events.LEGACY_SECRET_KEY`) **조용히 넘기지도 않는다.**
+        #    그 조는 `passcode_params` 가 없으므로 **참가할 수 없다** — 화면이 그
+        #    이유를 말할 수 있어야 한다.
+        if carries_legacy_secret(event):
+            anomalies.append(
+                f"조 '{event.team_id}' 의 {kind} 이벤트가 **옛 형식**이다 — passcode "
+                f"해시가 원장 안에 있다({event.at}). 이 조에는 참가할 수 없다. "
+                f"조를 다시 만든다 (ADR-SC-0011 ④)"
+            )
+
         if kind == "team.created":
             if event.team_id in teams:
                 existing = teams[event.team_id]
@@ -127,7 +142,6 @@ def fold(events: Iterable[Event]) -> Workspace:
             teams[event.team_id] = Team(
                 id=event.team_id,
                 name=str(payload.get("name", "")),
-                passcode_hash=str(payload.get("passcode_hash", "")),
                 created_by=event.actor,
                 created_at=event.at,
                 members=(event.actor,),      # 만든 사람은 당연히 참가자다
@@ -187,7 +201,7 @@ def _replace(team: Team, **changes: object) -> Team:
     """frozen dataclass 를 바꾼 사본으로. `dataclasses.replace` 가 `slots=True` 와
     맞물릴 때 파이썬 버전마다 다르게 굴어 직접 만든다."""
     data = {
-        "id": team.id, "name": team.name, "passcode_hash": team.passcode_hash,
+        "id": team.id, "name": team.name,
         "created_by": team.created_by, "created_at": team.created_at,
         "members": team.members, "core_sector": team.core_sector,
         "core_reason": team.core_reason, "confirmed_at": team.confirmed_at,

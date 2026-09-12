@@ -618,3 +618,101 @@ def test_등수_카드와_막대가_랭킹에_있다(app):
     heads = [h.value for h in app.subheader]
     assert "상위 3" in heads and "점수를 한눈에" in heads
     assert "sc-rank" in _markdown(app)
+
+
+# ── passcode 가 원장 밖으로 나갔다 (2026-09-12 · ADR-SC-0011 ④) ──────────────
+# 🔴 화면이 해시를 손에 들지 않는다. 검증은 저장소가 하고 화면은 참·거짓만 받는다.
+
+
+def test_조를_만들면_해시가_원장_밖에_있다(ledger, tmp_path):
+    """🔒 계약이 아니라 **디스크에 쓰인 자리**를 본다."""
+    _make_team(_run(_teams_page, ledger))
+    events_dir = [p.name for p in (tmp_path / "events").glob("*.json")]
+    assert len(events_dir) == 1                       # team.created 한 건
+    assert (tmp_path / "secrets" / "team_a.json").is_file()
+
+    from sector.workspace import store as store_module
+
+    written = (tmp_path / "events" / events_dir[0]).read_text(encoding="utf-8")
+    assert "passcode" not in written
+    # 🔒 앱이 받는 것에는 digest 가 없다
+    params = ledger.passcode_params("team_a")
+    assert params.endswith("$") and params.count("$") == 5
+    assert store_module.secret_path_in_repo("team_a") == "secrets/team_a.json"
+
+
+def test_해시가_화면에_그려지지_않는다(ledger, tmp_path):
+    """🔴 원장 읽기가 공개다 — 해시가 화면까지 오면 그것이 곧 노출 경로다."""
+    import json as json_module
+
+    at = _make_team(_run(_teams_page, ledger), passcode="산-바다-강-들")
+    stored = json_module.loads(
+        (tmp_path / "secrets" / "team_a.json").read_text(encoding="utf-8"))["passcode_hash"]
+    digest = stored.split("$")[5]
+
+    rendered = "\n".join(
+        str(element.value) for group in (at.markdown, at.caption, at.warning,
+                                         at.error, at.info, at.title, at.subheader)
+        for element in group)
+    assert digest not in rendered and stored not in rendered
+
+
+def test_참가하면_자격증명이_세션에_남는다(ledger, tmp_path):
+    """🔒 원장에 쓸 때마다 이것이 필요하다 (ADR-SC-0011 ⑤).
+
+    🔴 평문이 아니다 — 저장된 salt 로 재계산한 값이고 그 조에서만 쓸 수 있다.
+    """
+    import json as json_module
+
+    _make_team(_run(_teams_page, ledger), actor="동원", passcode="산-바다-강-들")
+    stored = json_module.loads(
+        (tmp_path / "secrets" / "team_a.json").read_text(encoding="utf-8"))["passcode_hash"]
+
+    at = _run(_teams_page, ledger)
+    at.text_input(key="identity_name").input("민수").run()
+    at.text_input(key="join_passcode").input("산-바다-강-들")
+    at.button(key="FormSubmitter:join-참가").click().run()
+
+    assert at.session_state["sc_credential"] == stored
+    assert "산-바다-강-들" != at.session_state["sc_credential"]
+
+
+def test_나가면_자격증명도_버린다(ledger):
+    """🔒 조만 지우고 남겨 두면 다음 조에 옛 자격증명을 들고 들어간다."""
+    at = _make_team(_run(_teams_page, ledger), actor="동원")
+    assert at.session_state["sc_credential"]
+    at.button(key="leave").click().run()
+    assert "sc_credential" not in at.session_state
+    assert "sc_team_id" not in at.session_state
+
+
+def test_옛_형식_원장이면_참가할_수_없다고_말한다(ledger, tmp_path, monkeypatch):
+    """🔴 HF 원장에 옛 형식 조가 남아 있다(2026-09-12 실측 · `test_team` 1건).
+
+    화면이 죽지도 않고 조용히 넘기지도 않는다 — **왜 참가할 수 없는지** 말한다.
+    """
+    from sector.workspace import events
+
+    legacy = events.make_event(
+        "team.created", team_id="team_old", actor="테스트1",
+        at="2026-09-12T06:55:31+00:00", payload={"name": "테스트조"}).to_json()
+    legacy["payload"]["passcode_hash"] = "scrypt$16384$8$1$c2FsdHNhbHQ$aGFzaGhhc2g"
+    legacy["event_id"] = events._make(                     # noqa: SLF001 — 옛 원장 재현
+        legacy["kind"], team_id=legacy["team_id"], actor=legacy["actor"],
+        at=legacy["at"], payload=legacy["payload"]).event_id
+    (tmp_path / "events").mkdir(parents=True, exist_ok=True)
+    import json as json_module
+    (tmp_path / "events" / f"{legacy['event_id']}.json").write_text(
+        json_module.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+
+    at = _run(_teams_page, ledger)
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+    assert any("옛 형식" in str(m.value) for m in at.markdown), \
+        [str(m.value)[:80] for m in at.markdown]
+
+    # 🔒 그 조에는 실제로 참가할 수 없다 — 해시가 원장 밖에 없으므로
+    at.text_input(key="identity_name").input("민수").run()
+    at.text_input(key="join_passcode").input("무엇이든-넣어도")
+    at.button(key="FormSubmitter:join-참가").click().run()
+    assert any("passcode" in e.value for e in at.error)
+    assert "sc_team_id" not in at.session_state

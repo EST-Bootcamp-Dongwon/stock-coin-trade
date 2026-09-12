@@ -181,8 +181,10 @@ def _render_history(workspace: fold.Workspace, team_id: str, names) -> None:
 
 
 def _write(store, event) -> bool:
+    """🔒 자격증명을 함께 보낸다 — 쓰기 권한이 키가 아니라 passcode 에 걸려 있다
+    (ADR-SC-0011 ⑤). 참가할 때 세션에 담긴다(`dashboard/pages/teams.py`)."""
     try:
-        store.append([event])
+        store.append([event], credential=session.credential())
         return True
     except Exception as exc:                          # noqa: BLE001
         st.error(f"원장에 쓰지 못했다: {exc}")

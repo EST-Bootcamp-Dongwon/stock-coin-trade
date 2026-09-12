@@ -94,7 +94,14 @@ ALLOWED_EXACT_PATHS: tuple[str, ...] = ("MANIFEST.json", "README.md")
 #: 워크스페이스 저장소의 허용 경로. 이벤트 1건 = 파일 1개라 접두 하나면 충분하다.
 #: 🔒 여기에 `latest/` 같은 **집계 스냅샷을 두지 않는다** — 상태는 이벤트를 접어서
 #:    만든다. 스냅샷을 같이 두면 둘이 어긋났을 때 어느 쪽이 사실인지 알 수 없다.
-WORKSPACE_ALLOWED_PREFIXES: tuple[str, ...] = ("events/",)
+#:
+#: 🔴 `secrets/` 는 **passcode 해시 전용**이다 (2026-09-12 · ADR-SC-0011 ④).
+#:    해시를 원장(`events/`)에서 뺐으므로 HF 구현도 둘 곳이 필요하다. 이 저장소는
+#:    private 이고 옛 구조에서도 해시가 같은 저장소에 있었으므로 **노출 범위는
+#:    늘지 않는다** — 늘지 않는다는 것이 요점이고, 갈라 두는 것은 Supabase 쪽
+#:    `workspace_team_secret` 과 구조를 맞추기 위해서다.
+#: 🔒 원장이 Supabase 로 옮겨가면 이 접두는 저장소와 함께 사라진다.
+WORKSPACE_ALLOWED_PREFIXES: tuple[str, ...] = ("events/", "secrets/")
 WORKSPACE_ALLOWED_EXACT: tuple[str, ...] = ("README.md",)
 
 #: `repo_id` → (허용 정확 경로, 허용 접두).
