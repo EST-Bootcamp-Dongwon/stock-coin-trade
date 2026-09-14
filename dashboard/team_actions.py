@@ -308,7 +308,9 @@ def render_team_core(store, workspace: fold.Workspace, team: fold.Team, actor: s
 
     if frame is not None:
         st.subheader("이 섹터의 근거")
-        evidence.render_evidence(frame, sector_id, names=names)
+        # ★ 조 원장을 넘긴다 — "확정한 뒤로 뭐가 바뀌었어" 는 여기서만 답할 수 있다 (ADR-SC-0013)
+        evidence.render_evidence(frame, sector_id, names=names, ask_key="team_ask",
+                                 workspace=workspace, team_id=team.id)
     st.subheader("조원이 붙인 근거")
     render_comments(workspace, team.id, sector_id)
 

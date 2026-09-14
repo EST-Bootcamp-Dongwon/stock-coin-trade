@@ -171,13 +171,17 @@ def _ida(word: str) -> str:
 
 
 def sigma_words(z_bp: int | None) -> str:
-    """z 를 사람 말로. 🔒 '좋다/나쁘다' 가 아니라 **높다/낮다** 로만 말한다."""
+    """z 를 사람 말로. 🔒 '좋다/나쁘다' 가 아니라 **높다/낮다** 로만 말한다.
+
+    🔴 "압도적으로" 를 쓰지 않는다(2026-09-14 · ADR-SC-0013) — 무엇 대비 얼마나인지 말하지 않는
+       낱말이다. 가장 높은 구간은 **숫자로** 말한다. 에이전트의 guard 가 그 낱말을 거부한다.
+    """
     if z_bp is None:
         return "잴 수 없다"
     sigma = abs(z_bp) / 10000
     side = "높다" if z_bp > 0 else "낮다"
     if sigma >= 2.0:
-        return f"다른 섹터들보다 압도적으로 {side}"
+        return f"다른 섹터들보다 2σ 이상 {side}"
     if sigma >= 1.0:
         return f"다른 섹터들보다 뚜렷이 {side}"
     if sigma >= 0.4:

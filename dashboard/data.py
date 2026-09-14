@@ -30,7 +30,7 @@ from sector.datastore import hub
 from sector.sources.krx_common import repo_root
 
 __all__ = ["DataUnavailable", "Source", "load_scores", "load_sectors", "latest_day",
-           "sector_names", "sector_notes"]
+           "sector_master", "sector_names", "sector_notes"]
 
 #: HF 에 게시된 앱 전용 파일. 🔒 앱은 `latest/` 만 읽는다 — 월별 샤드를 전부
 #:    받으면 메모리 2.7GB 한도에 닿는다.
@@ -198,6 +198,11 @@ def _master() -> Any:
         return load_sectors()
     except Exception:                    # noqa: BLE001 — 설정 파일 문제. 코드로 그린다
         return None
+
+
+def sector_master() -> Any:
+    """`sectors.yaml` 값 객체 — 에이전트가 섹터 이름 사전 · 구성을 읽는다. 못 읽으면 `None`."""
+    return _master()
 
 
 def sector_names() -> Any:

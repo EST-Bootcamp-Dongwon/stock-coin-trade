@@ -166,8 +166,9 @@ def _render_consensus(frame, names) -> None:
 
 def _render_breakdown(frame, sector_id: str, profile: str, names) -> None:
     with theme.panel(names.sector_full(sector_id)):
+        # ★ 질문칸은 여기와 조 페이지에만 연다 — 확정 모달에는 두지 않는다 (ADR-SC-0013)
         evidence.render_evidence(frame, sector_id, profile=profile, names=names,
-                                 days=_STABILITY_DAYS)
+                                 days=_STABILITY_DAYS, ask_key="rank_ask")
 
 
 def _floor(column) -> int:

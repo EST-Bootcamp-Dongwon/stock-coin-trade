@@ -66,14 +66,15 @@ def to_json_safe(value):
 class Snapshot:
     """한 테스트의 스냅샷 묶음."""
 
-    def __init__(self, test_name: str, *, update: bool) -> None:
+    def __init__(self, test_name: str, *, update: bool, golden_dir: Path = GOLDEN_DIR) -> None:
         self._test_name = test_name
         self._update = update
+        self._golden_dir = golden_dir
         self._used: set[str] = set()
 
     def path(self, name: str | None) -> Path:
         stem = self._test_name if name is None else f"{self._test_name}__{name}"
-        return GOLDEN_DIR / f"{stem}.json"
+        return self._golden_dir / f"{stem}.json"
 
     def assert_match(self, value, name: str | None = None) -> None:
         path = self.path(name)

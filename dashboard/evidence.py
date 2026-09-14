@@ -11,8 +11,17 @@ import 하면 페이지끼리 묶여 `st.navigation` 이 무엇을 먼저 읽느
 
 ## 🔒 순서가 뜻을 만든다 — 말 → 숫자 → 사람이 쓴 근거
 
-숫자를 먼저 두면 개발자가 아닌 팀원이 첫 줄에서 멈춘다. `narrative()` 가 같은
-사실을 먼저 문장으로 말하고, 숫자는 접어 둔 칸에서 편다.
+숫자를 먼저 두면 개발자가 아닌 팀원이 첫 줄에서 멈춘다. 같은 사실을 먼저 문장으로
+말하고, 숫자는 접어 둔 칸에서 편다.
+
+## ★ 말은 에이전트가 만든다 (2026-09-14 · ADR-SC-0013)
+
+"말로" 칸은 `dashboard.agent` 가 채운다 — 질문칸이 있으면 자유 질문에, 없으면 "왜 이 자리인가" 에
+답한다. 🔒 **guard 를 통과한 문장만 그린다.** 어긋나면 문장을 버리고 숫자 칸만 남기며 이유를 말한다.
+🔒 **확정 모달에는 질문칸을 두지 않는다** — 사유를 쓰는 자리에서 대화가 시작되면 모달의 일이 흐려진다.
+
+🔒 질문칸의 글은 **어디에도 되돌려 그리지 않는다.** 화면에 나가는 문장은 전부 코드와
+`sectors.yaml` 이 쓴 것이다 — 사람 글을 마크다운에 넣는 경로를 새로 열지 않는다(ADR-SC-0012 ④).
 """
 
 from __future__ import annotations
@@ -20,29 +29,67 @@ from __future__ import annotations
 import streamlit as st
 
 from dashboard import data, theme, view
+from dashboard.agent import engine
+from dashboard.agent.intent import EXAMPLE_QUESTIONS, INTENT_LABELS, INTENTS, MAX_CHARS
+from dashboard.agent.inventory import SEARCH_NOTICE
+from dashboard.agent.redteam import STATUS_PLAIN
 from dashboard.explain import (
-    axis_line, degraded_text, liquidity_text, narrative, rank_stability_text,
-    score_text,
+    axis_line, degraded_text, liquidity_text, rank_stability_text, score_text,
 )
 
-__all__ = ["render_evidence"]
+__all__ = ["render_evidence", "GUARD_FAILED", "ASK_NOTICE"]
 
 #: 순위 안정성을 볼 창. 🔒 랭킹 화면과 같은 값이라 두 화면의 "평균순위" 가 맞는다.
 STABILITY_DAYS = 20
 
+GUARD_FAILED = ("설명 문장을 검증하다 원천과 어긋난 것이 나와 문장을 보여주지 않는다 — "
+                "아래 숫자 칸만 본다.")
+ASK_NOTICE = ("네 가지만 답한다 — 사고파는 판단 · 앞으로의 예측 · 추천은 하지 않는다. "
+              "모든 문장은 숫자를 원천과 대조한 뒤에 나간다.")
 
-def render_evidence(frame, sector_id: str, *, profile: str = "balanced",
-                    names=None, days: int = STABILITY_DAYS) -> None:
-    """한 섹터의 근거를 통째로 그린다 (머리주석의 세 순서대로)."""
+
+def render_evidence(frame, sector_id: str, *, profile: str = "balanced", names=None,
+                    days: int = STABILITY_DAYS, ask_key: str | None = None,
+                    workspace=None, team_id: str | None = None) -> None:
+    """한 섹터의 근거를 통째로 그린다 (머리주석의 세 순서대로).
+
+    `ask_key` 가 있으면 질문칸을 연다 — 🔒 모달은 넘기지 않는다(머리주석).
+    """
     names = names or view.Names.empty()
-    story = view.sector_story(frame, sector_id, profile=profile, days=days, names=names)
-    if not story:
+    if not view.sector_story(frame, sector_id, profile=profile, days=days, names=names):
         st.markdown(theme.missing("이 섹터는 그날 표에 없다"), unsafe_allow_html=True)
         return
+    master = data.sector_master()
+    options = dict(frame=frame, names=names, master=master, profile=profile, days=days,
+                   workspace=workspace, team_id=team_id)
+
+    result = None
+    if ask_key:
+        _reset_on_new_sector(ask_key, sector_id)
+        question = _question_box(ask_key)
+        if question.strip():
+            # 🔒 인계는 **사람이 물은 답**에서만 남긴다 — 기본 답으로 덮으면 처음 묻는 질문의
+            #    빈칸이 "유지" 로 나왔다(리뷰 O8).
+            # 🔴 같은 질문이 다시 그려질 때(라디오 · 버튼 · 새로고침)는 **그 질문 앞의 인계**와 견준다.
+            #    자기 인계와 견주면 그릴 때마다 빈칸이 "신규 → 유지" 로 바뀌었다(재검증 R-F).
+            chain = st.session_state.get(_handoff_key(ask_key))
+            if chain is not None and chain["question"] == question:
+                previous = chain["before"]
+            else:
+                previous = chain["handoff"] if chain is not None else None
+            result = engine.answer(question, context_sector=sector_id, previous=previous, **options)
+            st.session_state[_handoff_key(ask_key)] = {
+                "question": question, "before": previous, "handoff": result.handoff}
+    if result is None:
+        result = engine.brief_for("why_rank", sector_id=sector_id, **options)
 
     # ① 말로
-    for line in narrative(**story):
-        st.markdown(line)
+    _render_answer(result)
+
+    answered = result.sector_id if result.brief is not None else sector_id
+    story = view.sector_story(frame, answered, profile=profile, days=days, names=names)
+    if not story:
+        return
 
     # ② 숫자로 — 같은 사실을 축별로 편다
     with st.expander("축별 숫자로 보기"):
@@ -63,9 +110,118 @@ def render_evidence(frame, sector_id: str, *, profile: str = "balanced",
             st.markdown(f"<div class='sc-warn'>{warning}</div>", unsafe_allow_html=True)
 
     # ③ 사람이 쓴 근거 — 🔒 `sectors.yaml` 의 `note` 가 그대로 나간다
-    note = data.sector_notes().get(sector_id, "")
+    note = data.sector_notes().get(answered, "")
     if note:
         st.markdown("**사람이 쓴 근거** (`sectors.yaml`)")
         st.markdown(f"<div class='sc-note'>{note}</div>", unsafe_allow_html=True)
 
 
+def _handoff_key(ask_key: str) -> str:
+    return f"{ask_key}__handoff"
+
+
+def _reset_on_new_sector(key: str, sector_id: str) -> None:
+    """🔴 섹터를 바꾸면 질문칸과 인계를 비운다 — 옛 질문이 새 섹터 패널 아래에서 옛 섹터로 답했다(리뷰 O8).
+
+    🔒 위젯을 그리기 **전에** 부른다. 그려진 뒤에는 Streamlit 이 값을 바꾸게 두지 않는다.
+    """
+    marker = f"{key}__sector"
+    if st.session_state.get(marker) != sector_id:
+        st.session_state[key] = ""
+        st.session_state.pop(_handoff_key(key), None)
+        st.session_state[marker] = sector_id
+
+
+def _fill(key: str, text: str) -> None:
+    """🔒 콜백이다 — 위젯이 그려지기 **전에** 값을 넣어야 Streamlit 이 받아 준다."""
+    st.session_state[key] = text
+
+
+def _question_box(key: str) -> str:
+    st.markdown("**이 섹터에 대해 묻기**")
+    st.text_input("질문", key=key, max_chars=MAX_CHARS, label_visibility="collapsed",
+                  placeholder="예: 왜 이 순위야? · 믿어도 돼? · 지난주보다 뭐가 바뀌었어? · 뭐가 들어 있어?")
+    for column, intent in zip(st.columns(len(INTENTS)), INTENTS, strict=True):
+        with column:
+            st.button(INTENT_LABELS[intent], key=f"{key}__{intent}", on_click=_fill,
+                      args=(key, EXAMPLE_QUESTIONS[intent]))
+    st.markdown(f"<div class='sc-muted'>{ASK_NOTICE}</div>", unsafe_allow_html=True)
+    return str(st.session_state.get(key) or "")
+
+
+def _render_answer(result: engine.Answer) -> None:
+    if result.message:
+        # 🔒 거절 · 되묻기 문장은 코드와 `sectors.yaml` 이름뿐이다
+        st.info(result.message)
+        if result.route.reason == "ambiguous":
+            st.markdown("<div class='sc-muted'>어느 쪽인가 — "
+                        + " · ".join(INTENT_LABELS[c] for c in result.choices)
+                        + "</div>", unsafe_allow_html=True)
+        return
+    brief = result.brief
+    if brief is None:
+        return
+    if result.notice:
+        st.info(result.notice)
+    if result.violations:
+        st.error(GUARD_FAILED)
+        with st.expander(f"어긋난 것 {len(result.violations)}건"):
+            for line in result.violations:
+                st.markdown(theme.html_line(f"• {theme.esc(line)}"), unsafe_allow_html=True)
+        return
+
+    as_of = f"{brief.as_of[:4]}-{brief.as_of[4:6]}-{brief.as_of[6:]}"
+    st.caption(f"질문 — {INTENT_LABELS[brief.intent]} · 기준일 {as_of}")
+    for sentence in brief.headline:
+        st.markdown(sentence.text)
+    for index, card in enumerate(brief.cards):
+        with st.expander(card.title, expanded=index == 0):
+            for slot, sentences in card.slots():
+                st.markdown(f"**{slot}** — " + " ".join(s.text for s in sentences))
+    if brief.attacks:
+        st.dataframe(_attack_table(brief), hide_index=True, width="stretch")
+    if brief.listing:
+        with st.expander(f"구성 {len(brief.listing)}줄"):
+            for sentence in brief.listing:
+                st.markdown(f"- {sentence.text}")
+    with st.expander(f"이 답이 채우지 못한 것(Gap Log) {len(brief.gaps)}건"):
+        if brief.gaps:
+            st.dataframe(_gap_table(brief), hide_index=True, width="stretch")
+        else:
+            # 🔒 0건도 적는다 — 비어 있다는 것 자체가 알릴 사실이다
+            st.markdown("<div class='sc-muted'>0건 — 이 답에서 채우지 못한 것이 없다.</div>",
+                        unsafe_allow_html=True)
+        st.markdown(f"<div class='sc-muted'>{SEARCH_NOTICE}</div>", unsafe_allow_html=True)
+    with st.expander(f"이 답이 쓴 근거 {len(brief.evidence)}건"):
+        st.dataframe(_evidence_table(brief), hide_index=True, width="stretch")
+    st.markdown(brief.disclaimer.text)
+    st.caption("다음에 물어볼 것 — " + " · ".join(INTENT_LABELS[i] for i in brief.followups))
+
+
+def _attack_table(brief):
+    import pandas as pd
+
+    return pd.DataFrame([{
+        "반론": a.id, "질문": a.question, "겨냥": a.target, "범주": a.category,
+        "데이터": a.defense, "정량": "있음" if a.quantitative else "없음",
+        "판정": f"{a.status} — {STATUS_PLAIN[a.status]}", "걸린 조건": a.rule,
+    } for a in brief.attacks])
+
+
+def _gap_table(brief):
+    import pandas as pd
+
+    return pd.DataFrame([{
+        "번호": g.id, "미확인 항목": g.item, "결측 유형": g.kind, "왜 못 채웠나": g.why,
+        "채우려면": g.needed, "대체 처리": g.workaround, "영향받는 결론": g.affects,
+        "구조적 근거": g.basis, "상태": g.state,
+    } for g in brief.gaps])
+
+
+def _evidence_table(brief):
+    import pandas as pd
+
+    return pd.DataFrame([{
+        "ID": e.id, "무엇": e.label, "값": e.shown(), "출처": e.source, "신뢰도": e.confidence,
+        "기준일": e.as_of or "", "메모": e.note,
+    } for e in brief.evidence.values()])
