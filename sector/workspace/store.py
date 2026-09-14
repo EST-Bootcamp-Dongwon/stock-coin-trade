@@ -22,7 +22,7 @@
 | `passcode_params(team_id)` | `scrypt$n$r$p$salt$` — 🔴 **digest 는 주지 않는다** |
 | `verify(team_id, credential)` | 그 조에 쓸 수 있는가. 🔒 해시를 밖으로 내지 않고 답한다 |
 | `append(events, credential=)` | 더한다. 자격증명을 확인할 수 있으면 확인한다 |
-| `read_all()` | 시간순 전부 |
+| `read_all()` | `Ledger` — 시간순 이벤트 + **읽지 못한 줄** (아래) |
 
 🔒 **검증을 화면이 아니라 저장소가 한다.** 화면이 해시를 손에 들면, 원장 읽기가
    공개인 순간 그것이 곧 노출 경로가 된다. 저장소는 `True`/`False` 만 돌려준다.
@@ -32,6 +32,15 @@
    새 조의 `team.created` 는 어떤 passcode 로도 들어가지 않는다. 세 구현이 같은 답을
    내도록 로컬·HF 도 같이 막는다. 안 막으면 **passcode 없는 조**가 생기고, 그 조는
    아무도 참가할 수 없으면서 목록에는 보인다 — 조용히 망가진 상태다.
+
+## 🔴 한 줄 때문에 원장 전체가 멈추지 않는다 (2026-09-14 · ADR-SC-0011 ⑬)
+
+`read_all` 은 **내용이 틀린 줄**(JSON 이 아니다 · id 가 내용과 어긋난다 · 칸이 틀렸다)을
+건너뛰고 `Ledger.rejected` 에 담는다. RPC 는 id 를 다시 계산하지 않으므로 passcode 를 가진
+사람은 그런 줄을 쓸 수 있고, 원장은 append-only 라 지울 수 없다 — 던지면 **모든 조**가 멈춘다.
+
+🔒 **닿지 못한 것은 여전히 던진다**(파일 읽기 · 네트워크 · 권한 · 목록 · 상한). 일부만 읽은
+   원장을 온전한 것처럼 보여주는 것은 한 줄을 건너뛰는 것과 다르다 — 무엇이 빠졌는지 모른다.
 
 ## 🔒 멱등 — 같은 이벤트를 두 번 써도 하나다
 
@@ -62,6 +71,8 @@ from sector.workspace import auth
 from sector.workspace.events import (
     Event,
     EventError,
+    Ledger,
+    RejectedRow,
     parse_event,
     require_team_id,
     sort_key,
@@ -109,7 +120,7 @@ class EventStore(Protocol):
     def passcode_params(self, team_id: str) -> str | None: ...
     def verify(self, team_id: str, credential: str) -> bool: ...
     def append(self, events: Sequence[Event], *, credential: str | None = None) -> int: ...
-    def read_all(self) -> list[Event]: ...
+    def read_all(self) -> Ledger: ...
 
 
 def _sorted(events: Iterable[Event]) -> list[Event]:
@@ -119,6 +130,36 @@ def _sorted(events: Iterable[Event]) -> list[Event]:
        같은 원장에서 다른 상태가 나오고, 그것은 재현 불가다.
     """
     return sorted(events, key=sort_key)
+
+
+def _json_of(raw: bytes) -> Any:
+    """저장된 바이트 → JSON. 🔒 풀리지 않는 것은 **내용이 틀린 줄**이다 — `EventError` 로 올린다.
+
+    `RecursionError` 도 여기다. DB 는 payload 를 16KB 로 묶어 중첩이 8000단을 못 넘고 그만큼은
+    풀리지만(2026-09-14 실측), 파일에는 상한이 없어 2만 단이면 `json.loads` 가 멈춘다.
+    """
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise EventError(f"JSON 으로 읽을 수 없다: {exc}") from exc
+
+
+def _ledger(rows: Iterable[tuple[str, Any]]) -> Ledger:
+    """(위치, 원문) 들 → `Ledger`. 원문은 파일 바이트이거나 이미 풀린 JSON 이다.
+
+    🔒 **내용이 틀린 줄만** 건너뛴다(`EventError`). `rows` 를 돌다 나는 오류(파일을 못 읽는다 ·
+       내려받지 못한다)는 `try` 밖의 `for` 가 받으므로 그대로 올라간다 (머리주석).
+    """
+    events: list[Event] = []
+    rejected: list[RejectedRow] = []
+    for where, raw in rows:
+        data: Any = None
+        try:
+            data = _json_of(raw) if isinstance(raw, bytes) else raw
+            events.append(parse_event(data))
+        except EventError as exc:
+            rejected.append(RejectedRow.of(where, data, exc))
+    return Ledger(events=tuple(_sorted(events)), rejected=tuple(rejected))
 
 
 def _reject_team_created(events: Sequence[Event]) -> None:
@@ -274,17 +315,19 @@ class LocalStore:
 
     # 읽기 ─────────────────────────────────────────────────────────────────
 
-    def read_all(self) -> list[Event]:
+    def read_all(self) -> Ledger:
         if not self.events_dir.is_dir():
-            return []
-        events = []
+            return Ledger()
+        return _ledger(self._rows())
+
+    def _rows(self) -> Iterable[tuple[str, bytes]]:
         for path in sorted(self.events_dir.glob("*.json")):
             try:
-                events.append(parse_event(json.loads(path.read_text(encoding="utf-8"))))
-            except (OSError, json.JSONDecodeError, EventError) as exc:
-                # 🔴 삼키지 않는다. 원장에 읽을 수 없는 줄이 있다는 것은 사고다.
-                raise StoreError(f"{path} 를 이벤트로 읽을 수 없다: {exc}") from exc
-        return _sorted(events)
+                raw = path.read_bytes()
+            except OSError as exc:
+                # 🔴 못 읽은 것은 내용이 틀린 것이 아니다 — 무엇이 빠졌는지 모르므로 던진다
+                raise StoreError(f"{path} 를 읽을 수 없다: {exc}") from exc
+            yield f"events/{path.name}", raw
 
 
 # ── Hugging Face ────────────────────────────────────────────────────────────
@@ -391,18 +434,14 @@ class HubStore:
                 f"  → 저장소가 있는지, 토큰에 읽기 권한이 있는지 확인한다"
             ) from exc
 
-    def read_all(self) -> list[Event]:
-        names = self._list_files()
-        events = []
+    def read_all(self) -> Ledger:
+        return _ledger(self._rows(self._list_files()))
+
+    def _rows(self, names: Sequence[str]) -> Iterable[tuple[str, bytes]]:
         for name in sorted(n for n in names if n.startswith("events/") and n.endswith(".json")):
             raw = hub.download_bytes(self.api, name, repo_id=self.repo_id)
-            if raw is None:
-                continue                             # 목록과 실제가 어긋나면 건너뛴다
-            try:
-                events.append(parse_event(json.loads(raw.decode("utf-8"))))
-            except (UnicodeDecodeError, json.JSONDecodeError, EventError) as exc:
-                raise StoreError(f"{self.repo_id}:{name} 를 이벤트로 읽을 수 없다: {exc}") from exc
-        return _sorted(events)
+            if raw is not None:                      # 목록과 실제가 어긋나면 건너뛴다
+                yield name, raw
 
 
 # ── Supabase ────────────────────────────────────────────────────────────────
@@ -434,6 +473,12 @@ _MAX_EVENTS = 50_000
 #:    로 가른 것과 같은 사고를 여기서 미리 막는다(V29).
 _SECRET_KEY_PREFIX = "sb_secret_"
 _ALLOWED_ROLES = ("anon",)
+
+
+def _row_where(row: Any) -> str:
+    """원장 행의 위치 — 읽지 못한 줄을 알릴 때 쓴다."""
+    event_id = row.get("event_id") if isinstance(row, dict) else None
+    return f"event_id {event_id!r}"
 
 
 def _jwt_role(key: str) -> str | None:
@@ -664,11 +709,15 @@ class SupabaseStore:
         # 🔒 id 가 조회 필터에 그대로 들어간다 — 문 앞에서 확인한다
         rows = self._select_events(
             team_id=f"eq.{require_team_id(team_id)}", kind="eq.team.created")
-        if not rows:
+        # 🔒 되읽은 행을 `parse_event` 로 통과시킨다 — DB 가 읽는 칸만 정확히 되보낸다.
+        # 🔴 **읽지 못한 행은 건너뛴다**(ADR-SC-0011 ⑬). 첫 행만 보던 예전 코드는 조원이
+        #    `at` 이 더 이른 가짜 `team.created` 를 한 줄 넣으면 그 조의 참가를 전부 막았다.
+        #    probe 는 `on conflict` 에 걸리기만 하면 되므로 **읽히는 아무 행**이나 된다.
+        #    읽히는 행이 없으면 `fold` 에도 그 조가 없다 — 참가할 수 없다는 답이 맞다.
+        readable = _ledger((_row_where(row), row) for row in rows).events
+        if not readable:
             return False
-        # 🔒 되읽은 행을 `parse_event` 로 통과시킨다 — 손으로 고친 행이면 여기서
-        #    드러난다. 그리고 DB 가 읽는 칸만 정확히 되보낸다.
-        probe = parse_event(rows[0])
+        probe = readable[0]
         try:
             self._rpc("workspace_append", {
                 "p_team_id": team_id,
@@ -681,7 +730,7 @@ class SupabaseStore:
 
     # 읽기 ─────────────────────────────────────────────────────────────────
 
-    def read_all(self) -> list[Event]:
+    def read_all(self) -> Ledger:
         rows: list[dict[str, Any]] = []
         offset = 0
         while True:
@@ -696,12 +745,5 @@ class SupabaseStore:
                     f"원장이 {_MAX_EVENTS}건을 넘는다. 조용히 자르지 않는다 — "
                     f"읽는 방식을 먼저 고친다(조별 조회·보관 정리)"
                 )
-        events = []
-        for row in rows:
-            try:
-                events.append(parse_event(row))
-            except EventError as exc:
-                raise StoreError(
-                    f"원장 행을 이벤트로 읽을 수 없다 ({row.get('event_id')!r}): {exc}"
-                ) from exc
-        return _sorted(events)
+        # 🔒 줄마다 읽는다 — 한 줄이 틀렸다고 원장 전체를 버리지 않는다 (머리주석)
+        return _ledger((_row_where(row), row) for row in rows)

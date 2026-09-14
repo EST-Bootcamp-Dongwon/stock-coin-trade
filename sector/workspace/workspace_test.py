@@ -263,7 +263,7 @@ def test_두_번_써도_하나다(tmp_path: Path):
     event = confirmed("steel", "철강 1위", AT2)
     assert st.append([event]) == 1
     assert st.append([event]) == 0
-    assert len(st.read_all()) == 2
+    assert len(st.read_all().events) == 2
 
 
 def test_시간순으로_돌려준다(tmp_path: Path):
@@ -271,14 +271,71 @@ def test_시간순으로_돌려준다(tmp_path: Path):
     make(st, AT3, team_id="team_c")
     make(st, AT1, team_id="team_a")
     make(st, AT2, team_id="team_b")
-    assert [e.at for e in st.read_all()] == [AT1, AT2, AT3]
+    assert [e.at for e in st.read_all().events] == [AT1, AT2, AT3]
 
 
-def test_읽을_수_없는_줄을_삼키지_않는다(tmp_path: Path):
+def test_읽을_수_없는_줄이_원장_전체를_멈추지_않는다(tmp_path: Path):
+    """🔴 한 줄이 **모든 조**의 원장 화면을 멈췄고, append-only 라 지울 수도 없었다.
+
+    건너뛰되 삼키지 않는다 — `Ledger.rejected` 로 올라가 `fold` 가 말한다.
+    """
+    st = store.LocalStore(tmp_path)
+    make(st, team_id="team_a")
+    make(st, AT2, team_id="team_b")
+    (tmp_path / "events" / "broken.json").write_text("{", encoding="utf-8")
+    bad = events.comment_posted(team_id="team_b", body="원래 본문", actor="동원", at=AT3).to_json()
+    bad["payload"]["body"] = "id 와 어긋난 본문"          # id 는 그대로 — RPC 가 받아 주는 모양
+    (tmp_path / "events" / f"{bad['event_id']}.json").write_text(
+        json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+
+    ledger = st.read_all()
+    assert [e.team_id for e in ledger.events] == ["team_a", "team_b"]
+    assert len(ledger.rejected) == 2
+    workspace = fold.fold(ledger)
+    assert set(workspace.teams) == {"team_a", "team_b"}
+    lines = [a for a in workspace.anomalies if "읽지 못해" in a]
+    assert len(lines) == 2, workspace.anomalies
+    assert any("team_b" in line and "어긋난다" in line for line in lines), lines
+
+
+def test_파일에만_들어오는_줄도_건너뛴다(tmp_path: Path):
+    """DB 는 짝 없는 서로게이트를 jsonb 입력에서 거부하고 payload 를 16KB 로 묶는다(2026-09-14
+    실측). 파일에는 그 문이 없다 — `EventError` 가 아닌 예외로 새면 줄 단위로 건너뛰지 못한다."""
     st = store.LocalStore(tmp_path)
     make(st)
-    (tmp_path / "events" / "broken.json").write_text("{", encoding="utf-8")
-    with pytest.raises(store.StoreError):
+    base = json.dumps(events.comment_posted(team_id="team_a", body="x", actor="동원",
+                                            at=AT2).to_json())
+    # 🔒 역슬래시는 `chr(92)` 로 만든다 — 도구 입력의 이스케이프가 실제 글자로 풀리는 함정
+    surrogate = base.replace('"body": "x"', '"body": "' + chr(92) + 'ud800"')
+    deep = base.replace('"body": "x"', '"body": ' + "[" * 30000 + "]" * 30000)
+    (tmp_path / "events" / "surrogate.json").write_text(surrogate, encoding="utf-8")
+    (tmp_path / "events" / "deep.json").write_text(deep, encoding="utf-8")
+
+    ledger = st.read_all()
+    assert [e.event_id for e in ledger.events] == [team().event_id]
+    assert sorted(r.where for r in ledger.rejected) == ["events/deep.json", "events/surrogate.json"]
+
+
+def test_읽지_못한_줄의_알림은_길이가_묶인다():
+    """🔒 `event_id` 는 DB 에 길이 제한이 없다 — 수 KB 짜리 id 가 모든 조의 화면에 쏟아지지 않는다."""
+    long_id = "x" * 2000
+    row = {**team().to_json(), "event_id": long_id}
+    with pytest.raises(events.EventError) as info:
+        events.parse_event(row)
+    rejected = events.RejectedRow.of(f"event_id {long_id!r}", row, info.value)
+    line = fold.fold(events.Ledger(events=(team(),), rejected=(rejected,))).anomalies[0]
+    assert "team_a" in line and len(line) < 600, len(line)
+    # 🔒 규칙에 맞지 않는 조 id 는 문장에 넣지 않는다
+    assert events.RejectedRow.of("x", {"team_id": "<b>"}, ValueError("y")).team_id is None
+
+
+def test_못_읽은_파일은_여전히_던진다(tmp_path: Path):
+    """🔴 건너뛰는 것은 **내용이 틀린 줄**뿐이다. 못 읽은 원장을 온전한 것처럼 보여주면
+    무엇이 빠졌는지 아무도 모른다."""
+    st = store.LocalStore(tmp_path)
+    make(st)
+    (tmp_path / "events" / "dir.json").mkdir()      # 읽기 자체가 실패한다
+    with pytest.raises(store.StoreError, match="읽을 수 없다"):
         st.read_all()
 
 
@@ -289,7 +346,7 @@ def test_append_로는_조를_만들_수_없다(tmp_path: Path):
     st = store.LocalStore(tmp_path)
     with pytest.raises(store.StoreError, match="create_team"):
         st.append([team()])
-    assert st.read_all() == []
+    assert st.read_all().events == ()
 
 
 def test_같은_조를_두_번_만들_수_없다(tmp_path: Path):
@@ -315,7 +372,7 @@ def test_평문을_해시_자리에_넣을_수_없다(tmp_path: Path):
     st = store.LocalStore(tmp_path)
     with pytest.raises(store.StoreError, match="해시"):
         st.create_team(team(), passcode_hash="산-바다-강-들")
-    assert st.read_all() == []
+    assert st.read_all().events == ()
 
 
 def test_한_번에_두_조를_쓸_수_없다(tmp_path: Path):
@@ -331,7 +388,7 @@ def test_한_번에_두_조를_쓸_수_없다(tmp_path: Path):
 
 
 def test_빈_원장은_빈_목록이다(tmp_path: Path):
-    assert store.LocalStore(tmp_path).read_all() == []
+    assert store.LocalStore(tmp_path).read_all().events == ()
 
 
 def test_워크스페이스_경로가_점수_저장소로_못_간다():
@@ -774,7 +831,7 @@ def test_두_구현이_멱등에_같은_답을_낸다(tmp_path: Path):
 
     assert local.append([event]) == remote.append([event]) == 1
     assert local.append([event]) == remote.append([event]) == 0      # ← 여기가 어긋났었다
-    assert len(local.read_all()) == len(remote.read_all()) == 2
+    assert len(local.read_all().events) == len(remote.read_all().events) == 2
 
 
 def test_두_구현이_자격증명에_같은_답을_낸다(tmp_path: Path):
@@ -806,7 +863,7 @@ def test_저장된_해시가_원장에_없다(tmp_path: Path):
     digest = stored.split("$")[5]
     for st in (local, remote):
         make(st, passcode_hash=stored)
-        for event in st.read_all():
+        for event in st.read_all().events:
             assert "passcode_hash" not in event.payload
             assert digest not in events.canonical_json(event.to_json())
         # 🔒 앱이 받는 것에도 digest 가 없다
@@ -839,7 +896,7 @@ def test_HubStore_도_시간순으로_돌려준다():
     make(remote, AT3, team_id="team_c")
     make(remote, AT1, team_id="team_a")
     make(remote, AT2, team_id="team_b")
-    assert [e.at for e in remote.read_all()] == [AT1, AT2, AT3]
+    assert [e.at for e in remote.read_all().events] == [AT1, AT2, AT3]
 
 
 def test_목록을_못_받으면_던진다():
@@ -848,7 +905,7 @@ def test_목록을_못_받으면_던진다():
             raise ConnectionError("끊김")
 
     with pytest.raises(store.StoreError, match="파일 목록"):
-        store.HubStore(Broken()).read_all()
+        store.HubStore(Broken()).read_all().events
 
 
 # ── 보관 ────────────────────────────────────────────────────────────────────
@@ -1022,7 +1079,7 @@ def test_Supabase_도_같은_계약을_지킨다():
     event = confirmed("steel", "철강 1위", AT2)
     assert st.append([event], credential=good) == 1
     assert st.append([event], credential=good) == 0        # 🔒 멱등
-    assert [e.at for e in st.read_all()] == [AT1, AT2]
+    assert [e.at for e in st.read_all().events] == [AT1, AT2]
     assert "passcode_hash" not in fake.rows[team().event_id]["payload"]
 
 
@@ -1090,7 +1147,7 @@ def test_Supabase_가_원장을_페이지로_끝까지_읽는다(monkeypatch):
     ats = ["2026-09-12T0%d:00:00+00:00" % n for n in range(1, 6)]
     st.append([events.comment_posted(team_id="team_a", body=f"글 {n}", actor="동원", at=at)
                for n, at in enumerate(ats)], credential=HASH)
-    assert len(st.read_all()) == 6
+    assert len(st.read_all().events) == 6
 
 
 def test_Supabase_는_원장이_상한을_넘으면_던진다(monkeypatch):
@@ -1103,7 +1160,64 @@ def test_Supabase_는_원장이_상한을_넘으면_던진다(monkeypatch):
                                      at="2026-09-12T0%d:00:00+00:00" % n)
                for n in range(1, 4)], credential=HASH)
     with pytest.raises(store.StoreError, match="조용히 자르지 않는다"):
-        st.read_all()
+        st.read_all().events
+
+
+def _hostile_rows() -> list[dict]:
+    """🔴 DB CHECK 는 통과하지만 `parse_event` 가 거부하는 줄 — RPC 로 실제로 쓸 수 있는 모양이다."""
+    base = events.comment_posted(team_id="team_a", body="원래 본문", actor="동원", at=AT2).to_json()
+    return [
+        {**base, "payload": {"body": "id 와 어긋난 본문"}},                   # id 가 내용과 어긋난다
+        {**base, "event_id": base["event_id"] + "-p", "payload": "문자열"},  # payload 가 객체가 아니다
+        {**base, "event_id": base["event_id"] + "-a", "actor": "   "},       # DB 는 길이만 본다
+    ]
+
+
+def test_세_구현이_읽지_못한_줄에_같은_답을_낸다(tmp_path: Path):
+    """🔒 화면은 저장소가 어느 쪽인지 모른다 — 건너뛰는 것도 알리는 것도 같아야 한다."""
+    local, remote = both(tmp_path)
+    remote_db, fake = supabase()
+    for st in (local, remote, remote_db):
+        make(st)
+    for row in _hostile_rows():
+        body = json.dumps(row, ensure_ascii=False).encode("utf-8")
+        (tmp_path / "events" / f"{row['event_id']}.json").write_bytes(body)
+        remote.api.files[f"events/{row['event_id']}.json"] = body
+        fake.rows[row["event_id"]] = row           # `workspace_append` 가 받아 준 것과 같다
+
+    answers = []
+    for st in (local, remote, remote_db):
+        ledger = st.read_all()                     # 🔒 던지지 않는다
+        answers.append(([e.event_id for e in ledger.events],
+                        sorted((r.team_id, r.reason) for r in ledger.rejected)))
+    assert answers[0] == answers[1] == answers[2]
+    assert answers[0][0] == [team().event_id]
+    assert len(answers[0][1]) == 3
+
+
+def test_Supabase_는_원장에_닿지_못하면_여전히_던진다():
+    """🔴 건너뛰는 것은 줄이다. 원장 자체를 못 받으면 빈 원장이 아니라 오류다."""
+    class Down(FakePostgrest):
+        def get(self, url, **kw):
+            return FakeResponse(503, {"message": "service unavailable"})
+
+    broken, _ = supabase(Down())
+    with pytest.raises(store.StoreError, match="503"):
+        broken.read_all()
+
+
+def test_Supabase_참가_검증이_가짜_조_생성_줄에_막히지_않는다():
+    """🔴 첫 행만 보던 `verify` 는 `at` 이 더 이른 가짜 `team.created` 한 줄에 그 조의 참가를
+    전부 막았다 — 읽지 못한 행은 건너뛰고 읽히는 행으로 확인한다."""
+    st, fake = supabase()
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    st.create_team(team(AT2), passcode_hash=stored)
+    forged = {**team("2026-09-12T00:00:00+00:00").to_json(), "actor": "   "}
+    fake.rows[forged["event_id"]] = forged
+    before = dict(fake.rows)
+    assert st.verify("team_a", stored) is True
+    assert st.verify("team_a", stored[:-1] + "x") is False
+    assert fake.rows == before                     # 🔒 검증이 원장을 늘리지 않는다
 
 
 def test_Supabase_하트비트가_void_를_받아낸다():

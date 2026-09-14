@@ -55,6 +55,8 @@ __all__ = [
     "team_archived",
     "team_restored",
     "parse_event",
+    "Ledger",
+    "RejectedRow",
     "is_identifier",
     "require_actor",
     "require_team_id",
@@ -271,7 +273,13 @@ def _event_id(kind: str, team_id: str, actor: str, at: str, payload: Mapping[str
     body = canonical_json(
         {"kind": kind, "team_id": team_id, "actor": actor, "at": at, "payload": dict(payload)}
     )
-    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
+    try:
+        encoded = body.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        # 🔒 짝 없는 서로게이트(U+D800 류). DB 는 jsonb 입력에서 거부하지만(2026-09-14 실측)
+        #    JSON **파일**에는 그 문이 없다. 다른 예외로 새면 `read_all` 이 줄 단위로 건너뛰지 못한다
+        raise EventError("내용에 UTF-8 로 적을 수 없는 글자(짝 없는 서로게이트)가 있다") from exc
+    digest = hashlib.sha256(encoded).hexdigest()[:12]
     # `:` 와 `.` 는 파일명에서 다루기 번거롭다. 사전순은 그대로 보존된다.
     # 🔒 순서가 중요하다 — `:` 를 먼저 지우면 `+00:00` 이 `+0000` 이 되어
     #    `Z` 치환이 빗나간다. 시간대 표기를 먼저 접는다.
@@ -458,6 +466,9 @@ def parse_event(data: Any) -> Event:
     조용히 받아들이면 손으로 고친 파일이 원장에 섞이고, 그 뒤로는 원장이
     원장이 아니게 된다.
 
+    🔒 **내용이 틀린 입력은 전부 `EventError` 다.** 저장소가 이 예외를 줄 단위로 받아
+       `Ledger.rejected` 에 담는다 — 다른 예외로 새면 한 줄이 원장 전체를 멈춘다.
+
     🔒 **passcode 게이트를 통과시키지 않는다**(`_make`). 옛 원장을 읽어야 하고,
        읽지 못하면 화면이 통째로 죽는다 — 어긋난 것은 `fold` 가 말한다.
     """
@@ -480,3 +491,52 @@ def parse_event(data: Any) -> Event:
             f"내용에서는 {event.event_id!r} 가 나온다. 파일이 손으로 고쳐졌을 수 있다"
         )
     return event
+
+
+#: 읽지 못한 줄을 화면에 올릴 때 자르는 길이.
+#: 🔒 `event_id` 는 DB 에 길이 제한이 없어 수 KB 가 올 수 있다 — 그 글자가 **모든 조**의
+#:    화면에 그대로 쏟아지지 않게 한다.
+_WHERE_MAX = 80
+_REASON_MAX = 300
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedRow:
+    """원장에 있으나 **이벤트로 읽지 못한** 줄 하나. 🔒 버리지 않고 이 모양으로 올라간다."""
+
+    where: str
+    reason: str
+    #: 그 줄이 주장하는 조. 🔒 규칙에 맞을 때만 담는다 — 화면 문장에 들어간다
+    team_id: str | None = None
+
+    @classmethod
+    def of(cls, where: str, data: Any, exc: BaseException) -> "RejectedRow":
+        claimed = data.get("team_id") if isinstance(data, Mapping) else None
+        return cls(
+            where=_clip(str(where), _WHERE_MAX),
+            reason=_clip(str(exc), _REASON_MAX),
+            team_id=claimed if is_identifier(claimed) else None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Ledger:
+    """`EventStore.read_all` 이 돌려주는 것 — 읽은 이벤트와 **읽지 못한 줄**.
+
+    ## 🔴 왜 목록이 아니라 이 모양인가 (2026-09-14 · ADR-SC-0011 ⑬)
+
+    `workspace_append` 는 `event_id` 를 다시 계산하지 않는다. passcode 를 가진 사람이 내용과
+    어긋난 id 를 한 줄 쓰면 예전 `read_all` 은 그 줄에서 던졌다 — **모든 조**의 원장 화면이
+    멈추고, append-only 트리거라 그 줄은 지울 수도 없다.
+
+    그래서 저장소는 내용이 틀린 줄을 건너뛰고 `rejected` 에 담는다. 🔒 **목록만 돌려주면
+    건너뛴 사실이 호출부에서 사라진다.** 둘을 한 값으로 묶고 `fold.fold` 가 이 값을 그대로
+    받아 `anomalies` 로 말하므로, `fold.fold(store.read_all())` 한 줄에는 빠뜨릴 틈이 없다.
+    """
+
+    events: tuple[Event, ...] = ()
+    rejected: tuple[RejectedRow, ...] = ()

@@ -8,6 +8,9 @@
 던지지 않는 이유는 한 줄 때문에 팀 전체의 화면이 죽으면 안 되기 때문이다
 (→ ADR-SC-0007 의 "없으면 없다고 말한다" 를 화면 단위로 적용한 것).
 
+**읽지 못한 줄**도 같다(2026-09-14 · ADR-SC-0011 ⑬). 저장소가 건너뛰어 `Ledger.rejected` 로
+넘기고, 여기서 `anomalies` 의 맨 앞에 올린다.
+
 ## 🔒 마지막이 이긴다 — 다만 기록은 남는다
 
 확정을 두 번 하면 나중 것이 현재 상태다. 그러나 이전 확정도 원장에 그대로 있고
@@ -19,7 +22,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from sector.workspace.events import Event, carries_legacy_secret, is_identifier, sort_key
+from sector.workspace.events import (
+    Event,
+    Ledger,
+    RejectedRow,
+    carries_legacy_secret,
+    is_identifier,
+    sort_key,
+)
 from sector.workspace.links import MAX_LINKS, LinkError, normalize_link
 
 __all__ = ["Team", "Comment", "Workspace", "fold"]
@@ -99,8 +109,11 @@ class Workspace:
         )
 
 
-def fold(events: Iterable[Event]) -> Workspace:
+def fold(events: Ledger | Iterable[Event]) -> Workspace:
     """🔒 **입력 순서에 의존하지 않는다.** 스스로 정렬한다.
+
+    🔒 `Ledger`(`store.read_all()` 의 답)를 그대로 받는다 — 읽지 못한 줄이 **호출부에서
+       빠질 틈이 없게** 하려는 것이다. 이벤트 목록만 넘기는 호출부(테스트 · 직접 만든 원장)도 된다.
 
     `aggregate` 는 오름차순을 요구하고 정렬해 주지 않는다 — 거기서는 순서가
     데이터의 성질(체인연결)이기 때문이다. 원장은 다르다. **순서는 파일들에서
@@ -112,10 +125,11 @@ def fold(events: Iterable[Event]) -> Workspace:
     # 🔒 `store` 가 이미 정렬해 주지만, 원장을 직접 넘기는 호출부도 있다.
     #    **같은 키**로 한 번 더 맞춘다 — 두 곳이 다른 순서를 쓰면 "가끔 조가
     #    사라진다" 로 나타난다 (→ `events.sort_key` 머리주석).
-    ordered = sorted(events, key=sort_key)
+    rejected = events.rejected if isinstance(events, Ledger) else ()
+    ordered = sorted(events.events if isinstance(events, Ledger) else events, key=sort_key)
     teams: dict[str, Team] = {}
     comments: list[Comment] = []
-    anomalies: list[str] = []
+    anomalies: list[str] = [_rejected_line(row) for row in rejected]
 
     for event in ordered:
         kind = event.kind
@@ -215,6 +229,13 @@ def fold(events: Iterable[Event]) -> Workspace:
         teams=teams, comments=tuple(comments),
         history=tuple(ordered), anomalies=tuple(anomalies),
     )
+
+
+def _rejected_line(row: RejectedRow) -> str:
+    """🔴 읽지 못한 줄 — 조용히 버리지 않는다. 길이는 `RejectedRow.of` 가 이미 묶었다."""
+    whose = f"조 '{row.team_id}' 의 " if row.team_id else ""
+    return (f"{whose}원장 한 줄을 읽지 못해 반영하지 않았다({row.where}) — {row.reason}. "
+            f"앱을 거치지 않고 쓴 줄로 보인다")
 
 
 def _links_of(raw: object) -> tuple[tuple[str, ...], list[str]]:

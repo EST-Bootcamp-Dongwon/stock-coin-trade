@@ -483,7 +483,7 @@ def test_이름_없이는_조를_못_만든다(ledger):
     at.text_input(key="create_passcode").input("산-바다-강-들")
     at.button(key="FormSubmitter:create-만들기").click().run()
     assert any("이름" in e.value for e in at.error)
-    assert ledger.read_all() == []        # 🔒 한 건도 쓰이지 않는다
+    assert ledger.read_all().events == ()        # 🔒 한 건도 쓰이지 않는다
 
 
 def test_짧은_passcode_는_거부되고_원장이_비어_있다(ledger):
@@ -494,7 +494,7 @@ def test_짧은_passcode_는_거부되고_원장이_비어_있다(ledger):
     at.text_input(key="create_passcode").input("1234")
     at.button(key="FormSubmitter:create-만들기").click().run()
     assert any("짧다" in e.value for e in at.error)
-    assert ledger.read_all() == []
+    assert ledger.read_all().events == ()
 
 
 def test_조에_참가하지_않으면_랭킹에_확정_버튼이_없다(ledger):
@@ -829,6 +829,38 @@ def test_사람이_쓴_글은_HTML_블록으로만_그려진다(ledger):
 
     from sector.workspace import fold
     assert fold.fold(ledger.read_all()).team("team_a").core_sector == "steel"   # 우회 확정은 반영 안 됨
+
+
+def test_읽지_못한_줄이_있어도_조_화면과_랭킹이_선다(ledger, tmp_path):
+    """🔴 원장 한 줄이 **모든 조**의 화면을 멈췄다(2026-09-14 · ADR-SC-0011 ⑬).
+
+    append-only 라 그 줄은 지울 수 없다 — 화면이 그 줄을 안고 서야 하고, 조 페이지는
+    그 사실을 **HTML 블록으로** 말해야 한다(줄 안의 글도 원장에서 온 사람 글이다).
+    """
+    import json
+
+    from sector.workspace import events
+
+    _make_team(_run(_teams_page, ledger))
+    bad = events.comment_posted(team_id="team_a", body="원래 본문", sector_id="steel",
+                                actor="민수", at=_FUTURE.format(1)).to_json()
+    bad["payload"]["body"] = "id 와 어긋난 본문"
+    bad["event_id"] += "<img src=x onerror=alert(1)>"
+    (tmp_path / "events" / f"{bad['event_id']}.json").write_text(
+        json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+
+    teams_at = _open_as(_teams_page, ledger)
+    ranking_at = _open_as(_ranking_page, ledger)
+    for at in (teams_at, ranking_at):
+        assert not at.exception, [str(e)[:200] for e in at.exception]
+        assert not [e for e in at.error if "원장" in str(e.value)], [str(e.value) for e in at.error]
+
+    assert any("원장에 어긋난 것 1건" in e.label for e in teams_at.expander)
+    lines = [str(m.value) for m in teams_at.markdown if "읽지 못해" in str(m.value)]
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("<div class='sc-") and "<img" not in lines[0], lines[0]
+    assert any("우리 조" in str(s.value) for s in ranking_at.subheader)
+    assert "open_confirm" in _keys(ranking_at.button)      # 🔒 쓰기 칸까지 선다
 
 
 def test_다른_섹터를_고르면_열려_있던_모달이_닫힌다(ledger):

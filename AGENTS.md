@@ -238,6 +238,11 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
   - 🔒 옛 원장(payload 에 해시가 있는 것)은 **읽히되** `fold.anomalies` 가 "옛 형식 ·
     참가할 수 없다" 고 말한다. 읽기를 막으면 한 줄이 팀 전체 화면을 죽인다
   - 🔒 append-only 는 **트리거**가 지킨다. 소유자도 못 지운다. 되돌리기는 반대 이벤트
+  - 🔴 **원장 한 줄은 읽기를 멈추지 않는다** (2026-09-14 · ADR-SC-0011 ⑬). RPC 는 `event_id` 를
+    재계산하지 않아 내용과 어긋난 줄이 들어올 수 있고 지울 수 없다. 🔒 `read_all()` 은
+    `Ledger(events, rejected)` 를 돌려주고 **`fold.fold(ledger)` 로 넘긴다** — 목록만 꺼내 접으면
+    읽지 못한 줄이 조용히 사라진다. 🔒 내용이 틀린 입력은 전부 `EventError` 로 올리고,
+    **닿지 못한 것(파일 읽기 · 네트워크 · 상한)은 여전히 던진다**
   - 🔒 클라이언트는 **`requests` + PostgREST**. `supabase-py`·`psycopg` 를 넣지 않는다
     (루트 `requirements.txt` 는 4줄이고 Streamlit Cloud 메모리를 직접 깎는다)
 - **근거 첨부 — 링크는 서버가 부르지 않는다** ★ (2026-09-14 · [ADR-SC-0012](docs/decisions/0012-근거-첨부와-확정-모달.md))
