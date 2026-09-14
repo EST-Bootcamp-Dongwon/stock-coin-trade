@@ -19,7 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from sector.workspace.events import Event, carries_legacy_secret, sort_key
+from sector.workspace.events import Event, carries_legacy_secret, is_identifier, sort_key
+from sector.workspace.links import MAX_LINKS, LinkError, normalize_link
 
 __all__ = ["Team", "Comment", "Workspace", "fold"]
 
@@ -62,6 +63,8 @@ class Comment:
     body: str
     at: str
     sector_id: str | None = None
+    #: 🔒 **다시 굳혀 봐서 같았던 링크만** 담긴다 (`_links_of`). 화면은 이것을 그대로 그린다.
+    links: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +127,7 @@ def fold(events: Iterable[Event]) -> Workspace:
         #    이유를 말할 수 있어야 한다.
         if carries_legacy_secret(event):
             anomalies.append(
-                f"조 '{event.team_id}' 의 {kind} 이벤트가 **옛 형식**이다 — passcode "
+                f"조 '{event.team_id}' 의 {kind} 이벤트가 옛 형식이다 — passcode "
                 f"해시가 원장 안에 있다({event.at}). 이 조에는 참가할 수 없다. "
                 f"조를 다시 만든다 (ADR-SC-0011 ④)"
             )
@@ -161,9 +164,16 @@ def fold(events: Iterable[Event]) -> Workspace:
             if member and member not in team.members:
                 teams[team.id] = _replace(team, members=team.members + (member,))
         elif kind == "sector.confirmed":
+            # 🔴 RPC 는 payload 를 검사하지 않는다 — 규칙에 맞지 않는 섹터 id 는 반영하지 않고 알린다.
+            #    그대로 받으면 그 글자가 화면 곳곳(모달 제목 · 목록)으로 흘러간다
+            if not is_identifier(payload.get("sector_id")):
+                anomalies.append(
+                    f"조 '{team.id}' 의 확정({event.at} · {event.actor})은 섹터 id 가 "
+                    f"규칙에 맞지 않아 반영하지 않았다")
+                continue
             teams[team.id] = _replace(
                 team,
-                core_sector=str(payload.get("sector_id", "")) or None,
+                core_sector=str(payload["sector_id"]),
                 core_reason=str(payload.get("reason", "")) or None,
                 confirmed_at=event.at,
                 confirmed_by=event.actor,
@@ -183,10 +193,20 @@ def fold(events: Iterable[Event]) -> Workspace:
                 archived_by=None, archived_at=None)
         elif kind == "comment.posted":
             sector = payload.get("sector_id")
+            if sector is not None and not is_identifier(sector):
+                anomalies.append(
+                    f"조 '{team.id}' 의 코멘트({event.at} · {event.actor})는 섹터 id 가 규칙에 "
+                    f"맞지 않아 어느 섹터에도 붙이지 않았다")
+                sector = None
+            links, problems = _links_of(payload.get("links"))
+            anomalies.extend(
+                f"조 '{team.id}' 의 코멘트({event.at} · {event.actor})에서 {problem}"
+                for problem in problems)
             comments.append(Comment(
                 event_id=event.event_id, team_id=team.id, author=event.actor,
                 body=str(payload.get("body", "")), at=event.at,
                 sector_id=str(sector) if sector else None,
+                links=links,
             ))
         else:  # pragma: no cover — `make_event` 가 이미 막는다
             anomalies.append(f"모르는 이벤트 종류다: {kind} ({event.event_id})")
@@ -195,6 +215,36 @@ def fold(events: Iterable[Event]) -> Workspace:
         teams=teams, comments=tuple(comments),
         history=tuple(ordered), anomalies=tuple(anomalies),
     )
+
+
+def _links_of(raw: object) -> tuple[tuple[str, ...], list[str]]:
+    """원장의 링크를 **다시 굳혀 보고 같을 때만** 그린다. (그릴 것, 어긋난 것)
+
+    🔴 쓰기 게이트(`events.comment_posted`)만 믿지 않는다. passcode 를 가진 사람은 RPC 로
+       앱을 거치지 않고 아무 payload 나 쓸 수 있다 — ADR-SC-0011 ⑤ 는 *누가* 쓰는지를
+       막지 *무엇을* 쓰는지는 막지 않는다. 걸러낸 것은 조용히 버리지 않고 알린다.
+    """
+    if raw is None:
+        return (), []
+    if not isinstance(raw, list):
+        return (), ["링크 칸이 목록이 아니라 링크를 그리지 않았다"]
+    shown: list[str] = []
+    problems: list[str] = []
+    for item in raw:
+        try:
+            normalized = normalize_link(item)
+        except LinkError as exc:
+            problems.append(f"링크 하나를 그리지 않았다 — {exc}")
+            continue
+        if normalized != item:
+            problems.append("저장 모양과 다른 링크 하나를 그리지 않았다 — 앱을 거치지 않고 쓴 것으로 보인다")
+            continue
+        if item not in shown:
+            shown.append(item)
+    if len(shown) > MAX_LINKS:
+        problems.append(f"링크가 {len(shown)}개라 앞의 {MAX_LINKS}개만 그렸다")
+        shown = shown[:MAX_LINKS]
+    return tuple(shown), problems
 
 
 def _replace(team: Team, **changes: object) -> Team:

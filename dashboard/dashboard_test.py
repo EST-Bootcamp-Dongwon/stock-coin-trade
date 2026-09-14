@@ -253,10 +253,14 @@ def test_프리셋_셋을_동시에_준다(app):
     assert app.radio and len(app.radio[0].options) == len(PRESETS)
 
 
-def test_네_페이지가_있다():
-    from dashboard.pages import confirm, howto, ranking, teams
+def test_세_페이지가_있고_확정_페이지는_없다():
+    """🔒 확정은 랭킹의 모달이다 (ADR-SC-0012 ②). 페이지가 되살아나면 근거가 두 곳으로 갈린다."""
+    import importlib.util
 
-    assert all(hasattr(m, "render") for m in (ranking, teams, confirm, howto))
+    from dashboard.pages import howto, ranking, teams
+
+    assert all(hasattr(m, "render") for m in (ranking, teams, howto))
+    assert importlib.util.find_spec("dashboard.pages.confirm") is None
 
 
 def test_페이지마다_URL_경로가_다르다():
@@ -264,7 +268,7 @@ def test_페이지마다_URL_경로가_다르다():
     source = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
     paths = [line.split('url_path="')[1].split('"')[0]
              for line in source.splitlines() if "url_path=" in line and "st.Page" in line]
-    assert len(paths) == 4 and len(set(paths)) == 4, paths
+    assert len(paths) == 3 and len(set(paths)) == 3, paths
 
 
 def _render_sources():
@@ -325,10 +329,10 @@ def _teams_page() -> None:
     teams.render()
 
 
-def _confirm_page() -> None:
-    from dashboard.pages import confirm
+def _ranking_page() -> None:
+    from dashboard.pages import ranking
 
-    confirm.render()
+    ranking.render()
 
 
 @pytest.fixture
@@ -424,6 +428,32 @@ def _make_team(at, *, actor="동원", team_id="team_a", name="A조", passcode="�
     return at
 
 
+def _open_as(page, ledger, *, actor="동원", team_id="team_a"):
+    """이미 있는 조의 **조원으로** 페이지를 연다."""
+    at = _run(page, ledger)
+    at.session_state["sc_actor"] = actor
+    at.session_state["sc_team_id"] = team_id
+    return at.run()
+
+
+def _as_member(page, ledger, *, actor="동원", team_id="team_a"):
+    """조를 만들고 그 조원으로 페이지를 연다."""
+    _make_team(_run(_teams_page, ledger), actor=actor, team_id=team_id)
+    return _open_as(page, ledger, actor=actor, team_id=team_id)
+
+
+def _confirm(at, reason: str):
+    """🔒 모달은 플래그로 열린다(`team_actions` 머리주석) — 그래서 AppTest 가 끝까지 밟는다."""
+    at.button(key="open_confirm").click().run()
+    at.text_area(key="confirm_reason").input(reason).run()
+    at.button(key="confirm_submit").click().run()
+    return at
+
+
+def _keys(elements) -> list[str]:
+    return [element.key for element in elements]
+
+
 def test_조를_만들면_원장에_남는다(ledger):
     at = _make_team(_run(_teams_page, ledger))
     assert not at.exception, [str(e)[:200] for e in at.exception]
@@ -467,35 +497,39 @@ def test_짧은_passcode_는_거부되고_원장이_비어_있다(ledger):
     assert ledger.read_all() == []
 
 
-def test_확정은_사유가_없으면_막힌다(ledger):
+def test_조에_참가하지_않으면_랭킹에_확정_버튼이_없다(ledger):
+    at = _run(_ranking_page, ledger)
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+    assert "open_confirm" not in _keys(at.button)
+    assert any("참가" in info.value for info in at.info)
+
+
+def test_확정은_사유가_없으면_막히고_모달이_남는다(ledger):
     """🔴 사유 없는 확정은 3개월 뒤에 아무것도 남기지 않는다."""
-    _make_team(_run(_teams_page, ledger))
-    at = _run(_confirm_page, ledger)
-    at.session_state["sc_actor"] = "동원"
-    at.session_state["sc_team_id"] = "team_a"
-    at.run()
+    at = _as_member(_ranking_page, ledger)
+    at.button(key="open_confirm").click().run()
     at.button(key="confirm_submit").click().run()      # 사유를 비운 채
     assert any("비어" in e.value for e in at.error)
+    assert "confirm_reason" in _keys(at.text_area)      # 🔒 쓰던 것을 잃지 않는다
 
     from sector.workspace import fold
     assert not fold.fold(ledger.read_all()).team("team_a").is_confirmed
 
 
-def test_사유와_함께_확정하면_원장에_남는다(ledger):
-    _make_team(_run(_teams_page, ledger))
-    at = _run(_confirm_page, ledger)
-    at.session_state["sc_actor"] = "동원"
-    at.session_state["sc_team_id"] = "team_a"
-    at.run()
-    at.text_area(key="confirm_reason").input("자금흐름 축이 3σ 로 압도적이다").run()
-    at.button(key="confirm_submit").click().run()
+def test_랭킹에서_모달로_확정하면_원장에_남고_모달이_닫힌다(ledger):
+    at = _as_member(_ranking_page, ledger)
+    chosen = at.selectbox(key="rank_detail").value
+    _confirm(at, "자금흐름 축이 3σ 로 압도적이다")
     assert not at.exception, [str(e)[:200] for e in at.exception]
 
     from sector.workspace import fold
     team = fold.fold(ledger.read_all()).team("team_a")
-    assert team.is_confirmed
+    assert team.is_confirmed and team.core_sector == chosen
     assert team.core_reason == "자금흐름 축이 3σ 로 압도적이다"
     assert team.confirmed_by == "동원"
+    # 🔒 모달이 닫힌 뒤에도 무엇이 됐는지 말한다 — 모달 안의 success 는 다시 돌면 사라진다
+    assert "confirm_reason" not in _keys(at.text_area)
+    assert any("확정했다" in s.value for s in at.success)
 
 
 def test_틀린_passcode_로는_남의_조에_못_들어간다(ledger):
@@ -633,53 +667,250 @@ def _markdown(at) -> str:
     return "\n".join(str(m.value) for m in at.markdown)
 
 
-def test_확정_화면이_근거를_보여준다(ledger):
-    """🔒 랭킹과 **같은 함수**를 부르므로 두 화면의 문구가 갈라지지 않는다."""
-    _make_team(_run(_teams_page, ledger))
-    at = _run(_confirm_page, ledger)
-    at.session_state["sc_actor"] = "동원"
-    at.session_state["sc_team_id"] = "team_a"
-    at.run()
+def test_확정_모달이_근거를_함께_보여준다(ledger):
+    """🔴 모달이 랭킹을 가린다 — 사유를 쓰는 동안 근거가 안 보이면 사유 칸이 "1위라서" 로 채워진다.
+
+    🔒 랭킹과 **같은 함수**를 부르므로 문구가 갈라지지 않는다.
+    """
+    at = _as_member(_ranking_page, ledger)
+    before = _markdown(at).count("사람이 쓴 근거")
+    at.button(key="open_confirm").click().run()
     assert not at.exception, [str(e)[:200] for e in at.exception]
 
     body = _markdown(at)
-    # 서술 마지막 줄은 언제나 이 문장이다 — 근거 블록이 실제로 그려졌다는 뜻
+    assert body.count("사람이 쓴 근거") == before + 1   # 모달 안에 한 벌 더
     assert "앞으로 오른다는 뜻이 아니" in body
-    assert "사람이 쓴 근거" in body        # `sectors.yaml` 의 note 까지 왔다
 
 
-def test_확정한_뒤에도_근거가_남는다(ledger):
-    """🔴 확정은 끝이 아니라 3개월 운용의 시작이다."""
-    _make_team(_run(_teams_page, ledger))
-    at = _run(_confirm_page, ledger)
-    at.session_state["sc_actor"] = "동원"
-    at.session_state["sc_team_id"] = "team_a"
-    at.run()
-    at.text_area(key="confirm_reason").input("자금흐름이 압도적이다").run()
-    at.button(key="confirm_submit").click().run()
+def test_확정한_뒤에는_조_페이지가_근거와_한국어_이름을_보여준다(ledger):
+    """🔴 확정은 끝이 아니라 3개월 운용의 시작이다. 팀은 `steel` 이 아니라 `철강` 으로 말한다."""
+    from dashboard import data as _data
+    from dashboard import theme as _theme
 
-    at = _run(_confirm_page, ledger)
-    at.session_state["sc_actor"] = "동원"
-    at.session_state["sc_team_id"] = "team_a"
-    at.run()
+    at = _as_member(_ranking_page, ledger)
+    chosen = at.selectbox(key="rank_detail").value
+    _confirm(at, "자금흐름이 압도적이다")
+
+    at = _open_as(_teams_page, ledger)
+    assert not at.exception, [str(e)[:200] for e in at.exception]
     assert any("이 섹터의 근거" in h.value for h in at.subheader)
+    names = _data.sector_names()
+    if not names.sector:
+        pytest.skip("이 환경에서 `sectors.yaml` 을 읽을 수 없다")
+    assert _theme.esc(names.sector_full(chosen)) in _markdown(at)
 
 
-def test_확정_화면이_코드가_아니라_한국어_이름을_쓴다(ledger):
-    """🔴 팀은 `steel` 이 아니라 `철강` 으로 말한다."""
-    _make_team(_run(_teams_page, ledger))
-    at = _run(_confirm_page, ledger)
-    at.session_state["sc_actor"] = "동원"
-    at.session_state["sc_team_id"] = "team_a"
-    at.run()
-    # 🔒 `AppTest` 의 `options` 는 이미 `format_func` 를 거친 문자열이다
-    shown = " ".join(at.selectbox(key="confirm_sector").options)
+def test_이미_확정했으면_다른_섹터를_랭킹에서_확정하지_못한다(ledger):
+    """🔒 바꾸려면 **되돌린 뒤** 확정한다 — 되돌린 사유가 '포폴 변경 사유' 가 된다."""
+    at = _as_member(_ranking_page, ledger)
+    _confirm(at, "첫 판단")
+    at.selectbox(key="rank_detail").select_index(1).run()
+    assert "open_confirm" not in _keys(at.button)
+    assert "조 페이지에서 먼저 되돌린다" in _markdown(at)
+
+
+def test_조_페이지에서_모달로_확정을_되돌린다(ledger):
+    at = _as_member(_ranking_page, ledger)
+    _confirm(at, "첫 판단")
+
+    at = _open_as(_teams_page, ledger)
+    at.button(key="open_unconfirm").click().run()
+    at.text_area(key="cancel_reason").input("반도체 쏠림이 과했다").run()
+    at.button(key="cancel_submit").click().run()
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+
+    from sector.workspace import fold
+    workspace = fold.fold(ledger.read_all())
+    assert not workspace.team("team_a").is_confirmed
+    kinds = [event.kind for event in workspace.history_of("team_a")]
+    assert kinds[-2:] == ["sector.confirmed", "sector.unconfirmed"]    # 🔒 지우지 않았다
+    assert any("되돌렸다" in s.value for s in at.success)
+
+
+# ── 근거 첨부 (2026-09-14 · ADR-SC-0012) ────────────────────────────────────
+
+
+def test_근거를_붙이면_본문과_굳힌_링크가_원장에_남고_화면에_나온다(ledger):
+    at = _as_member(_ranking_page, ledger)
+    chosen = at.selectbox(key="rank_detail").value
+    at.button(key="open_attach").click().run()
+    at.text_area(key="attach_body").input("공시 원문을 봤다").run()
+    at.text_area(key="attach_links").input(
+        "HTTPS://Dart.FSS.or.kr:443/dsaf001/main.do\n\nhttps://한국.kr/경로").run()
+    at.button(key="attach_submit").click().run()
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+
+    from sector.workspace import fold
+    comment = fold.fold(ledger.read_all()).comments_of("team_a", sector_id=chosen)[0]
+    assert comment.body == "공시 원문을 봤다"
+    assert comment.links == ("https://dart.fss.or.kr/dsaf001/main.do",
+                             "https://xn--3e0b707e.kr/%EA%B2%BD%EB%A1%9C")
+    body = _markdown(at)
+    assert 'href="https://dart.fss.or.kr/dsaf001/main.do"' in body
+    assert 'rel="noopener noreferrer nofollow"' in body
+    assert "attach_body" not in _keys(at.text_area)
+
+
+def test_http_링크는_거부되고_원장에_남지_않는다(ledger):
+    at = _as_member(_ranking_page, ledger)
+    at.button(key="open_attach").click().run()
+    at.text_area(key="attach_body").input("봐라").run()
+    at.text_area(key="attach_links").input("http://dart.fss.or.kr/").run()
+    at.button(key="attach_submit").click().run()
+
+    assert any("https" in e.value for e in at.error)
+    assert "attach_body" in _keys(at.text_area)          # 🔒 쓰던 것을 잃지 않는다
+    from sector.workspace import fold
+    assert fold.fold(ledger.read_all()).comments == ()
+
+
+#: 🔴 적대적 입력. 줄바꿈은 `chr(10)` 으로 만든다 — 빈 줄 뒤가 HTML 블록 밖으로 새는지 본다
+_HOSTILE = '<iframe srcdoc="<script>parent.x=1</script>"></iframe><img src=x onerror=alert(1)>'
+_BREAKOUT = "첫 줄" + chr(10) * 2 + "![t](https://example.invalid/pixel.png) www.example.invalid"
+#: 이스케이프돼도 모양이 남는 표지 — 이것이 보이는 요소는 사람 글을 품었다
+_MARKS = ("iframe", "onerror", "example", "192.168")
+#: 🔒 조 생성(지금)보다 늘 뒤다. 과거 시각을 쓰면 벽시계에 따라 "없는 조" 로 접혀 검사가 헛돈다
+_FUTURE = "2099-01-01T00:0{}:00+00:00"
+
+
+def _widget_texts(at) -> list[str]:
+    """마크다운 요소가 아닌데 **마크다운으로 그려지는** 자리 — 오류 · 성공 · 안내 · 라벨."""
+    groups = (at.error, at.success, at.warning, at.info, at.caption, at.subheader, at.title)
+    texts = [str(element.value) for group in groups for element in group]
+    return texts + [str(e.label) for e in at.expander] + [str(b.label) for b in at.button]
+
+
+def test_사람이_쓴_글은_HTML_블록으로만_그려진다(ledger):
+    """🔴 원장 읽기는 공개이고 RPC 는 앱의 쓰기 검사를 건너뛴다 — **그릴 때** 막아야 한다.
+
+    Streamlit 1.63 은 `unsafe_allow_html` 을 정화하지 않고(Y3), 마크다운 역슬래시
+    이스케이프는 GFM 자동 링크를 못 막는다(Y9 — remark-gfm 으로 재현). 그래서 사람 글이
+    든 요소는 **전부 한 줄짜리 `<div>` HTML 블록**이어야 하고, 라벨 · 오류 · 성공 문구에는
+    사람 글이 없어야 한다. 🔒 소스 문자열의 모양이 아니라 **어느 자리에 들어갔나**를 본다.
+    """
+    from sector.workspace import events
+
+    _make_team(_run(_teams_page, ledger), actor="동원",
+               name="<img src=x onerror=alert(1)>조 www.example.org")
+    ledger.append([
+        events.sector_confirmed(team_id="team_a", sector_id="steel", actor="동원",
+                                reason=_HOSTILE + _BREAKOUT, at=_FUTURE.format(1)),
+        events.comment_posted(team_id="team_a", body=_BREAKOUT, sector_id="steel",
+                              actor="[민수](https://example.invalid/me)", at=_FUTURE.format(2)),
+        # 앱을 거치지 않고 쓴 것 — 링크 · 섹터 id 검사를 지나지 않았다
+        events.make_event("comment.posted", team_id="team_a", actor="http://192.168.0.1/me",
+                          at=_FUTURE.format(3),
+                          payload={"body": _HOSTILE, "sector_id": "steel",
+                                   "links": ["http://192.168.0.1/admin"]}),
+        events.make_event("sector.confirmed", team_id="team_a", actor="민수",
+                          at=_FUTURE.format(4),
+                          payload={"sector_id": "![x](https://example.invalid/x.png)",
+                                   "reason": "우회"}),
+    ])
+
+    teams_at = _open_as(_teams_page, ledger)
+    ranking_at = _open_as(_ranking_page, ledger)
+    if ranking_at.selectbox(key="rank_detail").value != "steel":
+        ranking_at.selectbox(key="rank_detail").select("steel").run()
+
+    for at in (teams_at, ranking_at):
+        assert not at.exception, [str(e)[:200] for e in at.exception]
+        for text in _widget_texts(at):
+            assert not any(mark in text for mark in _MARKS), text
+        shown = [str(m.value) for m in at.markdown
+                 if any(mark in str(m.value) for mark in _MARKS)]
+        assert shown, "적대적 입력이 한 번도 안 나왔다 — 검사가 헛돈다"
+        for value in shown:
+            assert value.startswith("<div class='sc-"), value   # 🔒 HTML 블록 — 자동 링크를 안 받는다
+            assert len(value.splitlines()) == 1, value          # 🔒 한 줄 — 블록 밖으로 못 나온다
+            assert "<iframe" not in value and "<img" not in value, value
+        body = _markdown(at)
+        assert 'href="javascript' not in body and 'href="http://' not in body
+
+    from sector.workspace import fold
+    assert fold.fold(ledger.read_all()).team("team_a").core_sector == "steel"   # 우회 확정은 반영 안 됨
+
+
+def test_다른_섹터를_고르면_열려_있던_모달이_닫힌다(ledger):
+    """🔒 남은 플래그가 나중에 엉뚱한 섹터의 모달을 열지 않는다."""
+    at = _as_member(_ranking_page, ledger)
+    at.button(key="open_attach").click().run()
+    assert "attach_body" in _keys(at.text_area)
+    at.selectbox(key="rank_detail").select_index(1).run()
+    assert "attach_body" not in _keys(at.text_area)
+    assert "sc_dialog" not in at.session_state
+
+
+def test_유동성을_모르는_섹터도_확정_모달이_열린다(ledger, monkeypatch):
+    """🔴 창이 덜 찬 섹터의 `liquidity_ok` 는 NA 다 — `bool(pd.NA)` 가 모달을 죽였다(리뷰)."""
+    import pandas as pd
+
     from dashboard import data as _data
 
-    known = set(_data.sector_names().sector.values())
-    if not known:
-        pytest.skip("이 환경에서 `sectors.yaml` 을 읽을 수 없다")
-    assert any(name in shown for name in known), shown
+    real = _data.load_scores
+
+    def with_na():
+        frame, source = real()
+        frame = frame.copy()
+        latest = frame["bas_dd"] == frame["bas_dd"].max()
+        frame["liquidity_ok"] = frame["liquidity_ok"].astype("boolean")
+        frame.loc[latest, "liquidity_ok"] = pd.NA
+        return frame, source
+
+    monkeypatch.setattr(_data, "load_scores", with_na)
+    at = _as_member(_ranking_page, ledger)
+    at.button(key="open_confirm").click().run()
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+    assert "confirm_reason" in _keys(at.text_area)
+
+
+def test_보관된_조에서는_랭킹에서_쓰지_못한다(ledger):
+    """🔒 목록에서 감춘 조에 기록이 계속 쌓이면 되짚을 수 없다(리뷰)."""
+    from sector.workspace import events
+
+    _make_team(_run(_teams_page, ledger))
+    ledger.append([events.team_archived(team_id="team_a", reason="대회 조가 바뀌었다",
+                                        actor="동원", at=_FUTURE.format(1))])
+    at = _open_as(_ranking_page, ledger, actor="민수")
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+    assert not {"open_confirm", "open_attach"} & set(_keys(at.button))
+    assert any("보관" in w.value for w in at.warning)
+
+
+def test_제어문자가_섞인_이름은_세션에_담기지_않는다(ledger):
+    """🔴 담은 뒤에 원장이 거부하면 조에 들어간 채 참가 기록만 빠진다(리뷰)."""
+    at = _run(_teams_page, ledger)
+    at.text_input(key="identity_name").input("민" + chr(31) + "수").run()
+    assert any("제어문자" in e.value for e in at.error)
+    assert "sc_actor" not in at.session_state
+
+
+_NETWORK_ROOTS = frozenset({"requests", "urllib3", "httpx", "aiohttp", "socket", "http",
+                            "huggingface_hub"})
+
+
+def _network_imports(path) -> list[str]:
+    """파일이 import 하는 네트워크 모듈. 🔒 문자열이 아니라 **구문 트리**로 본다 —
+    `from requests import get` · `from urllib import request` 도 잡는다."""
+    import ast
+
+    found = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names = [node.module] + [f"{node.module}.{alias.name}" for alias in node.names]
+        else:
+            continue
+        found += [n for n in names
+                  if n.split(".")[0] in _NETWORK_ROOTS or n.startswith("urllib.request")]
+    return found
+
+
+def test_화면_계층이_링크를_부르지_않는다():
+    """🔴 SSRF 표면 0 — 근거 첨부를 그리는 코드에 네트워크 import 가 없다 (`links` 머리주석)."""
+    for name in ("team_actions.py", "theme.py"):
+        assert not _network_imports(ROOT / "dashboard" / name), name
 
 
 def test_읽는법이_예시를_지어내지_않는다():

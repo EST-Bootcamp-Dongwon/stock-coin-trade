@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from dashboard import data, evidence, theme, view
+from dashboard import data, evidence, team_actions, theme, view
 from dashboard.explain import AXIS_NOT, lead_axis_text, preset_label, rank_badge
 from sector.scoring import AXES, AXIS_NAMES
 
@@ -94,6 +94,8 @@ def render() -> None:
         )
         if chosen:
             _render_breakdown(frame, chosen, profile, names)
+            # ★ 확정 · 근거 붙이기는 **근거를 읽은 바로 그 자리**에서 한다 (ADR-SC-0012 ②)
+            team_actions.render_sector_actions(frame, chosen, profile=profile, names=names)
     finally:
         theme.footer(source_label)
 

@@ -22,17 +22,17 @@ Streamlit Cloud 는 의존성 파일을 ① 엔트리포인트가 있는 디렉�
 import streamlit as st
 
 from dashboard import theme
-from dashboard.pages import confirm, howto, ranking, teams
+from dashboard.pages import howto, ranking, teams
 
 # 🔒 `set_page_config` 는 다른 st 명령보다 먼저다. 그래서 navigation 앞에 둔다.
 theme.setup()
 
 # 🔒 `url_path` 를 **명시한다.** 주지 않으면 Streamlit 이 callable 이름에서
-#    추론하는데 네 페이지가 전부 `render` 라 경로가 충돌해 앱이 뜨지 않는다
+#    추론하는데 페이지 callable 이 전부 `render` 라 경로가 충돌해 앱이 뜨지 않는다
 #    (2026-09-12 AppTest 로 잡았다 — 배포 후에 알았으면 흰 화면이었다).
+# ★ '섹터 확정' 페이지는 없다 — 랭킹의 "왜 이 점수인가" 에서 모달로 확정한다 (ADR-SC-0012 ②)
 st.navigation([
     st.Page(ranking.render, title="섹터 랭킹", icon="📊", url_path="ranking", default=True),
     st.Page(teams.render, title="조", icon="👥", url_path="teams"),
-    st.Page(confirm.render, title="섹터 확정", icon="✅", url_path="confirm"),
     st.Page(howto.render, title="읽는 법", icon="📖", url_path="howto"),
 ]).run()

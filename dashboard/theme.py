@@ -32,12 +32,16 @@ Inter·JetBrains Mono 에는 **한글 글리프가 없다.** 한글이 시스템
 
 from __future__ import annotations
 
+import html
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Iterable, Iterator
 
 import streamlit as st
 
-__all__ = ["DATA_SOURCE", "DISCLAIMER", "setup", "header", "footer", "panel", "missing"]
+from sector.workspace.links import display_link
+
+__all__ = ["DATA_SOURCE", "DISCLAIMER", "setup", "header", "footer", "panel", "missing",
+           "esc", "html_line", "user_block", "links_block", "failure"]
 
 #: 🔒 약관이 정한 **의무 문자열**이다. 글자를 바꾸지 않는다.
 #:    ("KRX 통계정보" · "출처: 한국거래소" 는 저장소 문서와 어긋난다)
@@ -86,6 +90,12 @@ div[data-testid="stMetric"] {
 .sc-muted { color: #8B93A1; font-size: 0.857rem; line-height: 1.5; }         /* 12px */
 .sc-note  { color: #8B93A1; font-size: 0.857rem; white-space: pre-wrap; }
 .sc-warn  { color: #FF6B6B; font-weight: 600; }
+
+/* 코멘트 링크 — 주소가 길다. 🔒 줄을 못 바꾸게 두면 모달 폭을 밀어낸다.
+   색은 config.toml 의 linkColor 가 이미 칠한다 — 여기서 다시 정하지 않는다 */
+.sc-links { font-size: 0.857rem; line-height: 1.6; overflow-wrap: anywhere; }
+/* 사람 글이 섞인 한 줄(이름 · 날짜) — 마크다운 목록 대신 HTML 블록이라 줄 간격만 준다 */
+.sc-line  { line-height: 1.7; overflow-wrap: anywhere; }
 </style>
 """
 
@@ -127,3 +137,80 @@ def panel(title: str = "") -> Iterator[None]:
 def missing(reason: str = "") -> str:
     """🔒 값이 없을 때 그리는 **유일한** 모양. 0 도 전일값도 아니다 (ADR-SC-0007)."""
     return f"{MISSING} <span class='sc-muted'>{reason}</span>" if reason else MISSING
+
+
+# ── 사람이 쓴 글 ────────────────────────────────────────────────────────────
+# 🔴 원장 읽기는 공개이고(ADR-SC-0011 ⑥), passcode 를 가진 사람은 RPC 로 앱의 쓰기
+#    검사를 건너뛸 수 있다. 그래서 **쓸 때 검사**로는 모자라고 **그릴 때** 아래를 지난다.
+#    조 이름 · 참가자 이름 · 사유 · 코멘트 · 원장에서 온 섹터 id · 저장소 오류 문장이 전부
+#    대상이다(ADR-SC-0012 ④). `sectors.yaml` 에서 온 글은 커밋된 설정이라 대상이 아니다.
+#
+# 🔴🔴 **사람 글은 마크다운에 넣지 않는다 — 역슬래시 이스케이프로는 못 막는다** (Y9).
+#    remark-gfm 은 이스케이프를 먼저 글자로 푼 **뒤** 그 글자에서 URL 을 찾는다. 그래서
+#    이스케이프한 `http://192.168.0.1` 도 `www.evil.com` 도 살아 있는 링크가 되고, 인라인
+#    `<span>` 으로 감싸도 태그 사이 글자는 똑같이 링크가 된다(2026-09-14 remark-gfm 으로
+#    재현 · 리뷰에서 잡았다). **줄 전체가 `<div` 로 시작하는 HTML 블록**만 그 변환을 받지
+#    않는다. 그래서 사람 글은 `html_line` · `user_block` · `links_block` 으로만 나간다.
+#    🔒 위젯 라벨 · 모달 제목 · `st.success` · `st.error` 는 마크다운이다 — 사람 글을 넣지 않는다.
+
+
+def esc(text: object) -> str:
+    """사람이 쓴 글 **한 줄**을 HTML 글자로. 🔒 `html_line` 안에만 넣는다 — 마크다운에 넣지 않는다.
+
+    줄바꿈은 공백으로 접는다. HTML 블록은 빈 줄에서 끝나고 그 뒤가 마크다운으로 샌다.
+    """
+    return html.escape(" ".join(str(text).splitlines()), quote=True)
+
+
+def html_line(inner: str, cls: str = "sc-line") -> str:
+    """한 줄짜리 **HTML 블록**. `st.markdown(…, unsafe_allow_html=True)` 에 넘긴다.
+
+    🔒 `inner` 의 사람 글은 이미 `esc` 를 지나 있어야 한다. 태그(`<b>` 등)는 코드가 쓴다.
+    🔴 줄이 둘이면 두 번째 줄부터 HTML 블록 밖(= 마크다운)이다 — 받지 않고 던진다.
+    """
+    if len(inner.splitlines()) > 1:
+        raise ValueError("html_line 은 한 줄만 받는다 — 사람 글은 esc 를 지나게 한다")
+    return f"<div class='{cls}'>{inner}</div>"
+
+
+def failure(summary: str, exc: BaseException) -> None:
+    """저장소 · 원장 오류. 🔴 오류 문장에 **원장의 글**이 섞일 수 있다(`event_id!r` 등).
+
+    요약(코드가 쓴 글)은 `st.error` 로, 오류 내용은 HTML 블록으로 나눠 그린다.
+    """
+    st.error(summary)
+    st.markdown(user_block(str(exc), "sc-muted"), unsafe_allow_html=True)
+
+
+def user_block(text: object, cls: str = "sc-note") -> str:
+    """사람이 쓴 여러 줄 글을 **HTML 블록 하나**로 — `st.markdown(…, unsafe_allow_html=True)` 에 넘긴다.
+
+    🔴 Streamlit 1.63 은 `unsafe_allow_html` 마크다운을 **정화하지 않는다.** 번들의
+       `StreamlitMarkdown` 이 DOMPurify 를 부르지 않고, 금지 요소 목록은 위젯 라벨에서만
+       걸린다(2026-09-14 번들 확인 · 실브라우저 재현은 못 했다). 그러니
+       `f"<div>{사유}</div>"` 는 `<iframe srcdoc=…>` 한 줄로 **팀원 브라우저에서 스크립트를
+       돌릴 수 있는** 모양이다. 옛 확정 화면이 그 모양이었다.
+    🔒 두 겹이다 —
+       ① `html.escape` 가 `<`·`>`·`&`·따옴표를 글자로 바꾼다.
+       ② **줄바꿈을 `<br>` 로 바꿔 한 줄로 만든다.** CommonMark 의 HTML 블록은 빈 줄에서
+          끝나므로, 사유에 빈 줄이 있으면 그 뒤가 `<div>` 밖으로 나와 **마크다운으로**
+          읽힌다 — ①을 지난 `![](…)` 이미지가 거기서 되살아난다.
+    """
+    lines = html.escape(str(text), quote=True).splitlines()
+    return f"<div class='{cls}'>{'<br>'.join(lines)}</div>"
+
+
+def links_block(links: Iterable[str]) -> str:
+    """코멘트 링크. 🔒 **주소 자체를 보여준다** — 이름을 붙이게 하지 않는다(`links.display_link`).
+
+    🔒 `rel="noopener noreferrer nofollow"` — 새 탭이 이 앱 창을 되조작하지 못하고
+       (`noopener`), 상대 서버에 이 앱 주소가 넘어가지 않는다(`noreferrer`).
+    🔴 여기 오는 링크는 `fold` 가 **다시 굳혀 본** 것뿐이다. 그래도 `html.escape` 를
+       지난다 — 한 겹이 무너져도 다른 겹이 남게.
+    """
+    anchors = [
+        f'<a href="{html.escape(link, quote=True)}" target="_blank" '
+        f'rel="noopener noreferrer nofollow">{html.escape(display_link(link))}</a>'
+        for link in links
+    ]
+    return f"<div class='sc-links'>🔗 {' · '.join(anchors)}</div>" if anchors else ""

@@ -240,6 +240,18 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
   - 🔒 append-only 는 **트리거**가 지킨다. 소유자도 못 지운다. 되돌리기는 반대 이벤트
   - 🔒 클라이언트는 **`requests` + PostgREST**. `supabase-py`·`psycopg` 를 넣지 않는다
     (루트 `requirements.txt` 는 4줄이고 Streamlit Cloud 메모리를 직접 깎는다)
+- **근거 첨부 — 링크는 서버가 부르지 않는다** ★ (2026-09-14 · [ADR-SC-0012](docs/decisions/0012-근거-첨부와-확정-모달.md))
+  저장하고 `<a>` 로 그릴 뿐이다 — **SSRF 표면 0.** 🔒 `links.normalize_link` 는 SSRF 가드가
+  **아니다**(팀원 브라우저가 내부망 · 기만 링크로 가는 것을 막는다). 미리보기(fetch)를 붙이려면
+  **연결 시점 IP 검사부터** 설계한다. 🔒 검사는 쓸 때와 **읽을 때(`fold`)** 두 번 — RPC 가 앱을 건너뛴다
+- **사람이 쓴 글은 HTML 블록으로만 그린다** 🔴 (2026-09-14 · ADR-SC-0012 ④ · Y9)
+  Streamlit 1.63 은 `unsafe_allow_html` 을 **정화하지 않고**, 마크다운 역슬래시 이스케이프는
+  **GFM 자동 링크를 못 막는다.** 🔒 사람 글(이름 · 사유 · 근거 · 원장에서 온 섹터 id · 저장소
+  오류 문장)은 `theme.esc`+`html_line` · `user_block` · `links_block` · `failure` 로만 내보낸다.
+  🔒 위젯 라벨 · 모달 제목 · `st.success` · `st.error` 에 사람 글을 넣지 않는다
+- **확정은 랭킹의 모달이다** (2026-09-14 · ADR-SC-0012 ②) — '섹터 확정' 페이지는 없다.
+  핵심 섹터 상태 · 되돌리기 · 기록은 **조** 페이지. 🔒 모달은 `session_state` 플래그 +
+  `on_dismiss` 로 연다 — 버튼으로 바로 열면 AppTest 가 못 밟는다
 - **디자인 토큰은 한 벌이다** ★ (2026-09-12 · ADR-SC-0010 ⑦)
   F-4 팔레트를 **`.streamlit/config.toml` 에서 먼저 확정**하고 같은 값을 Django 쪽
   Tailwind 로 옮긴다. 🔴 **CSS 만으로 디자인하지 않는다** — `st.bar_chart` 는 canvas 라

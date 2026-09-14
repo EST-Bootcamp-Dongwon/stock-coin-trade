@@ -33,15 +33,19 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
+
+from sector.workspace.links import LinkError, normalize_links
 
 __all__ = [
     "EventError",
     "Event",
     "KINDS",
     "LEGACY_SECRET_KEY",
+    "PAYLOAD_MAX_BYTES",
     "canonical_json",
     "carries_legacy_secret",
+    "payload_bytes",
     "make_event",
     "team_created",
     "member_joined",
@@ -51,6 +55,8 @@ __all__ = [
     "team_archived",
     "team_restored",
     "parse_event",
+    "is_identifier",
+    "require_actor",
     "require_team_id",
     "sort_key",
 ]
@@ -80,6 +86,21 @@ _ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 _AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00$")
 
 _MAX_TEXT = 4000
+
+#: 🔴 **제어문자를 받지 않는다** (2026-09-14 · ADR-SC-0012 ⑤).
+#:
+#: jsonb 는 제어문자를 `\u0001` 처럼 **여섯 바이트**로 적는다. 그래서 4000자 한도 안의
+#: 본문이 24,069바이트가 되어 DB 의 payload 상한(`PAYLOAD_MAX_BYTES`)에 걸린다 — 앱은
+#: 이미 받아 준 뒤라 팀원은 영문 모를 오류를 본다. 눈에 안 보이는 글자가 사유·이름을
+#: 서로 다르게 만드는 일도 함께 막는다.
+#: 🔒 탭·줄바꿈은 사람이 쓰는 글이라 받는다. 한 줄짜리 칸(이름)은 줄바꿈도 받지 않는다.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+#: 🔒 DB 의 `workspace_event_payload_size` CHECK 와 **같은 수**다
+#:    (`supabase/migrations/20260912095328_workspace_ledger.sql` — 테스트가 두 파일을 대조한다).
+#:    passcode 게이트와 같은 원칙이다 — **앱이 먼저, 같은 선에서** 거부해야
+#:    "앱이 받아 준 이벤트를 DB 가 거부한다" 는 일이 생기지 않는다.
+PAYLOAD_MAX_BYTES = 16384
 
 #: 🔴 **passcode 는 payload 에 들어가지 않는다** (ADR-SC-0011 ④ · 2026-09-12).
 #:
@@ -111,6 +132,21 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
+def payload_bytes(payload: Mapping[str, Any]) -> int:
+    """payload 가 DB 에서 차지하는 바이트 — `octet_length(payload::text)` 와 같은 규칙으로 잰다.
+
+    jsonb 의 텍스트 출력은 `", "`·`": "` 구분자를 쓰고, 한글은 UTF-8 그대로 두며,
+    따옴표·역슬래시·제어문자만 이스케이프한다(PostgreSQL `escape_json`). 아래 설정이
+    같은 규칙이다 — 키 순서는 다르지만 바이트 수에는 영향이 없다.
+
+    ⚠️ **실DB 와 바이트를 대조하지는 않았다.** 상한 바로 근처에서는 한 끗 어긋날 수
+       있다. 쓰는 쪽 한도(한글 본문 4000자 + 링크 3개×500자 = 13,592바이트)가 정상
+       입력을 그 근처로 보내지 않는다.
+    """
+    text = json.dumps(dict(payload), ensure_ascii=False, separators=(", ", ": "))
+    return len(text.encode("utf-8"))
+
+
 def _require_id(value: Any, what: str) -> str:
     text = str(value).strip() if value is not None else ""
     if not _ID_RE.match(text):
@@ -135,6 +171,21 @@ def _require_text(value: Any, what: str, *, max_len: int = _MAX_TEXT) -> str:
     return text
 
 
+def _require_prose(value: Any, what: str, *, max_len: int = _MAX_TEXT,
+                   single_line: bool = False) -> str:
+    """사람이 **새로 쓰는** 글 — `_require_text` 에 제어문자 게이트(`_CONTROL_RE`)를 더한다.
+
+    🔒 **쓰기 길에서만 부른다.** 읽기 길(`_make` ← `parse_event`)에 두면 옛 원장 한 줄이
+       원장 전체를 예외로 만든다 (`LEGACY_SECRET_KEY` 와 같은 이유).
+    """
+    text = _require_text(value, what, max_len=max_len)
+    if single_line and ("\n" in text or _CONTROL_RE.search(text)):
+        raise EventError(f"{what} 에 줄바꿈이나 보이지 않는 제어문자가 있다. 한 줄로 다시 쓴다")
+    if _CONTROL_RE.search(text):
+        raise EventError(f"{what} 에 보이지 않는 제어문자가 있다. 지우고 다시 쓴다")
+    return text
+
+
 def require_team_id(value: Any) -> str:
     """조 id 를 규칙에 비춰 확인한다. 🔒 **저장소 계층이 쓴다.**
 
@@ -143,6 +194,22 @@ def require_team_id(value: Any) -> str:
        주입이 된다 — 규칙이 이미 있으니 **문 앞에서** 한 번 더 묻는다.
     """
     return _require_id(value, "team_id")
+
+
+def require_actor(value: Any) -> str:
+    """사람 이름 — `actor` · `member` 와 같은 규칙. 🔒 화면이 **세션에 담기 전에** 묻는다.
+
+    🔴 담은 뒤에 원장이 거부하면 조에 들어간 채 참가 기록만 빠진다(2026-09-14 리뷰).
+    """
+    return _require_prose(value, "이름", max_len=40, single_line=True)
+
+
+def is_identifier(value: Any) -> bool:
+    """조 id · 섹터 id 규칙에 맞나. 🔒 `fold` 가 원장의 섹터 id 를 거를 때 쓴다.
+
+    🔴 RPC 는 payload 를 검사하지 않는다 — 원장의 `sector_id` 에 아무 글자나 들어올 수 있다.
+    """
+    return isinstance(value, str) and bool(_ID_RE.match(value))
 
 
 def _reject_secret_keys(payload: Mapping[str, Any]) -> None:
@@ -227,6 +294,13 @@ def make_event(
     """
     body = dict(payload or {})
     _reject_secret_keys(body)
+    _require_prose(actor, "actor", max_len=40, single_line=True)
+    size = payload_bytes(body)
+    if size > PAYLOAD_MAX_BYTES:
+        raise EventError(
+            f"{kind} 이벤트가 너무 크다 ({size:,}바이트 > {PAYLOAD_MAX_BYTES:,}바이트). "
+            f"본문을 줄이거나 링크를 뺀다 — 이모지·특수문자는 한 글자가 여러 바이트다"
+        )
     return _make(kind, team_id=team_id, actor=actor, at=at, payload=body)
 
 
@@ -273,14 +347,14 @@ def team_created(*, team_id: str, name: str, actor: str, at: str) -> Event:
     """
     return make_event(
         "team.created", team_id=team_id, actor=actor, at=at,
-        payload={"name": _require_text(name, "조 이름", max_len=60)},
+        payload={"name": _require_prose(name, "조 이름", max_len=60, single_line=True)},
     )
 
 
 def member_joined(*, team_id: str, member: str, actor: str, at: str) -> Event:
     return make_event(
         "member.joined", team_id=team_id, actor=actor, at=at,
-        payload={"member": _require_text(member, "참가자 이름", max_len=40)},
+        payload={"member": _require_prose(member, "참가자 이름", max_len=40, single_line=True)},
     )
 
 
@@ -289,7 +363,7 @@ def sector_confirmed(*, team_id: str, sector_id: str, reason: str, actor: str, a
     return make_event(
         "sector.confirmed", team_id=team_id, actor=actor, at=at,
         payload={"sector_id": _require_id(sector_id, "sector_id"),
-                 "reason": _require_text(reason, "확정 사유")},
+                 "reason": _require_prose(reason, "확정 사유")},
     )
 
 
@@ -301,16 +375,30 @@ def sector_unconfirmed(*, team_id: str, reason: str, actor: str, at: str) -> Eve
     """
     return make_event(
         "sector.unconfirmed", team_id=team_id, actor=actor, at=at,
-        payload={"reason": _require_text(reason, "취소 사유")},
+        payload={"reason": _require_prose(reason, "취소 사유")},
     )
 
 
 def comment_posted(
-    *, team_id: str, body: str, actor: str, at: str, sector_id: str | None = None
+    *, team_id: str, body: str, actor: str, at: str, sector_id: str | None = None,
+    links: Iterable[str] = (),
 ) -> Event:
-    payload: dict[str, Any] = {"body": _require_text(body, "코멘트 본문")}
+    """코멘트 — 팀원이 붙이는 **근거**. 링크를 3개까지 함께 담는다 (ADR-SC-0012).
+
+    🔒 링크는 **굳힌 모양으로** 담긴다(`links.normalize_link`). 서버는 그 링크를 열어
+       보지 않는다 — 누르는 팀원의 브라우저가 연다.
+    🔒 링크가 없으면 `links` 칸을 **만들지 않는다.** 빈 목록을 넣으면 링크 없는 코멘트의
+       id 가 #8 이전과 달라진다 — 같은 내용이 다른 id 를 갖게 된다.
+    """
+    payload: dict[str, Any] = {"body": _require_prose(body, "코멘트 본문")}
     if sector_id is not None:
         payload["sector_id"] = _require_id(sector_id, "sector_id")
+    try:
+        kept = normalize_links(links)
+    except LinkError as exc:
+        raise EventError(str(exc)) from exc
+    if kept:
+        payload["links"] = list(kept)
     return make_event("comment.posted", team_id=team_id, actor=actor, at=at, payload=payload)
 
 
@@ -328,7 +416,7 @@ def team_archived(*, team_id: str, reason: str, actor: str, at: str) -> Event:
     """
     return make_event(
         "team.archived", team_id=team_id, actor=actor, at=at,
-        payload={"reason": _require_text(reason, "보관 사유")},
+        payload={"reason": _require_prose(reason, "보관 사유")},
     )
 
 
@@ -336,7 +424,7 @@ def team_restored(*, team_id: str, reason: str, actor: str, at: str) -> Event:
     """보관을 되돌린다."""
     return make_event(
         "team.restored", team_id=team_id, actor=actor, at=at,
-        payload={"reason": _require_text(reason, "복구 사유")},
+        payload={"reason": _require_prose(reason, "복구 사유")},
     )
 
 

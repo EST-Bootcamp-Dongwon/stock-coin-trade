@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from sector.datastore import hub
-from sector.workspace import auth, events, fold, store
+from sector.workspace import auth, events, fold, links, store
 
 AT1 = "2026-09-12T05:00:00+00:00"
 AT2 = "2026-09-12T06:00:00+00:00"
@@ -453,6 +453,247 @@ def test_코멘트를_섹터로_거른다():
     workspace = fold.fold(both)
     assert len(workspace.comments_of("team_a")) == 2
     assert len(workspace.comments_of("team_a", sector_id="steel")) == 1
+
+
+# ── 근거 첨부 — 링크 (2026-09-14 · ADR-SC-0012) ─────────────────────────────
+# 🔒 서버는 링크를 부르지 않는다. 여기서 고정하는 것은 **팀원 브라우저가 어디로 가나**와
+#    **저장 모양이 멱등인가**다 — 후자에 `fold` 의 우회 차단이 기댄다.
+
+@pytest.mark.parametrize("raw", [
+    "http://dart.fss.or.kr/", "javascript:alert(1)", "data:text/html,<b>x</b>",
+    "ftp://example.org/x", "file:///etc/passwd", "//naver.com/x", "naver.com/x",
+])
+def test_https_가_아니면_받지_않는다(raw):
+    with pytest.raises(links.LinkError):
+        links.normalize_link(raw)
+
+
+@pytest.mark.parametrize("raw", [
+    "https://127.0.0.1/", "https://[::1]/", "https://169.254.169.254/latest/meta-data",
+    "https://2130706433/", "https://0x7f.1/", "https://127.1/",
+    "https://localhost/", "https://intranet/", "https://nas.local/",
+    "https://router.home.arpa/", "https://db.internal/", "https://printer.lan/",
+    "https://%6c%6f%63%61%6c%68%6f%73%74/",
+])
+def test_누르는_사람의_내부망을_가리키면_받지_않는다(raw):
+    """🔴 브라우저는 `0x7f.1` · `2130706433` 을 IPv4 로 읽는다. 공개 원장이 그 길을 열면 안 된다."""
+    with pytest.raises(links.LinkError):
+        links.normalize_link(raw)
+
+
+@pytest.mark.parametrize("raw", [
+    "https://naver.com@evil.example.org/", "https://user:pw@dart.fss.or.kr/",
+    "https://dart.fss.or.kr:8443/", "https://dart.fss.or.kr/a b",
+    "https://dart.fss.or.kr/" + chr(9) + "x", "https://dart.fss.or.kr:abc/",
+    # 🔴 파이썬 IDNA(2003)가 이름을 바꾸는 것 — 브라우저는 다른 곳으로 간다 (리뷰)
+    "https://faß.de/", "https://example.com" + chr(0x2024) + "evil.com/",
+    "https://" + "".join(chr(0xFF00 + ord(c) - 0x20) for c in "example") + ".com/",
+    # 🔴 짝 없는 서로게이트 — `LinkError` 가 아니면 fold 가 못 잡는다 (리뷰)
+    "https://example.com/" + chr(0xD800),
+])
+def test_보이는_곳과_가는_곳이_다를_수_있으면_받지_않는다(raw):
+    with pytest.raises(links.LinkError):
+        links.normalize_link(raw)
+
+
+def test_주소를_저장할_모양으로_굳힌다():
+    assert links.normalize_link("  HTTPS://Dart.FSS.or.kr:443  ") == "https://dart.fss.or.kr/"
+    assert links.normalize_link("https://example.com./") == "https://example.com/"
+    # 🔒 국제화 도메인은 퓨니코드로 — 생김새가 같은 다른 글자가 드러나야 한다
+    assert links.normalize_link("https://한국.kr/경로?q=값#조각") == (
+        "https://xn--3e0b707e.kr/%EA%B2%BD%EB%A1%9C?q=%EA%B0%92#%EC%A1%B0%EA%B0%81")
+
+
+@pytest.mark.parametrize("raw", [
+    "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260910000123",
+    "https://한국.kr/경로?q=값#조각",
+    "https://n.news.naver.com/article/001/0012345678?sid=101",
+    "https://example.com/100%/a%2Fb",
+    "https://Example.COM",
+])
+def test_굳히기가_멱등이다(raw):
+    """🔒 `fold` 가 이 성질에 기대어 앱을 거치지 않고 쓴 링크를 거른다."""
+    once = links.normalize_link(raw)
+    assert links.normalize_link(once) == once
+
+
+def test_링크는_세_개까지고_같은_링크는_하나로_센다():
+    same = ["https://dart.fss.or.kr/", "HTTPS://dart.fss.or.kr:443/", "   "]
+    assert links.normalize_links(same) == ("https://dart.fss.or.kr/",)
+    with pytest.raises(links.LinkError, match="3개까지"):
+        links.normalize_links([f"https://a{i}.example.org/" for i in range(4)])
+    with pytest.raises(links.LinkError, match="목록"):
+        links.normalize_links("https://dart.fss.or.kr/")
+
+
+def test_링크가_너무_길면_받지_않는다():
+    with pytest.raises(links.LinkError, match="너무 길다"):
+        links.normalize_link("https://dart.fss.or.kr/" + "a" * links.MAX_LINK_LEN)
+
+
+def test_화면에는_주소_자체가_보인다():
+    """🔒 이름을 붙이게 하지 않는다 — 보이는 글자와 가는 곳이 같아야 한다."""
+    assert links.display_link("https://dart.fss.or.kr/a") == "dart.fss.or.kr/a"
+    long = links.display_link("https://dart.fss.or.kr/" + "a" * 100)
+    assert len(long) == 60 and long.endswith("…")
+    # 🔴 호스트는 자르지 않는다 — 60자에서 자르면 `naver.com` 만 보이고 진짜 도메인이 가려진다
+    tricky = "n.news.naver.com.article.001.0012345678.sid.101.read.view.mobile.attacker.com"
+    assert links.display_link(f"https://{tricky}/x").startswith(tricky + "/")
+
+
+# ── 근거 첨부 — 코멘트 이벤트 ───────────────────────────────────────────────
+
+def test_링크_없는_코멘트는_예전과_같은_id_다():
+    """🔒 빈 `links` 칸을 넣으면 #8 이전에 쓴 코멘트와 id 가 갈라진다."""
+    new = events.comment_posted(team_id="team_a", body="철강 얘기", actor="동원",
+                                at=AT2, sector_id="steel")
+    old = events.make_event("comment.posted", team_id="team_a", actor="동원", at=AT2,
+                            payload={"body": "철강 얘기", "sector_id": "steel"})
+    assert "links" not in new.payload
+    assert new.event_id == old.event_id
+
+
+def test_코멘트에_굳힌_링크가_실리고_왕복한다():
+    event = events.comment_posted(
+        team_id="team_a", body="공시 원문", actor="동원", at=AT2, sector_id="steel",
+        links=["HTTPS://Dart.FSS.or.kr:443/dsaf001/main.do", "", "https://한국.kr/경로"])
+    assert event.payload["links"] == ["https://dart.fss.or.kr/dsaf001/main.do",
+                                      "https://xn--3e0b707e.kr/%EA%B2%BD%EB%A1%9C"]
+    assert events.parse_event(json.loads(json.dumps(event.to_json()))) == event
+    comment = fold.fold([team(), event]).comments_of("team_a")[0]
+    assert comment.links == tuple(event.payload["links"])
+
+
+def test_잘못된_링크는_이벤트가_되지_않는다():
+    with pytest.raises(events.EventError, match="https"):
+        events.comment_posted(team_id="team_a", body="봐라", actor="동원", at=AT2,
+                              links=["http://dart.fss.or.kr/"])
+
+
+def test_앱을_거치지_않고_쓴_링크는_그리지_않고_알린다():
+    """🔴 passcode 를 가진 사람은 RPC 로 아무 payload 나 쓸 수 있다. **읽을 때** 거른다."""
+    bypass = events.make_event("comment.posted", team_id="team_a", actor="민수", at=AT2, payload={
+        "body": "봐라", "sector_id": "steel",
+        "links": ["javascript:alert(1)", "HTTPS://Dart.FSS.or.kr/", "https://dart.fss.or.kr/", 7]})
+    workspace = fold.fold([team(), bypass])
+    assert workspace.comments_of("team_a")[0].links == ("https://dart.fss.or.kr/",)
+    # 스킴 · 저장 모양 불일치 · 문자열 아님 — 셋 다 조용히 버리지 않는다
+    assert len(workspace.anomalies) == 3, workspace.anomalies
+    assert all("민수" in line for line in workspace.anomalies)
+
+
+def test_규칙에_어긋난_섹터_id_는_반영하지_않고_알린다():
+    """🔴 RPC 는 payload 를 검사하지 않는다 — 그 글자가 모달 제목 · 목록으로 흘러가면 안 된다."""
+    bad = "![x](https://example.invalid/x.png)"
+    confirm = events.make_event("sector.confirmed", team_id="team_a", actor="민수", at=AT2,
+                                payload={"sector_id": bad, "reason": "우회"})
+    comment = events.make_event("comment.posted", team_id="team_a", actor="민수", at=AT3,
+                                payload={"body": "봐라", "sector_id": bad})
+    workspace = fold.fold([team(), confirm, comment])
+    assert not workspace.team("team_a").is_confirmed
+    assert workspace.comments_of("team_a")[0].sector_id is None
+    assert len(workspace.anomalies) == 2, workspace.anomalies
+
+
+def test_이름_규칙을_화면이_미리_물을_수_있다():
+    """🔒 세션에 담기 전에 원장과 같은 규칙으로 묻는다."""
+    assert events.require_actor(" 동원 ") == "동원"
+    with pytest.raises(events.EventError, match="줄바꿈"):
+        events.require_actor("민" + chr(31) + "수")
+
+
+def test_링크_칸이_목록이_아니면_알린다():
+    bypass = events.make_event("comment.posted", team_id="team_a", actor="민수", at=AT2,
+                               payload={"body": "봐라", "links": "https://dart.fss.or.kr/"})
+    workspace = fold.fold([team(), bypass])
+    assert workspace.comments_of("team_a")[0].links == ()
+    assert any("목록" in line for line in workspace.anomalies)
+
+
+@pytest.mark.parametrize("bad", [chr(0), chr(1), chr(13), chr(27), chr(127)])
+def test_사람이_쓰는_글에_제어문자를_받지_않는다(bad):
+    """🔴 jsonb 가 제어문자를 6바이트로 적어 DB 상한에 걸린다 — 앱이 먼저 거부한다."""
+    with pytest.raises(events.EventError, match="제어문자"):
+        events.comment_posted(team_id="team_a", body=f"앞{bad}뒤", actor="동원", at=AT2)
+    with pytest.raises(events.EventError, match="제어문자"):
+        events.sector_confirmed(team_id="team_a", sector_id="steel", reason=f"앞{bad}뒤",
+                                actor="동원", at=AT2)
+
+
+def test_여러_줄_사유는_받고_한_줄_칸은_줄바꿈을_받지_않는다():
+    events.sector_confirmed(team_id="team_a", sector_id="steel", actor="동원", at=AT2,
+                            reason="첫 줄" + chr(10) + chr(9) + "둘째 줄")
+    with pytest.raises(events.EventError, match="줄바꿈"):
+        events.team_created(team_id="team_a", name="A" + chr(10) + "조", actor="동원", at=AT1)
+    with pytest.raises(events.EventError, match="줄바꿈"):
+        events.comment_posted(team_id="team_a", body="봐라", actor="동" + chr(10) + "원", at=AT2)
+
+
+def test_옛_원장의_제어문자는_읽기를_막지_않는다():
+    """🔒 게이트는 쓰기 길에만 있다 — 읽기에 두면 한 줄이 원장 전체를 죽인다."""
+    raw = events.make_event("comment.posted", team_id="team_a", actor="동원", at=AT2,
+                            payload={"body": "앞" + chr(1) + "뒤"}).to_json()
+    assert events.parse_event(raw).payload["body"] == "앞" + chr(1) + "뒤"
+
+
+# ── 근거 첨부 — payload 상한 ────────────────────────────────────────────────
+
+def test_payload_가_DB_상한을_넘으면_앱이_먼저_거부한다():
+    """🔴 이모지는 한 글자가 4바이트다 — 4000자 한도 안에서도 16384바이트를 넘는다."""
+    urls = [f"https://dart.fss.or.kr/{i}/" + "a" * 400 for i in range(3)]
+    with pytest.raises(events.EventError, match="너무 크다"):
+        events.comment_posted(team_id="team_a", body="😀" * 4000, actor="동원", at=AT2,
+                              links=urls)
+
+
+def test_한글_본문_4000자와_링크_셋은_상한_안에_든다():
+    """🔒 쓰는 쪽 한도 안의 정상 입력은 DB 상한에 닿지 않는다 (`links.MAX_LINKS` 주석)."""
+    urls = [f"https://dart.fss.or.kr/{i}/" + "a" * (links.MAX_LINK_LEN - 30)
+            for i in range(links.MAX_LINKS)]
+    event = events.comment_posted(team_id="team_a", body="가" * 4000, actor="동원", at=AT2,
+                                  sector_id="a" * 40, links=urls)
+    assert events.payload_bytes(event.payload) <= events.PAYLOAD_MAX_BYTES
+
+
+def test_payload_바이트를_jsonb_텍스트_규칙으로_잰다():
+    """🔒 숫자를 박아 둔다 — 식을 같은 식과 비교하면 아무것도 고정하지 않는다.
+
+    ⚠️ PostgreSQL 에 직접 대조한 숫자는 아니다(ADR-SC-0012 ⑤). jsonb 텍스트 규칙을 옮겨 적은 것이다.
+    """
+    assert events.payload_bytes({"body": "가"}) == 15      # {"body": "가"} — 한글 3바이트
+    assert events.payload_bytes({"body": chr(1)}) == 18    # 제어문자 한 글자가 6바이트
+    assert events.payload_bytes({"a": [1, 2]}) == 13       # {"a": [1, 2]} — ", " 구분자
+
+
+def test_앱의_payload_상한이_마이그레이션과_같다():
+    """🔒 두 파일에 적힌 같은 수 — 한쪽만 바꾸면 여기서 깨진다."""
+    sql = (Path(__file__).resolve().parents[2] / "supabase" / "migrations"
+           / "20260912095328_workspace_ledger.sql").read_text(encoding="utf-8")
+    assert f"octet_length(payload::text) <= {events.PAYLOAD_MAX_BYTES}" in sql
+
+
+def test_원장_계층은_네트워크를_부르지_않는다():
+    """🔴 "SSRF 표면 0" 은 **코드에 네트워크 호출이 없다**는 뜻이다.
+
+    누가 링크 미리보기를 붙이면 여기서 깨진다 — 그때는 `links` 머리주석대로
+    연결 시점 IP 검사를 먼저 설계한다. `store` 는 원장 저장소라 대상이 아니다.
+    🔒 문자열이 아니라 **구문 트리**로 본다 — `from requests import get` · `from urllib import
+       request` 도 잡는다 (문자열 검색은 그 둘을 놓쳤다 · 리뷰).
+    """
+    import ast
+
+    roots = {"requests", "urllib3", "httpx", "aiohttp", "socket", "http", "huggingface_hub"}
+    for module in (links, events, fold):
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+            else:
+                continue
+            bad = [n for n in names if n.split(".")[0] in roots or n.startswith("urllib.request")]
+            assert not bad, f"{module.__name__} 가 네트워크 모듈을 import 한다: {bad}"
 
 
 # ── 벽시계·평문 정적 검사 ───────────────────────────────────────────────────
