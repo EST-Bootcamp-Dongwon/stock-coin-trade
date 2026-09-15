@@ -2,7 +2,12 @@
 
 - **상태**: 채택
 - **날짜**: 2026-08-17
-- **관련**: [ADR-SC-0002](0002-체결엔진-원본과-이식.md) · `ADR-QC-0003` · `quant-contract/CONTEXT.md` §4
+- **관련**: [ADR-SC-0002](0002-체결엔진-원본과-이식.md) · `ADR-QC-0003`(삭제됨 — `quant-core` 저장소 제거) · `quant-contract/CONTEXT.md` §4(삭제됨 — `quant-contract` 저장소 제거)
+
+> ⚠️ **2026-09-15 갱신** — `quant-core`·`backtest-service` 는 개발하지 않기로 해 제거됐다.
+> 이 ADR 의 전제("여기 넣지 않는다, `quant-core` 가 만든다")가 사라졌다 — 세율표를
+> 만들 `quant-core` 자체가 없다. **날짜 기반 세율표가 실제로 필요해지면 이 저장소에서
+> 다시 결정해야 한다.** `cost_rates(account)` 를 그대로 쓴다는 결론은 바뀌지 않는다.
 
 ## 맥락
 

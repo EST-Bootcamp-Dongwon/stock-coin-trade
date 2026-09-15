@@ -2,7 +2,7 @@
 
 - **상태**: 채택 (기존 계획을 **보류**로 뒤집음)
 - **날짜**: 2026-08-17
-- **관련**: `quant-contract/CONTEXT.md` §2·§4·§9 · `ADR-CT-0007`(Postgres 이원화)
+- **관련**: `quant-contract/CONTEXT.md` §2·§4·§9(삭제됨 — `quant-contract` 저장소 제거) · `ADR-CT-0007`(Postgres 이원화 · 원문은 `quant-contract` 저장소 제거로 삭제됐고 결정은 유효)
 
 ## 맥락
 
