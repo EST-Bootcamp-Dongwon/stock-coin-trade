@@ -523,6 +523,28 @@ orphan 검사(② ')는 여태 유일하게 **동작하던** 복구 절차를 �
 **이번에 생긴 격차가 아니라 ⑬ 부터 그랬다.** `test_두_구현이_자격증명에_같은_답을_낸다`
 가 Supabase 를 넣지 않아 드러나지 않는다. 고칠 자리로 남긴다.
 
+### 적용 — 2026-09-17 (둘 다 프로덕션 반영)
+
+순서대로 적용했고, 각 단계를 **읽기 전용 조회로 실측**했다. 사이에 push(= 배포)를 넣었다.
+
+| 확인 | 값 |
+|---|---|
+| `workspace_verify_passcode` | 존재 · `returns boolean` · 🔴 **`provolatile = 'v'`**(STABLE 아님) · `security definer` · `search_path=public, pg_temp` |
+| 새 함수 ACL | `anon=X` · `authenticated=X` · **PUBLIC 없음** |
+| `workspace_ct_eq` | 여전히 `postgres`·`service_role` 뿐 — 비교 오라클 미노출 |
+| 검증 동작 | 없는 조 → `false` · `null` → `false`(`coalesce` 가 산다) |
+| 인덱스 | `CREATE UNIQUE INDEX … ON public.workspace_event USING btree (team_id) WHERE (kind = 'team.created'::text)` |
+| `workspace_append` | 거절문 있음 · **거절이 passcode 검사보다 앞**(`prosrc` 위치 비교) |
+| `workspace_create_team` | orphan 검사 있음 · `v_written = 0` 분기 있음 · **`return 1;` 없음** |
+| 테이블 주석 | 갱신됨(`workspace_verify_passcode` 를 포함) |
+| 🔒 살아 있는 거절 | `workspace_append(…, [{"kind":"team.created", …}])` → `P0001: 조 생성은 append 로 하지 않는다 — workspace_create_team 을 쓴다` (line 25 at RAISE) |
+| 🔒 부작용 | 위 probe **전후 원장 0행** — 거절이 삽입 앞이라 한 줄도 쓰이지 않았다 |
+
+⚠️ 적용 시점의 배포 앱은 **Supabase 를 쓰지 않았다** — Streamlit Secrets 에
+`SUPABASE_URL`·`SUPABASE_ANON_KEY` 가 없어 `data.workspace_store()` 가 HF 원장으로
+내려간다(2026-09-17 화면 확인). 그래서 순서 위험이 실제로는 발생하지 않았다.
+🔴 **Secrets 에 그 둘을 넣는 순간 이 순서가 다시 중요해진다.**
+
 ### 결과
 
 - 테스트 **734 → 745건** · backend 골든 23건 · 마이그레이션 **2건** · `requirements.txt` 증가 0
