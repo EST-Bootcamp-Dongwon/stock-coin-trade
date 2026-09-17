@@ -17,11 +17,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from sector.scoring import AXES, PRESETS
+from dashboard.weights import Weighting
+from sector.scoring import AXES, PRESETS, rank_scores, weighted_score_bp
 
-__all__ = ["PROFILES", "Names", "latest_frame", "rank_stability", "stability_window",
+__all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "Names", "ViewError",
+           "latest_frame", "scored", "rank_stability", "stability_window",
            "sector_story", "podium", "score_bars", "arithmetic_table",
-           "ranking_table", "axis_breakdown"]
+           "ranking_table", "axis_breakdown", "gics_options", "visible_ids"]
+
+
+class ViewError(RuntimeError):
+    """화면에 그릴 수 없는 입력이다. 🔒 조용히 한 줄 버리고 그리지 않는다."""
+
+
+#: `scored()` 가 붙이는 열. 🔒 **새 이름**이다 — `score_balanced_bp` 를 덮어쓰지 않는다.
+#:    덮으면 에이전트 guard 의 "`view` 를 거치지 않고 원천에서 다시 얻는다"
+#:    (ADR-SC-0013 ④-1)가 그 순간 거짓이 된다.
+SCORE_COLUMN = "score_bp"
+RANK_COLUMN = "rank"
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,8 +84,94 @@ def latest_frame(frame: Any) -> Any:
     return frame[frame["bas_dd"] == frame["bas_dd"].max()].copy()
 
 
-def rank_stability(frame: Any, *, profile: str = "balanced", days: int = 20) -> Any:
-    """최근 `days` 영업일의 평균 순위와 진폭(표준편차).
+def scored(frame: Any, weighting: Weighting) -> Any:
+    """`score_bp` · `rank` 열을 붙인 프레임. **화면의 표·막대·등수는 이것만 읽는다.**
+
+    ## 🔴 프리셋은 저장된 열을 그대로 읽는다 — 다시 계산하지 않는다
+
+    앱이 프리셋까지 재계산하면, HF 에 **옛 파생본**이 올라가 있는 동안 화면 위쪽
+    표(재계산)와 아래쪽 근거·에이전트(저장 열)가 **다른 숫자를 말한다.** 2026-09-17
+    실측에서 최근 20영업일 창의 첫날이 갈려 한 섹터의 순위 진폭이 표에서 4.4,
+    근거에서 4.5 로 나왔다. guard 는 장부와 저장 열을 대조하므로 그것을 못 잡는다.
+
+    그래서 프리셋은 **게시된 값이 정답**이고, 그 값이 게시된 z 로 재현된다는 보증은
+    화면이 아니라 **게시 게이트**(`gate._check_score_reproducible`)가 선다.
+
+    커스텀 가중치에는 저장된 열이 없으므로 그때만 `weighted_score_bp` 로 다시 낸다 —
+    배치가 쓰는 바로 그 함수다. 🔒 두 화면이 점수를 각자 구현하지 않는다(`AGENTS.md` 6장).
+    """
+    import pandas as pd
+
+    out = frame.copy()
+    # 🔒 **자리로 넣는다.** 색인 라벨로 맞추면 색인이 중복된 프레임에서 한 값이 여러
+    #    행으로 퍼진다 — 실제로 커스텀 경로가 21행에 같은 점수를 조용히 넣었다(2026-09-17).
+    #    `.array` 는 `Int64` 를 지키면서 자리로 들어간다.
+    if weighting.is_preset:
+        out[SCORE_COLUMN] = frame[weighting.column("score")].array
+        out[RANK_COLUMN] = frame[weighting.column("rank")].array
+        return out
+
+    work = frame.reset_index(drop=True)      # 🔒 0..n-1 로 다시 세운 **자리** 색인
+    scores: list[int | None] = [None] * len(work)
+    ranks: list[int | None] = [None] * len(work)
+    for day, group in work.groupby("bas_dd", sort=False):
+        again: dict[str, int | None] = {}
+        at: dict[str, int] = {}
+        for position, row in zip(group.index, group.itertuples(index=False), strict=True):
+            sector_id = str(row.sector_id)
+            if sector_id in again:
+                # 🔴 하루에 같은 섹터가 둘이면 순위가 조용히 한 줄을 잃는다
+                raise ViewError(f"{day} 에 섹터 {sector_id} 가 두 번 있다 — 파생본이 깨졌다")
+            at[sector_id] = int(position)
+            again[sector_id] = weighted_score_bp(
+                {a: _int_or_none(getattr(row, f"{_AXIS_PREFIX[a]}_z_bp")) for a in AXES},
+                weighting.weights)
+        ranked = rank_scores(again)
+        for sector_id, position in at.items():
+            scores[position] = again[sector_id]
+            ranks[position] = ranked[sector_id]
+
+    # 🔒 nullable `Int64` 다. `None` 이 섞인 정수 열을 pandas 가 `float64` 로 올리면
+    #    규약이 금지한 float 가 화면 계층에 들어온다 (V26 · `AGENTS.md` 4장)
+    out[SCORE_COLUMN] = pd.array(scores, dtype="Int64")
+    out[RANK_COLUMN] = pd.array(ranks, dtype="Int64")
+    return out
+
+
+def gics_options(frame: Any, names: "Names | None" = None) -> list[tuple[str, str]]:
+    """그날 표에 실재하는 GICS 대분류 — `(id, 한국어 이름)` 을 이름순으로.
+
+    🔒 `sectors.yaml` 전체가 아니라 **프레임에 있는 것**만 준다. 없는 대분류를
+       필터 목록에 두면 고르는 순간 표가 비고, 사용자는 이유를 모른다.
+    """
+    names = names or Names.empty()
+    present = sorted({str(g) for g in latest_frame(frame)["gics"] if str(g)})
+    return [(g, names.gics_label(g)) for g in present]
+
+
+def visible_ids(frame: Any, *, gics: "frozenset[str] | None" = None,
+                hide_illiquid: bool = False, hide_single_etf: bool = False) -> frozenset[str]:
+    """화면에 **보일** 섹터 id. 🔴 점수를 다시 매기지 않는다 — 행을 숨기는 판정뿐이다.
+
+    🔴 **`liquidity_ok is False` 만 숨긴다.** `None` 은 20영업일 창이 안 차서 아직
+       판정할 수 없다는 뜻이고, 미달과 같은 것이 아니다 (ADR-SC-0007 ·
+       `scoring._liquidity_ok` · `test_유동성은_판정불가와_미달을_구별한다`).
+       둘을 한 조건에 묶으면 신규 상장 ETF 가 이유 없이 화면에서 사라진다.
+    """
+    latest = latest_frame(frame).set_index("sector_id")
+    keep = set(latest.index)
+    if gics:
+        keep &= {sid for sid in latest.index if str(latest.loc[sid, "gics"]) in gics}
+    if hide_illiquid:
+        keep -= {sid for sid in latest.index
+                 if _bool_or_none(latest.loc[sid, "liquidity_ok"]) is False}
+    if hide_single_etf:
+        keep -= {sid for sid in latest.index if _int_or_none(latest.loc[sid, "etf_n"]) == 1}
+    return frozenset(keep)
+
+
+def rank_stability(frame: Any, *, days: int = 20) -> Any:
+    """최근 `days` 영업일의 평균 순위와 진폭(표준편차). 🔒 입력은 `scored()` 를 지난 프레임이다.
 
     🔒 `days` 가 부족한 섹터는 **채우지 않는다** — 결과가 `NaN` 으로 남고 화면이
        `—` 로 그린다. 짧은 이력을 긴 이력인 척하면 안정성이 거짓이 된다.
@@ -83,7 +182,7 @@ def rank_stability(frame: Any, *, profile: str = "balanced", days: int = 20) -> 
     """
     import pandas as pd
 
-    column = f"rank_{profile}"
+    column = RANK_COLUMN
     recent_days = sorted(frame["bas_dd"].unique())[-days:]
     recent = frame[frame["bas_dd"].isin(recent_days)]
     grouped = recent.groupby("sector_id")[column]
@@ -103,16 +202,19 @@ def stability_window(frame: Any, *, days: int) -> int:
     return min(days, len(frame["bas_dd"].unique()))
 
 
-def ranking_table(frame: Any, *, profile: str = "balanced", days: int = 20,
-                  names: Names | None = None) -> Any:
-    """랭킹 화면이 그대로 그리는 표.
+def ranking_table(frame: Any, *, days: int = 20, names: Names | None = None) -> Any:
+    """랭킹 화면이 그대로 그리는 표. 🔒 입력은 `scored()` 를 지난 프레임이다.
 
     🔒 열을 여기서 고른다 — 페이지가 프레임을 자유롭게 파면 화면마다 다른 열이
        나오고, "무엇을 보여주는가" 를 아무도 결정하지 않은 상태가 된다.
+
+    🔴 **필터링은 여기서 하지 않는다.** 순위·점수는 언제나 그날 21개 섹터 횡단면에서
+       나온 값이고, 필터는 페이지가 **행을 숨기는** 일일 뿐이다. 여기서 걸러 버리면
+       z 와 순위가 고른 범위 안에서 다시 매겨진 것처럼 읽힌다.
     """
     names = names or Names.empty()
     latest = latest_frame(frame).set_index("sector_id")
-    stability = rank_stability(frame, profile=profile, days=days)
+    stability = rank_stability(frame, days=days)
     joined = latest.join(stability, how="left")
     # 🔴 한국어 이름을 열로 넣는다. 코드는 색인으로 남아 원장·yaml 과 대조된다
     joined.insert(0, "섹터", [names.sector_label(sid) for sid in joined.index])
@@ -120,9 +222,9 @@ def ranking_table(frame: Any, *, profile: str = "balanced", days: int = 20,
 
     columns = {
         "섹터": "섹터",
-        f"rank_{profile}": "순위",
+        RANK_COLUMN: "순위",
         "gics": "GICS",
-        f"score_{profile}_bp": "점수bp",
+        SCORE_COLUMN: "점수bp",
         "rank_mean": "평균순위",
         "rank_spread": "진폭",
         "rank_days": "표본일",     # 🔴 평균을 실제로 몇 일에서 냈는지
@@ -138,7 +240,8 @@ def ranking_table(frame: Any, *, profile: str = "balanced", days: int = 20,
     return table.sort_values("순위")
 
 
-def axis_breakdown(frame: Any, sector_id: str, *, profile: str = "balanced") -> list[dict[str, Any]]:
+def axis_breakdown(frame: Any, sector_id: str, *,
+                   weights: Mapping[str, int]) -> list[dict[str, Any]]:
     """한 섹터의 4축 분해 — 원시값 · z · 가중치 · 기여.
 
     🔴 **기여도가 이 표의 요점이다.** "왜 1위인가" 는 어느 축이 점수를 끌어올렸나로
@@ -149,7 +252,6 @@ def axis_breakdown(frame: Any, sector_id: str, *, profile: str = "balanced") -> 
     if len(rows) == 0:
         return []
     row = rows.iloc[0]
-    weights = PRESETS[profile]
 
     live = [a for a in AXES if _notna(row.get(f"{_AXIS_PREFIX[a]}_z_bp"))]
     total_weight = sum(weights[a] for a in live) or 1
@@ -203,7 +305,10 @@ def sector_story(frame: Any, sector_id: str, *, profile: str = "balanced",
     if sector_id not in latest.index:
         return {}
     row = latest.loc[sector_id]
-    stability = rank_stability(frame, profile=profile, days=days)
+    # 🔒 **프리셋 전용이다.** 에이전트 guard 가 근거의 출처를 `rank_{profile}` 이라는
+    #    저장 열 이름으로 적으므로(ADR-SC-0013 · `inventory.py`), 이름 없는 가중치로는
+    #    대조할 원천이 없다. 그래서 여기서 `scored()` 를 프리셋으로 한 번 지난다
+    stability = rank_stability(scored(frame, Weighting.preset(profile)), days=days)
     stat = stability.loc[sector_id] if sector_id in stability.index else None
 
     return {
@@ -211,7 +316,7 @@ def sector_story(frame: Any, sector_id: str, *, profile: str = "balanced",
         "rank": _int_or_none(row.get(f"rank_{profile}")),
         "total": len(latest),
         "score_bp": _int_or_none(row.get(f"score_{profile}_bp")),
-        "parts": axis_breakdown(frame, sector_id, profile=profile),
+        "parts": axis_breakdown(frame, sector_id, weights=PRESETS[profile]),
         "mean_rank": _float_or_none(stat["rank_mean"]) if stat is not None else None,
         "spread": _float_or_none(stat["rank_spread"]) if stat is not None else None,
         "window": stability_window(frame, days=days),
@@ -222,8 +327,9 @@ def sector_story(frame: Any, sector_id: str, *, profile: str = "balanced",
     }
 
 
-def podium(frame: Any, *, profile: str = "balanced", top: int = 3,
-           names: Names | None = None) -> list[dict[str, Any]]:
+def podium(frame: Any, *, weighting: Weighting, top: int = 3,
+           names: Names | None = None,
+           only: "frozenset[str] | None" = None) -> list[dict[str, Any]]:
     """상위 `top` 섹터 — **등수 카드가 그리는 것.**
 
     🔴 표만 있으면 21행을 눈으로 훑어야 "1등이 누구인가" 를 안다. 개발자가 아닌
@@ -235,20 +341,24 @@ def podium(frame: Any, *, profile: str = "balanced", top: int = 3,
     """
     names = names or Names.empty()
     latest = latest_frame(frame).set_index("sector_id")
-    column = f"rank_{profile}"
-    ordered = latest[latest[column].notna()].nsmallest(top, column)
+    column = RANK_COLUMN
+    pool = latest if only is None else latest[latest.index.isin(only)]
+    ordered = pool[pool[column].notna()].nsmallest(top, column)
 
     out = []
     for sector_id in ordered.index:
         row = ordered.loc[sector_id]
-        parts = axis_breakdown(frame, sector_id, profile=profile)
+        # 🔴 `frame` 을 넘긴다 — 걸러진 것이 아니다. `axis_breakdown` 의 축 순위는
+        #    그날 21개 횡단면에서 나와야 한다. 고른 범위에서 다시 세면 "F 축 1위"가
+        #    "고른 다섯 중 1위"가 되고, 화면은 그 차이를 말하지 않는다
+        parts = axis_breakdown(frame, sector_id, weights=weighting.weights)
         scored = [p for p in parts if p["contribution_bp"] is not None]
         best = max(scored, key=lambda p: p["contribution_bp"]) if scored else None
         out.append({
             "sector_id": sector_id,
             "label": names.sector_label(sector_id),
             "rank": _int_or_none(row[column]),
-            "score_bp": _int_or_none(row[f"score_{profile}_bp"]),
+            "score_bp": _int_or_none(row[SCORE_COLUMN]),
             # 🔒 기여가 음수뿐이면 "끌어올린 축" 은 없다. 지어내지 않는다
             "lead_axis": best["axis"] if best and best["contribution_bp"] > 0 else None,
             "liquidity_ok": _bool_or_none(row.get("liquidity_ok")),
@@ -257,8 +367,8 @@ def podium(frame: Any, *, profile: str = "balanced", top: int = 3,
     return out
 
 
-def score_bars(frame: Any, *, profile: str = "balanced",
-               names: Names | None = None) -> Any:
+def score_bars(frame: Any, *, names: Names | None = None,
+               only: "frozenset[str] | None" = None) -> Any:
     """막대 차트가 그대로 받는 프레임 — 색인은 한국어 이름, 값은 σ.
 
     🔴 **bp 가 아니라 σ 로 넘긴다.** 막대는 눈금을 읽히려고 두는 것이 아니라
@@ -272,8 +382,9 @@ def score_bars(frame: Any, *, profile: str = "balanced",
 
     names = names or Names.empty()
     latest = latest_frame(frame).set_index("sector_id")
-    column = f"score_{profile}_bp"
-    ordered = latest[latest[f"rank_{profile}"].notna()].sort_values(f"rank_{profile}")
+    column = SCORE_COLUMN
+    pool = latest if only is None else latest[latest.index.isin(only)]
+    ordered = pool[pool[RANK_COLUMN].notna()].sort_values(RANK_COLUMN)
     return pd.DataFrame(
         {"점수(σ)": [_float_or_none(v) / 10000 if _float_or_none(v) is not None else None
                      for v in ordered[column]]},
@@ -293,7 +404,8 @@ def _bool_or_none(value: Any) -> bool | None:
     return bool(value) if _notna(value) else None
 
 
-def arithmetic_table(frame: Any, sector_id: str, *, profile: str = "balanced") -> Any:
+def arithmetic_table(frame: Any, sector_id: str, *,
+                     weights: Mapping[str, int] = PRESETS["balanced"]) -> Any:
     """한 섹터의 **산수를 그대로 편 표** — 원시값 → σ → 가중치 → 기여.
 
     🔴 읽는법 화면의 예시가 이것을 쓴다. 팀원이 가장 자주 묻는 것은 "이 숫자가
@@ -309,7 +421,7 @@ def arithmetic_table(frame: Any, sector_id: str, *, profile: str = "balanced") -
     from dashboard.explain import axis_raw_text
     from sector.scoring import AXIS_NAMES
 
-    parts = axis_breakdown(frame, sector_id, profile=profile)
+    parts = axis_breakdown(frame, sector_id, weights=weights)
     return pd.DataFrame(
         [{
             "축": f"{AXIS_NAMES[p['axis']]} ({p['axis']})",

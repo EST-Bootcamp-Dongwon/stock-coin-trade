@@ -24,6 +24,7 @@ import re
 from sector.scoring import AXIS_NAMES, PRESETS
 
 __all__ = [
+    "weighting_label",
     "AXIS_MEANING", "AXIS_NOT", "AXIS_UNIT",
     "axis_raw_text", "axis_line", "score_text", "rank_stability_text",
     "josa", "sigma_words", "axis_plain", "narrative",
@@ -138,6 +139,19 @@ def preset_label(profile: str) -> str:
     body = " / ".join(f"{AXIS_NAMES[a]} {weights[a]}" for a in ("M", "F", "B", "V") if a in weights)
     korean = {"balanced": "균형", "momentum": "모멘텀 중시", "contrarian": "역발상"}
     return f"{korean.get(profile, profile)} — {body}"
+
+
+def weighting_label(weighting: Any) -> str:
+    """지금 쓰는 가중치를 한 줄로. 프리셋이면 이름, 아니면 **비율을 그대로** 적는다.
+
+    🔒 커스텀에 이름을 지어 주지 않는다 — "공격형" 같은 말을 붙이면 화면이 그 가중치를
+       추천하는 것처럼 읽힌다. 슬라이더는 민감도를 보는 도구이지 관점이 아니다.
+    """
+    if weighting.is_preset:
+        return preset_label(weighting.name)
+    body = " / ".join(f"{AXIS_NAMES[a]} {weighting.weights[a]}"
+                      for a in ("M", "F", "B", "V") if a in weighting.weights)
+    return f"직접 고른 가중치 — {body}"
 
 
 # ── 서술 — 숫자를 **말로** 바꾼다 ───────────────────────────────────────────

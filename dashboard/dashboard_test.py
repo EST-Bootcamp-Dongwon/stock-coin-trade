@@ -17,8 +17,8 @@ import pytest
 #:    어디서 부르느냐에 따라 어긋난다 (실제로 FileNotFoundError 로 터졌다).
 ROOT = Path(__file__).resolve().parent.parent
 
-from dashboard import explain, view
-from sector.scoring import AXES, PRESETS
+from dashboard import explain, view, weights
+from sector.scoring import AXES, AXIS_NAMES, PRESETS
 
 # ── 뷰 모델 (화면 없이) ─────────────────────────────────────────────────────
 
@@ -46,6 +46,15 @@ def frame(n_sectors: int = 3) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+#: 테스트가 기본으로 쓰는 가중치. 🔒 프리셋이라 `scored()` 가 저장 열을 그대로 읽는다
+BALANCED = weights.Weighting.preset("balanced")
+
+
+def scored(n_sectors: int = 3, weighting: weights.Weighting = BALANCED) -> pd.DataFrame:
+    """`score_bp` · `rank` 가 붙은 프레임 — 표·막대·등수가 읽는 모양."""
+    return view.scored(frame(n_sectors), weighting)
+
+
 def test_마지막_날만_고른다():
     assert set(view.latest_frame(frame())["bas_dd"]) == {DAYS[-1]}
 
@@ -60,7 +69,7 @@ def test_요청한_일수가_없으면_있는_만큼을_말한다():
     assert view.stability_window(data, days=20) == len(DAYS)
     assert view.stability_window(data, days=3) == 3
 
-    stability = view.rank_stability(data, days=20)
+    stability = view.rank_stability(view.scored(data, BALANCED), days=20)
     assert (stability["rank_days"] == len(DAYS)).all()       # 표본일이 사실을 말한다
 
 
@@ -68,7 +77,7 @@ def test_이력이_짧은_섹터는_평균을_내지_않는다():
     """🔒 섹터마다 이력이 다를 수 있다. 짧은 쪽을 긴 척하지 않는다."""
     data = frame()
     data = data[~((data["sector_id"] == "sec_0") & (data["bas_dd"] == DAYS[0]))]
-    stability = view.rank_stability(data, days=len(DAYS))
+    stability = view.rank_stability(view.scored(data, BALANCED), days=len(DAYS))
     assert pd.isna(stability.loc["sec_0", "rank_mean"])      # 하루 모자라 비워 둔다
     assert stability.loc["sec_1", "rank_mean"] == stability.loc["sec_1", "rank_mean"]
 
@@ -77,7 +86,7 @@ def test_기여도_합이_점수와_같다():
     """🔴 축 분해가 게시된 점수와 맞물린다 — '왜 1위인가' 의 근거가 흔들리지 않는다."""
     data = frame()
     for sector_id in data["sector_id"].unique():
-        parts = view.axis_breakdown(data, sector_id)
+        parts = view.axis_breakdown(data, sector_id, weights=PRESETS["balanced"])
         total = sum(p["contribution_bp"] or 0 for p in parts)
         score = int(view.latest_frame(data).set_index("sector_id")
                     .loc[sector_id, "score_balanced_bp"])
@@ -88,7 +97,7 @@ def test_결측축은_기여가_0이_아니라_없음이다():
     """🔒 0 은 '중립적으로 기여했다' 는 뜻이 된다. 없는 것은 없다 (ADR-SC-0007)."""
     data = frame()
     data.loc[data["sector_id"] == "sec_0", "f_z_bp"] = None
-    parts = {p["axis"]: p for p in view.axis_breakdown(data, "sec_0")}
+    parts = {p["axis"]: p for p in view.axis_breakdown(data, "sec_0", weights=PRESETS["balanced"])}
     assert parts["F"]["contribution_bp"] is None
     assert parts["F"]["z_bp"] is None
 
@@ -96,18 +105,19 @@ def test_결측축은_기여가_0이_아니라_없음이다():
 def test_결측축이_있으면_나머지_가중치가_다시_나뉜다():
     data = frame()
     data.loc[data["sector_id"] == "sec_0", "f_z_bp"] = None
-    parts = [p for p in view.axis_breakdown(data, "sec_0") if p["contribution_bp"] is not None]
+    parts = [p for p in view.axis_breakdown(data, "sec_0", weights=PRESETS["balanced"])
+             if p["contribution_bp"] is not None]
     live_weight = sum(PRESETS["balanced"][p["axis"]] for p in parts)
     assert live_weight == 100 - PRESETS["balanced"]["F"]
 
 
 def test_없는_섹터는_빈_목록이다():
-    assert view.axis_breakdown(frame(), "없는섹터") == []
+    assert view.axis_breakdown(frame(), "없는섹터", weights=PRESETS["balanced"]) == []
 
 
 @pytest.mark.parametrize("profile", list(PRESETS))
 def test_프리셋마다_표가_나온다(profile):
-    table = view.ranking_table(frame(), profile=profile)
+    table = view.ranking_table(scored(weighting=weights.Weighting.preset(profile)))
     assert len(table) == 3 and "순위" in table.columns
 
 
@@ -121,7 +131,7 @@ KOREAN = view.Names(sector={"sec_0": "가", "sec_1": "나", "sec_2": "철강"},
 
 def test_랭킹표에_한국어_이름이_들어간다():
     """🔴 `names=` 를 빠뜨리면 표가 조용히 코드를 그린다 — 실제로 그랬다."""
-    table = view.ranking_table(frame(), names=KOREAN)
+    table = view.ranking_table(scored(), names=KOREAN)
     assert list(table["섹터"]) == [KOREAN.sector_label(s) for s in table.index]
     assert "철강" in set(table["섹터"])
     assert set(table["GICS"]) == {"산업재"}
@@ -129,12 +139,12 @@ def test_랭킹표에_한국어_이름이_들어간다():
 
 def test_이름을_모르면_코드를_그대로_준다():
     """🔒 지어내지 않는다. `sectors.yaml` 을 못 읽어도 화면은 산다."""
-    table = view.ranking_table(frame(), names=view.Names.empty())
+    table = view.ranking_table(scored(), names=view.Names.empty())
     assert list(table["섹터"]) == list(table.index)
 
 
 def test_등수_카드는_순위_순서로_상위만_준다():
-    entries = view.podium(frame(), top=2, names=KOREAN)
+    entries = view.podium(scored(), weighting=BALANCED, top=2, names=KOREAN)
     assert [e["rank"] for e in entries] == [1, 2]
     assert entries[0]["label"] == "철강"          # sec_2 가 1위다
     assert all(e["sector_id"] in KOREAN.sector for e in entries)
@@ -145,7 +155,7 @@ def test_끌어올린_축이_없으면_지어내지_않는다():
     data = frame()
     for column in ("m_z_bp", "f_z_bp", "b_z_bp", "v_z_bp"):
         data[column] = -5000
-    entry = view.podium(data, top=1)[0]
+    entry = view.podium(view.scored(data, BALANCED), weighting=BALANCED, top=1)[0]
     assert entry["lead_axis"] is None
     assert "지어" not in explain.lead_axis_text(None)      # 문구가 존재한다
     assert "없다" in explain.lead_axis_text(None)
@@ -154,12 +164,13 @@ def test_끌어올린_축이_없으면_지어내지_않는다():
 def test_끌어올린_축은_기여가_가장_큰_축이다():
     data = frame()
     data["f_z_bp"] = 29000                       # 자금흐름만 크게 띄운다
-    assert view.podium(data, top=1)[0]["lead_axis"] == "F"
+    assert view.podium(view.scored(data, BALANCED), weighting=BALANCED,
+                       top=1)[0]["lead_axis"] == "F"
 
 
 def test_막대는_순위_순서와_σ_로_준다():
     """🔒 화면이 `sort=False` 로 그리므로 이 순서가 곧 화면 순서다."""
-    bars = view.score_bars(frame(), names=KOREAN)
+    bars = view.score_bars(scored(), names=KOREAN)
     assert list(bars.index) == ["철강", "나", "가"]          # 1위부터
     assert bars["점수(σ)"].iloc[0] == pytest.approx(
         view.latest_frame(frame()).set_index("sector_id")
@@ -1062,3 +1073,296 @@ def test_옛_형식_원장이면_참가할_수_없다고_말한다(ledger, tmp_p
     at.button(key="FormSubmitter:join-참가").click().run()
     assert any("passcode" in e.value for e in at.error)
     assert "sc_team_id" not in at.session_state
+
+
+# ═══ M9 — 가중치 · 필터 (2026-09-17) ════════════════════════════════════════
+
+def test_비율이_같으면_프리셋으로_돌아온다():
+    """🔴 `Σw·z/Σw` 는 가중치 스칼라배에 불변이다 — 70/60/40/30 은 균형과 **점수가 같다.**
+
+    숫자가 한 칸도 다르지 않은데 모드만 커스텀으로 남으면 근거·확정 칸이 이유 없이
+    닫힌다. 그건 화면의 거짓말이다.
+    """
+    assert weights.Weighting.of({"M": 70, "F": 60, "B": 40, "V": 30}).name == "balanced"
+    assert weights.Weighting.of({"M": 7, "F": 6, "B": 4, "V": 3}).name == "balanced"
+    assert weights.Weighting.of(dict(PRESETS["contrarian"])).name == "contrarian"
+
+
+def test_이름_없는_비율은_커스텀이다():
+    custom = weights.Weighting.of({"M": 10, "F": 10, "B": 10, "V": 70})
+    assert custom.name is None and not custom.is_preset
+    with pytest.raises(weights.WeightError):
+        custom.column("score")      # 🔒 커스텀에 저장된 열이 있는 척하지 않는다
+
+
+def test_쓸_수_없는_가중치를_거절한다():
+    """🔴 전부 0 이면 모든 섹터 점수가 `None` 이 되어 표가 통째로 빈다."""
+    with pytest.raises(weights.WeightError, match="전부 0"):
+        weights.Weighting.of({"M": 0, "F": 0, "B": 0, "V": 0})
+    with pytest.raises(weights.WeightError):
+        weights.Weighting.of({"M": -1, "F": 30, "B": 20, "V": 15})
+    with pytest.raises(weights.WeightError):
+        weights.Weighting.of({"M": weights.MAX_WEIGHT + 1, "F": 30, "B": 20, "V": 15})
+    with pytest.raises(weights.WeightError):
+        weights.Weighting.of({"M": 35, "F": 30, "B": 20})            # 축이 모자라다
+    with pytest.raises(weights.WeightError, match="정수"):
+        # 🔒 `bool` 은 `int` 의 하위형이다 — `True` 가 1 로 통과하면 안 된다
+        weights.Weighting.of({"M": True, "F": 30, "B": 20, "V": 15})
+
+
+def test_프리셋은_저장된_열을_그대로_읽는다():
+    """🔴 재계산하지 않는다. HF 에 옛 파생본이 있는 동안 화면 위(표)와 아래(근거)가
+    다른 숫자를 말하게 되기 때문이다 (`view.scored` 머리주석)."""
+    data = frame()
+    out = view.scored(data, BALANCED)
+    assert list(out[view.SCORE_COLUMN]) == list(data["score_balanced_bp"])
+    assert list(out[view.RANK_COLUMN]) == list(data["rank_balanced"])
+
+
+def test_scored_는_저장된_열을_덮지_않는다():
+    """🔒 덮으면 에이전트 guard 의 "`view` 를 거치지 않고 원천에서 다시 얻는다"
+    (ADR-SC-0013 ④-1)가 그 순간 거짓이 된다."""
+    data = frame()
+    out = view.scored(data, weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0}))
+    for column in ("score_balanced_bp", "rank_balanced", "score_momentum_bp"):
+        assert list(out[column]) == list(data[column]), column
+
+
+def test_커스텀은_배치가_쓰는_함수로_다시_잰다():
+    """🔒 화면이 점수를 따로 구현하지 않는다 (`AGENTS.md` 6장)."""
+    from sector.scoring import weighted_score_bp
+
+    custom = weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0})
+    out = view.scored(frame(), custom)
+    for row in out.itertuples(index=False):
+        again = weighted_score_bp({"M": row.m_z_bp, "F": row.f_z_bp,
+                                   "B": row.b_z_bp, "V": row.v_z_bp}, custom.weights)
+        assert row.score_bp == again
+    # 날마다 1..N 으로 이어진다
+    for _, group in out.groupby("bas_dd"):
+        assert sorted(group[view.RANK_COLUMN]) == list(range(1, len(group) + 1))
+
+
+def test_색인이_중복돼도_행마다_제_점수가_들어간다():
+    """🔴 색인 **라벨**로 맞추면 중복 색인에서 한 값이 여러 행으로 퍼진다.
+
+    2026-09-17 구현 점검에서 실제로 잡혔다 — 커스텀 경로가 모든 행에 같은 점수를
+    **조용히** 넣었다. 그래서 `scored()` 는 라벨이 아니라 **자리**로 넣는다.
+    🔒 프리셋 경로도 같은 규율이다(`.array`) — 한쪽만 고치면 다음 사람이 헷갈린다.
+    """
+    plain = frame()
+    duplicated = frame()
+    duplicated.index = [0] * len(duplicated)
+    for weighting in (BALANCED, weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0})):
+        expected = list(view.scored(plain, weighting)[view.SCORE_COLUMN])
+        assert list(view.scored(duplicated, weighting)[view.SCORE_COLUMN]) == expected
+    # 🔒 프리셋은 저장 열 그대로다 — 자리로 넣어도 값이 안 밀린다
+    assert list(view.scored(duplicated, BALANCED)[view.SCORE_COLUMN]) == \
+           list(plain["score_balanced_bp"])
+
+
+def test_scored_는_Int64_를_지킨다():
+    """🔒 `None` 이 섞인 정수 열을 pandas 가 `float64` 로 올리면 규약이 금지한 float 가
+    화면 계층에 들어온다 (V26 · `AGENTS.md` 4장)."""
+    data = frame()
+    data.loc[data["sector_id"] == "sec_0", "m_z_bp"] = pd.NA
+    only_m = weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0})
+    out = view.scored(data, only_m)
+    assert str(out[view.SCORE_COLUMN].dtype) == "Int64"
+    assert str(out[view.RANK_COLUMN].dtype) == "Int64"
+    # M 축이 없으면 살아 있는 축의 가중치가 전부 0 이라 점수가 **없다** — 0 이 아니다
+    missing = out[out["sector_id"] == "sec_0"]
+    assert missing[view.SCORE_COLUMN].isna().all()
+    assert missing[view.RANK_COLUMN].isna().all()
+
+
+def test_하루에_같은_섹터가_둘이면_던진다():
+    """🔒 조용히 한 줄을 잃지 않는다 — 순위가 말없이 비뚤어진다."""
+    data = pd.concat([frame(), frame().tail(1)], ignore_index=True)
+    with pytest.raises(view.ViewError, match="두 번"):
+        view.scored(data, weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0}))
+
+
+def _liquidity_frame() -> pd.DataFrame:
+    """유동성이 참·거짓·판정불가로 갈리는 최신일 프레임."""
+    data = frame(n_sectors=3)
+    last = data["bas_dd"] == DAYS[-1]
+    data["liquidity_ok"] = data["liquidity_ok"].astype("object")
+    data.loc[last & (data["sector_id"] == "sec_1"), "liquidity_ok"] = False
+    data.loc[last & (data["sector_id"] == "sec_2"), "liquidity_ok"] = None
+    data.loc[last & (data["sector_id"] == "sec_2"), "etf_n"] = 1
+    return data
+
+
+def test_유동성_판정불가는_숨기지_않는다():
+    """🔴 "아직 모른다"(창이 안 참)와 "미달이다"는 다른 말이다 (ADR-SC-0007).
+
+    한 조건에 묶으면 신규 상장 ETF 가 이유 없이 화면에서 사라진다.
+    """
+    data = _liquidity_frame()
+    assert view.visible_ids(data, hide_illiquid=True) == frozenset({"sec_0", "sec_2"})
+
+
+def test_ETF_1종_숨기기는_유동성과_별개다():
+    data = _liquidity_frame()
+    assert view.visible_ids(data, hide_single_etf=True) == frozenset({"sec_0", "sec_1"})
+    assert view.visible_ids(data, hide_illiquid=True,
+                            hide_single_etf=True) == frozenset({"sec_0"})
+
+
+def test_GICS_필터는_고른_대분류만_남긴다():
+    data = frame()
+    data.loc[data["sector_id"] == "sec_0", "gics"] = "Materials"
+    assert view.visible_ids(data, gics=frozenset({"Materials"})) == frozenset({"sec_0"})
+    # 🔒 빈 선택은 "전체" 다 — 0개를 남기지 않는다
+    assert len(view.visible_ids(data, gics=frozenset())) == 3
+
+
+def test_GICS_선택지는_프레임에_있는_것만_준다():
+    """🔒 없는 대분류를 목록에 두면 고르는 순간 표가 비고, 사용자는 이유를 모른다."""
+    data = frame()
+    data.loc[data["sector_id"] == "sec_0", "gics"] = "Materials"
+    assert view.gics_options(data, KOREAN) == [("Industrials", "산업재"),
+                                               ("Materials", "Materials")]
+
+
+def test_필터를_걸어도_등수와_축순위가_전체_기준이다():
+    """🔴 이것이 필터의 핵심 계약이다. 고른 범위에서 다시 매기면 "F 축 1위" 가
+    "고른 셋 중 1위" 가 되고, 화면은 그 차이를 말하지 않는다."""
+    data = view.scored(frame(), BALANCED)
+    full = view.podium(data, weighting=BALANCED, top=3)
+    only_last = view.podium(data, weighting=BALANCED, top=3, only=frozenset({"sec_0"}))
+    assert [e["sector_id"] for e in full] == ["sec_2", "sec_1", "sec_0"]
+    assert len(only_last) == 1 and only_last[0]["sector_id"] == "sec_0"
+    # 걸러도 등수·축 순위가 그대로다 — 1위가 되지 않는다
+    tail = next(e for e in full if e["sector_id"] == "sec_0")
+    assert only_last[0]["rank"] == tail["rank"] == 3
+    assert only_last[0]["score_bp"] == tail["score_bp"]
+
+
+def test_막대도_걸러도_순위_순서를_지킨다():
+    data = view.scored(frame(), BALANCED)
+    bars = view.score_bars(data, names=KOREAN, only=frozenset({"sec_0", "sec_2"}))
+    assert len(bars) == 2
+    assert list(bars.index) == [KOREAN.sector_label("sec_2"), KOREAN.sector_label("sec_0")]
+
+
+# ── 랭킹 화면 — 커스텀 가중치의 경계 (M9) ───────────────────────────────────
+
+def _app_with(**state):
+    """세션 상태를 미리 심은 AppTest. 🔒 위젯이 그려지기 **전**에 심는다."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=120)
+    for key, value in state.items():
+        at.session_state[key] = value
+    at.run()
+    return at
+
+
+CUSTOM_STATE = {"rank_custom": True, "rank_w_M": 10, "rank_w_F": 10,
+                "rank_w_B": 10, "rank_w_V": 70}
+
+
+def test_커스텀_가중치에서는_근거를_열지_않는다(monkeypatch):
+    """🔴 에이전트는 근거의 출처를 `rank_{profile}` 이라는 **저장 열 이름**으로 적고
+    guard 가 그 열에서 값을 다시 얻어 대조한다(ADR-SC-0013 ④-1). 이름 없는 비율에는
+    그 열이 없다.
+
+    🔒 문구가 아니라 **호출**을 본다 — 문구만 보면 나중에 블록이 되살아나도 통과한다.
+    """
+    from dashboard import evidence as evidence_module
+
+    calls: list[str] = []
+    monkeypatch.setattr(evidence_module, "render_evidence",
+                        lambda *a, **k: calls.append("호출됨"))
+
+    custom = _app_with(**CUSTOM_STATE)
+    assert not custom.exception, [str(e)[:200] for e in custom.exception]
+    assert calls == [], "커스텀 가중치에서 근거를 그렸다"
+    from dashboard.pages.ranking import CUSTOM_NOTICE
+    assert any(CUSTOM_NOTICE == i.value for i in custom.info), [i.value for i in custom.info]
+
+    preset = _app_with(rank_custom=False)
+    assert not preset.exception, [str(e)[:200] for e in preset.exception]
+    assert calls, "프리셋에서는 근거를 그려야 한다"
+
+
+def test_프리셋과_같은_비율이면_근거가_다시_열린다(monkeypatch):
+    """🔒 슬라이더를 균형 값으로 맞추면 커스텀 모드에 남지 않는다 — 점수가 같기 때문이다."""
+    from dashboard import evidence as evidence_module
+
+    calls: list[str] = []
+    monkeypatch.setattr(evidence_module, "render_evidence",
+                        lambda *a, **k: calls.append("호출됨"))
+    at = _app_with(rank_custom=True, rank_w_M=70, rank_w_F=60, rank_w_B=40, rank_w_V=30)
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+    assert calls, "균형과 같은 비율인데 근거가 닫혔다"
+
+
+def test_슬라이더가_네_축_모두에_있다():
+    at = _app_with()
+    assert {s.label for s in at.slider} == {
+        f"{AXIS_NAMES[a]} ({a})" for a in AXES}, [s.label for s in at.slider]
+
+
+def test_필터가_행을_줄이되_점수는_그대로다():
+    """🔒 필터는 행을 숨길 뿐이다 — 순위 번호가 이어지지 않는 것이 **정상**이다."""
+    at = _app_with(rank_hide_single=True)
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+    assert any("개 표시" in c.value for c in at.caption)
+
+
+# ── 구조 — 조용히 실패할 수 있는 경로를 소스로 못박는다 ──────────────────────
+
+def test_하단에는_원본_프레임을_넘긴다():
+    """🔴 `sector_story` 의 `total` 이 "21개 중 3위" 의 21 이다. 걸러진 프레임이나
+    `scored()` 를 지난 프레임이 새면 그 문장이 "5개 중 1위" 가 된다.
+    """
+    source = (ROOT / "dashboard" / "pages" / "ranking.py").read_text(encoding="utf-8")
+    for call in ("_render_breakdown(", "team_actions.render_sector_actions("):
+        line = next(l for l in source.splitlines() if call in l and "def " not in l)
+        first = line.split(call, 1)[1].split(",")[0].strip()
+        assert first == "frame", f"{call} 의 첫 인자가 {first!r} 다 — 원본이어야 한다"
+
+
+def test_위젯을_그린_뒤에_session_state_를_쓰지_않는다():
+    """🔴 Streamlit 은 **위젯 키**에 대한 대입이 그 위젯 생성 뒤에 오면
+    `StreamlitWidgetAlreadyInstantiatedError` 를 던진다. `evidence._reset_on_new_sector`
+    가 주석으로만 지키던 규율(*"위젯을 그리기 전에 부른다"*)을 테스트로 내린다.
+
+    🔒 "위젯 키인가" 는 정적으로 못 가른다 — 그래서 **쓰는 자리를 통째로 적어 둔다.**
+       새 자리가 생기면 여기가 깨지고, 왜 안전한지를 적어야 통과한다. 그게 요점이다.
+    """
+    import ast
+
+    # (파일, 함수) → 왜 안전한가
+    allowed = {
+        ("ranking.py", "_reset_sliders"): "버튼 콜백 — 스크립트 본문보다 먼저 돈다",
+        ("evidence.py", "_fill"): "버튼 콜백",
+        ("evidence.py", "_reset_on_new_sector"): "위젯을 그리기 전에 부른다",
+        ("evidence.py", "render_evidence"): "인계 기록 — 위젯 키가 아니다",
+        ("session.py", "set_actor"): "위젯 키가 아니다",
+        ("session.py", "set_team"): "위젯 키가 아니다",
+        ("session.py", "set_credential"): "위젯 키가 아니다",
+        ("team_actions.py", "_open"): "모달 플래그 — 위젯 키가 아니다",
+        ("team_actions.py", "_succeed"): "플래시 — 위젯 키가 아니다",
+    }
+    found = set()
+    for path in (ROOT / "dashboard").rglob("*.py"):
+        if path.name.endswith("_test.py"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in [n for n in ast.walk(tree)
+                         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            for node in ast.walk(function):
+                targets = (node.targets if isinstance(node, ast.Assign)
+                           else [node.target] if isinstance(node, ast.AugAssign) else [])
+                for target in targets:
+                    if (isinstance(target, ast.Subscript)
+                            and isinstance(target.value, ast.Attribute)
+                            and target.value.attr == "session_state"):
+                        found.add((path.name, function.name))
+    assert found == set(allowed), (
+        f"session_state 에 쓰는 자리가 바뀌었다 — 새로 생긴 것 {found - set(allowed)} · "
+        f"사라진 것 {set(allowed) - found}. 콜백이거나 위젯 키가 아님을 확인하고 적는다")

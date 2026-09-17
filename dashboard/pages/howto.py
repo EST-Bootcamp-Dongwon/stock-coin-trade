@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from dashboard import data, theme, view
+from dashboard import data, theme, view, weights
 from dashboard.explain import (
     AXIS_MEANING, AXIS_NOT, AXIS_UNIT, axis_plain, narrative, preset_label,
 )
@@ -87,7 +87,10 @@ def _render_worked_example() -> None:
         return
 
     names = data.sector_names()
-    top = view.podium(frame, top=1, names=names)
+    # 🔒 읽는 법 화면은 **언제나 균형 프리셋**이다. 랭킹의 슬라이더를 따라가면
+    #    "네 걸음" 설명이 사람마다 다른 숫자 위에서 돌아간다
+    balanced = weights.Weighting.preset("balanced")
+    top = view.podium(view.scored(frame, balanced), weighting=balanced, top=1, names=names)
     if not top:
         return
     sector_id = top[0]["sector_id"]
