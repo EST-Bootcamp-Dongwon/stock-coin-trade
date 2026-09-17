@@ -71,7 +71,7 @@ def render() -> None:
         total = len(view.latest_frame(frame))
         names = data.sector_names()
 
-        weighting = _weight_controls()
+        weighting, profile = _weight_controls()
         keep = _filters(frame, names)
 
         st.caption(
@@ -81,8 +81,9 @@ def render() -> None:
         )
         if not weighting.is_preset:
             st.info(CUSTOM_NOTICE)
-            st.button("균형 프리셋으로 돌아가기", key="rank_back", on_click=_reset_sliders,
-                      args=("balanced",))
+            # 🔒 라벨이 **실제로 돌아갈 곳**을 말한다. 위에서 고른 프리셋이지 균형이 아니다
+            st.button(f"{preset_label(profile)} 로 돌아가기", key="rank_back",
+                      on_click=_leave_custom, args=(profile,))
 
         ranked = view.scored(frame, weighting)
         if not keep:
@@ -123,15 +124,35 @@ def render() -> None:
 
 # ── 가중치 ──────────────────────────────────────────────────────────────────
 
-def _reset_sliders(profile: str) -> None:
-    """🔒 **콜백이다** — 위젯이 그려지기 전에 돌아야 Streamlit 이 값을 받아 준다."""
+def _sync_sliders(profile: str) -> None:
+    """슬라이더를 그 프리셋 값으로. 🔒 **콜백이다** — 위젯이 그려지기 전에 돌아야
+    Streamlit 이 값을 받아 준다(`StreamlitWidgetAlreadyInstantiatedError`)."""
     for axis, key in _SLIDER_KEYS.items():
         st.session_state[key] = PRESETS[profile][axis]
+
+
+def _leave_custom(profile: str) -> None:
+    """슬라이더를 맞추고 '직접 고르기' 를 끈다 — 프리셋으로 돌아가는 길.
+
+    🔴 **`profile` 을 받는다.** 예전에는 `"balanced"` 를 박아 두고 라디오를 안 건드려,
+       라디오가 모멘텀인 상태에서 누르면 버튼은 "균형" 이라 말하고 캡션은 모멘텀
+       55/25/15/5 를, 슬라이더는 균형 35/30/20/15 를 보여 줬다 — **지금 쓰는 가중치와
+       화면에 적힌 가중치가 달랐다.** ADR-SC-0014 ④ 가 금지한 "화면의 거짓말" 이다.
+    """
+    _sync_sliders(profile)
     st.session_state["rank_custom"] = False
 
 
-def _weight_controls() -> weights.Weighting:
-    """프리셋 라디오 + 접어 둔 슬라이더. 🔒 반환은 **하나의 `Weighting`** 이다."""
+def _weight_controls() -> "tuple[weights.Weighting, str]":
+    """프리셋 라디오 + 접어 둔 슬라이더.
+
+    돌려주는 것은 **지금 쓰는 가중치**와 **라디오가 가리키는 프리셋** 둘이다 — 커스텀일 때
+    돌아갈 곳이 어디인지 화면이 말해야 하기 때문이다(`_leave_custom`).
+    """
+    # 🔒 위젯을 그리기 **전에** 기본값을 심는다. `st.slider(value=...)` 와 `key=` 를 같이
+    #    주면 세션값이 있는 매 rerun 마다 Streamlit 이 로거 경고를 남긴다(배포 로그가 더러워진다)
+    for axis, key in _SLIDER_KEYS.items():
+        st.session_state.setdefault(key, PRESETS["balanced"][axis])
     profile = st.radio(
         "가중치", list(view.PROFILES), horizontal=True,
         format_func=preset_label, key="rank_profile",
@@ -144,18 +165,18 @@ def _weight_controls() -> weights.Weighting:
         custom = st.checkbox("직접 고른 값을 쓴다", key="rank_custom")
         for axis in AXES:
             st.slider(f"{AXIS_NAMES[axis]} ({axis})", 0, weights.MAX_WEIGHT,
-                      value=PRESETS["balanced"][axis], key=_SLIDER_KEYS[axis],
-                      help=AXIS_NOT[axis])
-        st.button("지금 고른 프리셋 값으로 맞추기", key="rank_sync",
-                  on_click=_reset_sliders, args=(profile,))
+                      key=_SLIDER_KEYS[axis], help=AXIS_NOT[axis])
+        st.button(f"슬라이더를 {preset_label(profile)} 값으로 맞추기", key="rank_sync",
+                  on_click=_sync_sliders, args=(profile,))
     if not custom:
-        return weights.Weighting.preset(profile)
+        return weights.Weighting.preset(profile), profile
     try:
-        return weights.Weighting.of({a: st.session_state[_SLIDER_KEYS[a]] for a in AXES})
+        return weights.Weighting.of(
+            {a: st.session_state[_SLIDER_KEYS[a]] for a in AXES}), profile
     except weights.WeightError as exc:
         # 🔒 우리가 쓴 문장이다 — 사람이 쓴 글이 아니라 마크다운에 넣어도 된다
         st.error(f"{exc} — 프리셋으로 그린다.")
-        return weights.Weighting.preset(profile)
+        return weights.Weighting.preset(profile), profile
 
 
 # ── 필터 ────────────────────────────────────────────────────────────────────

@@ -412,18 +412,40 @@ def test_순위만_어긋나도_막는다(published):
     sector, market, score = published
     tampered = score.copy()
     tampered["rank_momentum"] = tampered["rank_momentum"].max() + 1 - tampered["rank_momentum"]
-    report = gate.check(sector=sector, market=market, score=tampered, as_of=DAYS[-1])
-    assert not report.ok
-    assert any("rank" in v or "순위" in v for v in report.violations), report.violations
+    # 🔴 `gate.check` 로 보면 **기존** `score_rank_consistent` 가 먼저 잡아, 새 검사를
+    #    떼어내도 이 테스트가 통과한다(적대적 리뷰의 돌연변이 M2). 그래서 새 검사를 직접 부른다
+    violations = gate._check_score_reproducible(sector, market, tampered, DAYS[-1])
+    assert any("재현할 수 없다" in v for v in violations), violations
+    assert not gate.check(sector=sector, market=market, score=tampered, as_of=DAYS[-1]).ok
 
 
-def test_재현성_검사가_배치와_같은_함수를_쓴다():
+def test_재현성_검사가_배치와_같은_함수를_쓴다(published, monkeypatch):
     """🔒 검사가 산수를 되풀이하면 배치와 검사가 같이 틀릴 수 있다. 검사하는 것은
-    "계산이 맞나" 가 아니라 **"게시본만으로 이 값에 닿을 수 있나"** 다."""
-    import inspect
+    "계산이 맞나" 가 아니라 **"게시본만으로 이 값에 닿을 수 있나"** 다.
 
-    source = inspect.getsource(gate._check_score_reproducible)
-    assert "weighted_score_bp" in source and "rank_scores" in source
+    🔴 **소스 문자열을 보지 않는다.** 적대적 리뷰가 보였다 — 이름이 import 줄과 머리주석에
+       이미 들어 있어, 본문을 손수 짠 `round(num/den)` 으로 바꿔도 774건 중 한 건도
+       실패하지 않았다(`round` 도 banker's rounding 이라 실데이터에서 답까지 같았다).
+       그래서 **호출을 센다** — 배치 함수를 안 부르면 여기가 깨진다.
+    """
+    from sector import scoring
+
+    sector, market, score = published
+    called: list[str] = []
+    real_score, real_rank = scoring.weighted_score_bp, scoring.rank_scores
+
+    def watched_score(z_bp, weights):
+        called.append("weighted_score_bp")
+        return real_score(z_bp, weights)
+
+    def watched_rank(scores):
+        called.append("rank_scores")
+        return real_rank(scores)
+
+    monkeypatch.setattr(scoring, "weighted_score_bp", watched_score)
+    monkeypatch.setattr(scoring, "rank_scores", watched_rank)
+    assert gate._check_score_reproducible(sector, market, score, DAYS[-1]) == []
+    assert set(called) == {"weighted_score_bp", "rank_scores"}, called
 
 
 def test_실제_채점_결과가_재현성을_통과한다():

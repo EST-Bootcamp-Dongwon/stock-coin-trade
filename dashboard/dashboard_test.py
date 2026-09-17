@@ -18,28 +18,49 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 from dashboard import explain, view, weights
-from sector.scoring import AXES, AXIS_NAMES, PRESETS
+from sector.scoring import AXES, AXIS_NAMES, PRESETS, rank_scores, weighted_score_bp
 
 # ── 뷰 모델 (화면 없이) ─────────────────────────────────────────────────────
 
 DAYS = [f"2026090{i}" for i in range(1, 10)]
 
 
+#: 🔴 **축마다 z 가 달라야 한다.** 네 축을 같은 값으로 두면 어떤 가중치로도 같은 점수가
+#:    나와, "프리셋은 저장 열을 읽는다"(ADR-SC-0014 ③) 같은 계약이 픽스처 위에서 **참으로
+#:    고정되지 않는다.** 적대적 리뷰가 돌연변이로 그것을 보였다 — `scored()` 의 프리셋
+#:    분기를 통째로 지워도 테스트가 한 건도 안 깨졌다.
+#: 🔒 100 의 배수로 둔다. `w·z/100` 이 정수로 떨어져 기여의 합이 총점과 **정확히** 같아진다
+#:    (`test_기여도_합이_점수와_같다` 가 그것을 고정한다).
+_AXIS_OFFSET = {"m": 0, "f": 1200, "b": -800, "v": 300}
+
+
 def frame(n_sectors: int = 3) -> pd.DataFrame:
-    """합성 점수 표. 🔒 실제 KRX 데이터를 픽스처로 쓰지 않는다 (AGENTS.md 5장)."""
+    """합성 점수 표. 🔒 실제 KRX 데이터를 픽스처로 쓰지 않는다 (AGENTS.md 5장).
+
+    🔒 저장 열(`score_*_bp`·`rank_*`)을 **배치가 쓰는 함수로** 채운다 — 즉 이 픽스처는
+       게시 게이트를 통과하는 **유효한 게시본**이다. 손으로 적으면 픽스처가 스스로
+       모순되고, 그 위에서 고정한 계약은 아무것도 보장하지 않는다.
+    """
     rows = []
     for day_i, day in enumerate(DAYS):
+        z_of = {}
         for s in range(n_sectors):
-            z = (s - 1) * 5000 + day_i * 100
+            base = (s - 1) * 5000 + day_i * 100
+            z_of[f"sec_{s}"] = {a.upper(): base + off for a, off in _AXIS_OFFSET.items()}
+        scores = {name: {sid: weighted_score_bp(z, w) for sid, z in z_of.items()}
+                  for name, w in PRESETS.items()}
+        ranks = {name: rank_scores(column) for name, column in scores.items()}
+        for s in range(n_sectors):
+            sid = f"sec_{s}"
+            z = z_of[sid]
             rows.append({
-                "bas_dd": day, "sector_id": f"sec_{s}", "gics": "Industrials",
+                "bas_dd": day, "sector_id": sid, "gics": "Industrials",
                 "m_raw_bp": 100 + s, "f_raw_bp": 200 + s,
                 "b_raw_bp": 300 + s, "v_raw_bp": 400 + s,
-                "m_z_bp": z, "f_z_bp": z, "b_z_bp": z, "v_z_bp": z,
+                "m_z_bp": z["M"], "f_z_bp": z["F"], "b_z_bp": z["B"], "v_z_bp": z["V"],
                 "n_axes_used": 4, "axes_missing": "", "axes_degraded": "",
-                "score_balanced_bp": z, "rank_balanced": n_sectors - s,
-                "score_momentum_bp": z, "rank_momentum": n_sectors - s,
-                "score_contrarian_bp": z, "rank_contrarian": n_sectors - s,
+                **{f"score_{name}_bp": scores[name][sid] for name in PRESETS},
+                **{f"rank_{name}": ranks[name][sid] for name in PRESETS},
                 "liquidity_ok": True, "etf_n": 2, "is_partial": False,
                 "config_version": "t", "config_sha256": "x", "fetched_at": "t",
             })
@@ -1119,6 +1140,26 @@ def test_프리셋은_저장된_열을_그대로_읽는다():
     assert list(out[view.RANK_COLUMN]) == list(data["rank_balanced"])
 
 
+def test_프리셋은_저장_열이_z_와_어긋나도_저장_열을_읽는다():
+    """🔴 ADR-SC-0014 ③ 의 계약이 실제로 걸리는 **유일한** 자리다.
+
+    게시본이 z 로 재현되는 동안에는 "저장 열을 읽는다" 와 "다시 잰다" 가 같은 답을 내서
+    무엇을 하는지 구별되지 않는다. 구별되는 것은 **재게시 전 구간** — HF 에 옛 파생본이
+    있어 저장 열이 z 와 어긋나는 때다. 그때 화면이 다시 재면 위쪽 표와 아래쪽 근거·
+    에이전트(저장 열을 읽는다)가 **다른 숫자를 말한다.**
+
+    🔒 그래서 여기서는 일부러 어긋난 프레임을 만든다.
+    """
+    data = frame()
+    stale = data["score_balanced_bp"] + 7           # 옛 파생본을 흉내낸다
+    data["score_balanced_bp"] = stale
+    out = view.scored(data, BALANCED)
+    assert list(out[view.SCORE_COLUMN]) == list(stale), "프리셋이 저장 열을 안 읽고 다시 쟀다"
+    # 🔒 커스텀은 반대다 — 저장 열이 없으므로 **반드시** 다시 잰다
+    only_m = weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0})
+    assert list(view.scored(data, only_m)[view.SCORE_COLUMN]) == list(data["m_z_bp"])
+
+
 def test_scored_는_저장된_열을_덮지_않는다():
     """🔒 덮으면 에이전트 guard 의 "`view` 를 거치지 않고 원천에서 다시 얻는다"
     (ADR-SC-0013 ④-1)가 그 순간 거짓이 된다."""
@@ -1264,6 +1305,22 @@ CUSTOM_STATE = {"rank_custom": True, "rank_w_M": 10, "rank_w_F": 10,
                 "rank_w_B": 10, "rank_w_V": 70}
 
 
+def _watch_sector_blocks(monkeypatch) -> list[str]:
+    """근거·확정 칸이 그려졌는지 **호출로** 센다.
+
+    🔒 문구를 보지 않는다 — 문구만 보면 나중에 블록이 되살아나도 통과한다.
+    """
+    from dashboard import evidence as evidence_module
+    from dashboard import team_actions as actions_module
+
+    calls: list[str] = []
+    monkeypatch.setattr(evidence_module, "render_evidence",
+                        lambda *a, **k: calls.append("evidence"))
+    monkeypatch.setattr(actions_module, "render_sector_actions",
+                        lambda *a, **k: calls.append("actions"))
+    return calls
+
+
 def test_커스텀_가중치에서는_근거를_열지_않는다(monkeypatch):
     """🔴 에이전트는 근거의 출처를 `rank_{profile}` 이라는 **저장 열 이름**으로 적고
     guard 가 그 열에서 값을 다시 얻어 대조한다(ADR-SC-0013 ④-1). 이름 없는 비율에는
@@ -1271,33 +1328,50 @@ def test_커스텀_가중치에서는_근거를_열지_않는다(monkeypatch):
 
     🔒 문구가 아니라 **호출**을 본다 — 문구만 보면 나중에 블록이 되살아나도 통과한다.
     """
-    from dashboard import evidence as evidence_module
-
-    calls: list[str] = []
-    monkeypatch.setattr(evidence_module, "render_evidence",
-                        lambda *a, **k: calls.append("호출됨"))
+    calls = _watch_sector_blocks(monkeypatch)
 
     custom = _app_with(**CUSTOM_STATE)
     assert not custom.exception, [str(e)[:200] for e in custom.exception]
-    assert calls == [], "커스텀 가중치에서 근거를 그렸다"
+    # 🔒 ADR-SC-0014 ④ 가 닫는 것은 **근거와 확정 둘 다**다. 하나만 보면 반쪽이다
+    assert calls == [], f"커스텀 가중치에서 {calls} 를 그렸다"
     from dashboard.pages.ranking import CUSTOM_NOTICE
     assert any(CUSTOM_NOTICE == i.value for i in custom.info), [i.value for i in custom.info]
 
+    calls.clear()
     preset = _app_with(rank_custom=False)
     assert not preset.exception, [str(e)[:200] for e in preset.exception]
-    assert calls, "프리셋에서는 근거를 그려야 한다"
+    assert set(calls) == {"evidence", "actions"}, f"프리셋에서 {calls} 만 그렸다"
 
 
 def test_프리셋과_같은_비율이면_근거가_다시_열린다(monkeypatch):
     """🔒 슬라이더를 균형 값으로 맞추면 커스텀 모드에 남지 않는다 — 점수가 같기 때문이다."""
-    from dashboard import evidence as evidence_module
-
-    calls: list[str] = []
-    monkeypatch.setattr(evidence_module, "render_evidence",
-                        lambda *a, **k: calls.append("호출됨"))
+    calls = _watch_sector_blocks(monkeypatch)
     at = _app_with(rank_custom=True, rank_w_M=70, rank_w_F=60, rank_w_B=40, rank_w_V=30)
     assert not at.exception, [str(e)[:200] for e in at.exception]
     assert calls, "균형과 같은 비율인데 근거가 닫혔다"
+
+
+def test_돌아가기_버튼이_고른_프리셋으로_간다():
+    """🔴 화면이 지금 쓰는 가중치와 **다른 가중치를 적으면 안 된다** (ADR-SC-0014 ④).
+
+    예전에는 콜백이 `"balanced"` 를 박아 두고 라디오를 안 건드려, 모멘텀을 고른 채
+    커스텀에서 이 버튼을 누르면 — 버튼은 "균형", 캡션은 **모멘텀 55/25/15/5**,
+    슬라이더는 **균형 35/30/20/15** 를 보여 줬다. 셋이 서로 다른 말을 했다.
+    """
+    at = _app_with(rank_profile="momentum", **CUSTOM_STATE)
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+    back = [b for b in at.button if "돌아가기" in b.label]
+    assert len(back) == 1, [b.label for b in at.button]
+    label = explain.preset_label("momentum")
+    assert label in back[0].label, back[0].label      # 🔒 라벨이 돌아갈 곳을 말한다
+
+    at = back[0].click().run()
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+    assert any(label in c.value for c in at.caption), [c.value for c in at.caption]
+    assert {s.label: s.value for s in at.slider} == {
+        f"{AXIS_NAMES[a]} ({a})": PRESETS["momentum"][a] for a in AXES}
+    assert at.radio[0].value == "momentum"
+    assert not [b for b in at.button if "돌아가기" in b.label], "커스텀에서 안 빠져나왔다"
 
 
 def test_슬라이더가_네_축_모두에_있다():
@@ -1338,16 +1412,26 @@ def test_위젯을_그린_뒤에_session_state_를_쓰지_않는다():
 
     # (파일, 함수) → 왜 안전한가
     allowed = {
-        ("ranking.py", "_reset_sliders"): "버튼 콜백 — 스크립트 본문보다 먼저 돈다",
+        ("ranking.py", "_sync_sliders"): "버튼 콜백 — 스크립트 본문보다 먼저 돈다",
+        ("ranking.py", "_leave_custom"): "버튼 콜백",
+        ("ranking.py", "_weight_controls"): "위젯을 그리기 전 `setdefault` — 아래 테스트가 순서를 본다",
         ("evidence.py", "_fill"): "버튼 콜백",
-        ("evidence.py", "_reset_on_new_sector"): "위젯을 그리기 전에 부른다",
+        ("evidence.py", "_reset_on_new_sector"): "위젯을 그리기 전에 부른다 (`pop` 포함)",
         ("evidence.py", "render_evidence"): "인계 기록 — 위젯 키가 아니다",
         ("session.py", "set_actor"): "위젯 키가 아니다",
         ("session.py", "set_team"): "위젯 키가 아니다",
         ("session.py", "set_credential"): "위젯 키가 아니다",
         ("team_actions.py", "_open"): "모달 플래그 — 위젯 키가 아니다",
         ("team_actions.py", "_succeed"): "플래시 — 위젯 키가 아니다",
+        ("team_actions.py", "_close"): "모달 플래그 `pop` — 위젯 키가 아니다",
+        ("team_actions.py", "show_flash"): "플래시 `pop` — 위젯 키가 아니다",
+        ("session.py", "leave"): "조·자격증명 `pop` — 위젯 키가 아니다",
     }
+    def _is_state(node) -> bool:
+        return isinstance(node, ast.Attribute) and node.attr == "session_state"
+
+    #: 🔒 대입만 보지 않는다 — `setdefault`·`update` 도 위젯 뒤에 오면 똑같이 던진다
+    writing_methods = {"setdefault", "update", "pop", "clear"}
     found = set()
     for path in (ROOT / "dashboard").rglob("*.py"):
         if path.name.endswith("_test.py"):
@@ -1359,10 +1443,11 @@ def test_위젯을_그린_뒤에_session_state_를_쓰지_않는다():
                 targets = (node.targets if isinstance(node, ast.Assign)
                            else [node.target] if isinstance(node, ast.AugAssign) else [])
                 for target in targets:
-                    if (isinstance(target, ast.Subscript)
-                            and isinstance(target.value, ast.Attribute)
-                            and target.value.attr == "session_state"):
+                    if isinstance(target, ast.Subscript) and _is_state(target.value):
                         found.add((path.name, function.name))
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in writing_methods and _is_state(node.func.value)):
+                    found.add((path.name, function.name))
     assert found == set(allowed), (
         f"session_state 에 쓰는 자리가 바뀌었다 — 새로 생긴 것 {found - set(allowed)} · "
         f"사라진 것 {set(allowed) - found}. 콜백이거나 위젯 키가 아님을 확인하고 적는다")
