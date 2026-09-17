@@ -219,11 +219,27 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
     (HF 토큰을 `WRITE`/`READ` 로 가른 것과 같은 판단). `SupabaseStore` 가 `sb_secret_`
     와 `role≠anon` JWT 를 **생성 시점에 거부**한다
   - ⚠️ **원장 읽기는 공개다** — HF private 대비 실질 변화다. **코멘트에 비밀을 적지 않는다**
-- **passcode 검증은 화면이 아니라 저장소가 한다** ★ (2026-09-12 · ADR-SC-0011 ⑨⑩⑪⑫)
+- **passcode 검증은 화면이 아니라 저장소가 한다** ★ (2026-09-12 · ADR-SC-0011 ⑨⑩⑪⑫ ·
+  2026-09-17 ⑭ 로 ⑨ 는 뒤집혔고 ⑩ 은 정정됐다)
   - 화면은 해시를 손에 들지 않는다. `passcode_params`(digest 없음) → `auth.recompute_passcode`
     → `store.verify` 순이고 **참·거짓만 받는다**. `fold.Team` 에 `passcode_hash` 가 없다
   - 🔒 **`append` 로는 조를 만들 수 없다.** `create_team` 만이 만든다 — 안 막으면
     passcode 없는 조가 목록에 보이면서 아무도 참가할 수 없다
+  - 🔴 **그 규칙이 DB 에는 없었다** (2026-09-17 · ADR-SC-0011 ⑭). ⑩ 의 *"Supabase 가
+    구조적으로 그렇다"* 는 **새 조**에만 맞았다 — **이미 있는 조**에 `team.created` 를 하나
+    더 쓰는 것은 막히지 않았고, `fold` 가 *먼저 것*을 쓰므로 그 조 passcode 를 가진 조원이
+    조 이름·만든 사람·만든 시각 **기록**을 바꿀 수 있었다. 원장은 append-only 라 지울 수도 없다.
+    ⚠️ 조 생성 게이트가 `team.created` 를 **전역**으로 세므로 피해는 그 조에 그치지 않았다
+    (20건이면 한 시간 동안 아무도 조를 못 만든다). 🔒 이제 **DB 가 세 겹으로** 막는다 —
+    부분 유니크 인덱스 `(team_id) where kind='team.created'` · `workspace_append` 무조건 거절 ·
+    읽기 전용 `workspace_verify_passcode`(마이그레이션 `20260917053500`·`20260917053600`)
+  - 🔴 **`verify` 는 더 이상 쓰기 경로를 쓰지 않는다.** 옛 방식(그 조의 `team.created` 를
+    되보내 0건 쓰기)은 위 구멍에 의존했다. 🔒 **그래도 원장을 먼저 읽는 것은 그대로다** —
+    읽히는 `team.created` 가 없으면 RPC 를 부르지 않는다(⑬). "RPC 하나면 되는데" 로 줄이면
+    시크릿만 남은 조에서 참가가 열리면서 `fold` 에는 그 조가 없다
+  - 🔒 검증 RPC 는 **`volatile` 이다.** PostgREST 가 STABLE 함수를 GET 으로도 노출하는데,
+    `p_encoded` 는 저장된 해시 그 자체(= 영구 쓰기 자격증명)라 쿼리스트링에 실리면
+    로그·프록시·히스토리에 남고 **passcode 를 바꾸는 RPC 가 없어 회수할 수 없다**
   - 🔒 원장에 쓸 때마다 **자격증명**(`scrypt$…$digest`)이 필요하고 세션이 들고 있다.
     평문이 아니고, 그 조에서만 쓸 수 있다
   - ✅ **마스터(개발자)는 없다** ★ (2026-09-12 · ADR-SC-0011 ⑫ 로 닫혔다 · V42).

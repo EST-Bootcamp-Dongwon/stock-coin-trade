@@ -27,11 +27,20 @@
 🔒 **검증을 화면이 아니라 저장소가 한다.** 화면이 해시를 손에 들면, 원장 읽기가
    공개인 순간 그것이 곧 노출 경로가 된다. 저장소는 `True`/`False` 만 돌려준다.
 
-🔴 **`append` 로는 조를 만들 수 없다**(`_reject_team_created`). Supabase 가 구조적으로
-   그렇다 — `workspace_append` 는 그 조의 passcode 해시가 **이미 있어야** 통과하므로
-   새 조의 `team.created` 는 어떤 passcode 로도 들어가지 않는다. 세 구현이 같은 답을
-   내도록 로컬·HF 도 같이 막는다. 안 막으면 **passcode 없는 조**가 생기고, 그 조는
-   아무도 참가할 수 없으면서 목록에는 보인다 — 조용히 망가진 상태다.
+🔴 **`append` 로는 조를 만들 수 없다**(`_reject_team_created`). 안 막으면
+   **passcode 없는 조**가 생기고, 그 조는 아무도 참가할 수 없으면서 목록에는
+   보인다 — 조용히 망가진 상태다.
+
+   ⚠️ **옛 주석은 "Supabase 가 구조적으로 그렇다" 고 적었다. 반만 맞았다**
+   (2026-09-17 · ADR-SC-0011 ⑭). `workspace_append` 는 그 조의 해시가 이미 있어야
+   통과하므로 **새 조**는 못 만든다 — 그러나 **이미 있는 조**에 `team.created` 를
+   하나 더 쓰는 것은 막지 않았다. `fold` 는 조마다 *먼저 것*을 쓰므로, 그 조
+   passcode 를 가진 조원이 `at` 이 더 이른 줄을 넣어 **조 이름 · 만든 사람 ·
+   만든 시각 기록을 통째로 바꿀 수 있었다.** 원장은 append-only 라 지울 수도 없다.
+   🔒 이제 DB 가 세 겹으로 막는다 — 부분 유니크 인덱스(한 조에 하나) ·
+   `workspace_append` 의 명시 거절 · `workspace_create_team` 의 orphan 검사
+   (마이그레이션 `20260917053600`). **여기 Python 검사는 그 사본이 아니라 짝이다** —
+   파일·HF 원장에는 그 인덱스가 없으므로 이쪽이 유일한 문이다.
 
 ## 🔴 한 줄 때문에 원장 전체가 멈추지 않는다 (2026-09-14 · ADR-SC-0011 ⑬)
 
@@ -694,39 +703,44 @@ class SupabaseStore:
         return params
 
     def verify(self, team_id: str, credential: str) -> bool:
-        """그 조에 쓸 수 있는가. 🔒 **이미 있는 이벤트를 다시 보내서** 확인한다.
+        """그 조에 쓸 수 있는가. 🔒 **읽기 전용 RPC 가 답한다** — 쓰기 경로를 쓰지 않는다.
 
-        🔴 읽기 전용 검증 RPC 가 없다. `workspace_append` 는 빈 배열을 passcode 검사
-           **앞에서** 0건으로 돌려보내므로 검증에 쓸 수 없다. 그래서 그 조의
-           `team.created` 를 그대로 다시 보낸다 —
+        2026-09-17 까지는 검증 전용 RPC 가 없어서 그 조의 `team.created` 를
+        `workspace_append` 로 **그대로 되보내** 확인했다(passcode 는 삽입 전에
+        검사되고 `on conflict do nothing` 이라 0건 쓰인다). 우아했지만 **append 가
+        `team.created` 를 받아 준다는 것에 의존했고, 그것이 닫아야 할 구멍이었다** —
+        조원이 `at` 이 더 이른 유효한 `team.created` 를 써서 조 이름·만든 사람
+        기록을 바꿀 수 있었다(ADR-SC-0011 ⑭ · 마이그레이션 `20260917053600`).
 
-        1. passcode 는 검사된다 (삽입 전에 검사한다)
-        2. `on conflict (event_id) do nothing` 이라 **0건 쓰인다**
+        🔒 **덤으로 검증이 쓰기 스로틀에서 풀렸다.** 옛 경로는 `workspace_append` 의
+           분당 60행 제한을 상속해서, 조가 한창 쓰는 중이면 *참가*가 오류로 떨어졌다.
 
-        즉 원장의 멱등성(이벤트 id 가 내용에서 나온다)을 **우회가 아니라 그대로**
-        쓴다. 되돌아오는 값이 0 인 것이 정상이고, 그래서 반환값을 보지 않는다.
+        🔒 **원장을 먼저 읽는 것은 그대로 둔다.** "RPC 하나면 되는데" 로 줄이면
+           ⑬ 이 세운 성질이 조용히 사라진다 — 아래 주석이 그 이유다.
         """
-        # 🔒 id 가 조회 필터에 그대로 들어간다 — 문 앞에서 확인한다
+        # 🔒 id 가 조회 필터에 그대로 들어간다 — 문 앞에서 확인한다.
+        #    🔴 **확인한 값을 아래 RPC 에도 넘긴다.** 옛 코드는 GET 에만 `require_team_id`
+        #       를 통과시키고 RPC 에는 원본을 보냈다 — `"team_a" + 개행` 이면 GET 은
+        #       그 조를 읽고 RPC 는 못 찾아, 두 호출이 **다른 조를 가리켰다.**
+        checked = require_team_id(team_id)
         rows = self._select_events(
-            team_id=f"eq.{require_team_id(team_id)}", kind="eq.team.created")
+            team_id=f"eq.{checked}", kind="eq.team.created")
         # 🔒 되읽은 행을 `parse_event` 로 통과시킨다 — DB 가 읽는 칸만 정확히 되보낸다.
-        # 🔴 **읽지 못한 행은 건너뛴다**(ADR-SC-0011 ⑬). 첫 행만 보던 예전 코드는 조원이
-        #    `at` 이 더 이른 가짜 `team.created` 를 한 줄 넣으면 그 조의 참가를 전부 막았다.
-        #    probe 는 `on conflict` 에 걸리기만 하면 되므로 **읽히는 아무 행**이나 된다.
-        #    읽히는 행이 없으면 `fold` 에도 그 조가 없다 — 참가할 수 없다는 답이 맞다.
-        readable = _ledger((_row_where(row), row) for row in rows).events
-        if not readable:
+        # 🔴 **읽히는 `team.created` 가 하나도 없으면 참가시키지 않는다**(ADR-SC-0011 ⑬).
+        #    그 조는 `fold` 에도 없다. 여기서 True 를 주면 화면은 "참가했다" 고 말한 뒤
+        #    아무 데도 들여보내지 못하고, 이후 쓰기는 전부 "없는 조" 이상이 된다.
+        #    🔒 이 검사는 passcode 와 무관하다 — RPC 만 부르면 시크릿이 남아 있는 한
+        #       True 가 나온다. 그래서 순서가 **읽기 먼저**다.
+        if not _ledger((_row_where(row), row) for row in rows).events:
             return False
-        probe = readable[0]
-        try:
-            self._rpc("workspace_append", {
-                "p_team_id": team_id,
-                "p_encoded": credential,
-                "p_events": [probe.to_json()],
-            })
-        except PasscodeRejected:
-            return False
-        return True
+        # 🔒 참·거짓만 받는다. 해시는 어떤 경로로도 나오지 않는다 (ADR-SC-0011 ④)
+        answer = self._rpc("workspace_verify_passcode", {
+            "p_team_id": checked,
+            "p_encoded": credential,
+        })
+        # 🔴 `is True` 다. RPC 가 `null` 을 실어 보내기 시작하면 **참가를 열지 않고**
+        #    False 로 떨어진다 — 모르는 답을 통과로 읽는 것이 가장 나쁜 실패다.
+        return answer is True
 
     # 읽기 ─────────────────────────────────────────────────────────────────
 

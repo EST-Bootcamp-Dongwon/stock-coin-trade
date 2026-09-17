@@ -16,11 +16,13 @@ Supabase CLI 를 붙였을 때 이미 적용된 것을 다시 돌린다.
 | `20260912095328` | 팀 원장 3테이블 · RLS · append-only 트리거 · RPC 4 |
 | `20260912095552` | 트리거 함수의 **PUBLIC 기본 EXECUTE** 회수 |
 | `20260912095631` | 트리거 함수 `search_path = ''` |
+| `20260917053500` | **읽기 전용 `workspace_verify_passcode`** — `verify` 를 쓰기 경로에서 뗀다 |
+| `20260917053600` | **조 생성은 `create_team` 만** — 부분 유니크 인덱스 · `append` 거절 · `create_team` 두 곳 수정 |
 
 ⚠️ **DB 에 적용된 SQL 은 주석이 축약돼 있다.** 설계 근거(왜 이렇게 했는지)는 여기
 파일 쪽이 자세하다. 로직은 같다.
 
-## 🔴 다시 밟기 쉬운 함정 여섯
+## 🔴 다시 밟기 쉬운 함정 여덟
 
 1. **`at` 은 `text` 다.** `timestamptz` 로 바꾸면 `event_id`(= `at` 문자열을 포함한
    해시)와 어긋나 `parse_event` 가 원장 전체를 거부한다
@@ -30,13 +32,29 @@ Supabase CLI 를 붙였을 때 이미 적용된 것을 다시 돌린다.
 4. **테이블마다 REVOKE 해도 `migrate` 한 번에 되돌아간다.**
    `alter default privileges` 를 함께 해야 한다
 5. **`workspace_append` 는 빈 배열을 passcode 검사 *앞에서* 0 으로 돌려보낸다.**
-   즉 **빈 append 는 검증에 쓸 수 없다**(2026-09-12 · V41). 참가 검증은 그 조의
-   `team.created` 를 **그대로 다시 보내서** 한다 — passcode 는 검사되고
-   `on conflict do nothing` 이라 0건 쓰인다. 🔒 검사 순서를 바꾸려면
-   `sector/workspace/store.py::SupabaseStore.verify` 를 함께 본다
+   즉 **빈 append 는 검증에 쓸 수 없다**(2026-09-12 · V41).
+   🔴 **그래서 `20260917053500` 이 `workspace_verify_passcode` 를 따로 만들었다.**
+   ⚠️ 이 자리에는 2026-09-17 까지 *"참가 검증은 그 조의 `team.created` 를 그대로 다시
+   보내서 한다"* 고 적혀 있었다. **그 방식은 끝났다** — `20260917053600` 이 `append` 에서
+   `team.created` 를 무조건 거절하므로 옛 probe 는 튕긴다(ADR-SC-0011 ⑭).
+   🔒 그 빈 배열 검사를 passcode 검사 **뒤로 옮기고 싶어지거든 멈춰라** — 그렇게 하면
+   옛 함수가 남아 있는 동안 `verify` 가 **아무 passcode 로나 true** 가 된다(fail-open).
+   🔒 `SupabaseStore.verify` 는 **원장을 먼저 읽고** 읽히는 `team.created` 가 없으면
+   RPC 를 부르지 않는다(ADR-SC-0011 ⑬). "RPC 하나면 되는데" 로 줄이지 마라 —
+   시크릿만 남은 조에서 참가가 열리고 `fold` 에는 그 조가 없다
+
 6. 🔴 **쓰기는 passcode 뿐이라 마스터 경로가 없다** — 화면의 마스터 보관·복구가
    Supabase 에서는 통하지 않는다(V42 · ADR-SC-0011 ⑪). 앱을 이쪽으로 돌리기 전에
    결정이 필요하다
+7. 🔴 **새 마이그레이션이 함수를 `create or replace` 하면, 그 함수를 검사하던 SQL 대조
+   테스트가 죽은 파일을 읽는다.** 실제로 그럴 뻔했다 — `test_거부_문장이_마이그레이션과_같다`
+   가 `20260912095328` 한 파일을 하드코딩하고 있었다. 지금은 `workspace_test._live_function`
+   이 마이그레이션들을 **버전 순으로 훑어 마지막 정의**를 검사한다. 함수를 갈아끼울 때
+   그 헬퍼를 쓰는지 확인한다
+
+8. ⚠️ **`supabase_admin` 이 소유한 객체의 기본 ACL 은 아직 열려 있다**(2026-09-17 실측 —
+   테이블 `anon=arwdDxtm` · 함수 `anon=X`). 함정 4 가 껐지만 `postgres` 소유분에 한해서다.
+   마이그레이션을 `postgres` 로 돌리는 한 새 객체는 닫힌 채 태어난다
 
 ## 🔴 GitHub 연동(자동 적용)을 쓰지 않는다 — 2026-09-12
 
@@ -65,7 +83,8 @@ Supabase → Settings → Integrations → GitHub 는 **연결된 저장소의 `
 `requests` + PostgREST 다(의존 증가 0 · ADR-SC-0011 ⑧). 🔒 **SQL 과 문자열로 묶여
 있는 자리가 하나 있다** — `workspace_append` 가 passcode 를 거부할 때 내는 문장
 (`store.REJECTED_MESSAGE`). 갈라지면 클라이언트가 **거부를 통신 오류로 오인**한다.
-`workspace_test.test_거부_문장이_마이그레이션과_같다` 가 이 파일을 읽어 둘을 묶는다.
+`workspace_test.test_거부_문장이_마이그레이션과_같다` 가 둘을 묶는다 — 🔒 파일 하나가
+아니라 `_live_function` 으로 **살아 있는 정의**(마지막 `create or replace`)를 읽는다.
 
 ## 검증
 

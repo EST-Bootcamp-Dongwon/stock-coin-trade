@@ -965,12 +965,21 @@ class FakeResponse:
         return self._body
 
 
-class FakePostgrest:
-    """`20260912095328_workspace_ledger.sql` 의 계약만 흉내낸다.
+class FakeUniqueViolation(Exception):
+    """🔒 부분 유니크 인덱스 위반. 실제로는 PostgREST 가 영문 제약 이름을 실어 보낸다 —
+    그래서 함수 쪽에 사람이 읽을 수 있는 거절을 따로 두었다(`20260917053600` ②)."""
 
-    🔴 **빈 배열을 passcode 검사 앞에서 0 으로 돌려보내는 것까지** 흉내낸다 —
-       그것이 "검증 전용 RPC 가 없다" 의 실체이고, `verify` 가 이미 있는 이벤트를
-       다시 보내는 이유다.
+
+class FakePostgrest:
+    """마이그레이션들의 계약을 흉내낸다 — `20260912095328` + `20260917053500`/`053600`.
+
+    🔴 **가짜가 진짜보다 관대하면 안 된다.** 관대하면 `store._reject_team_created` 를
+       지워도 테스트가 안 깨지고, 그 순간 원장 위조가 CI 를 통과한다. 그래서 여기
+       세 가지를 진짜와 같이 막는다 — append 의 `team.created` 거절 · 조마다
+       `team.created` 하나(부분 유니크 인덱스) · 0건 삽입 시 조 생성 실패.
+
+    🔒 빈 배열을 passcode 검사 앞에서 0 으로 돌려보내는 것도 그대로 둔다. 그 성질
+       때문에 빈 append 로는 검증할 수 없고, 그래서 `workspace_verify_passcode` 가 있다.
     """
 
     URL = "https://fake.supabase.co"
@@ -992,7 +1001,10 @@ class FakePostgrest:
         handler = getattr(self, f"_rpc_{name}", None)
         if handler is None:
             return FakeResponse(404, {"message": f"함수가 없다: {name}"})
-        return handler(json or {})
+        try:
+            return handler(json or {})
+        except FakeUniqueViolation as exc:
+            return FakeResponse(409, {"message": str(exc)})
 
     def _rpc_workspace_create_team(self, p):
         event, hashed = p["p_event"], p["p_passcode_hash"]
@@ -1003,9 +1015,31 @@ class FakePostgrest:
         team_id = event["team_id"]
         if team_id in self.secrets:
             return FakeResponse(400, {"message": f"조 {team_id} 는 이미 있다"})
+        # 🔴 orphan — 시크릿은 없는데 원장에 생성 기록이 있다 (`20260917053600` ②')
+        if self._created_rows(team_id):
+            return FakeResponse(400, {
+                "message": f"조 {team_id} 의 생성 기록이 이미 원장에 있다"})
         self.secrets[team_id] = hashed
-        self._insert(event)
-        return FakeResponse(200, 1)
+        try:
+            written = self._insert(event)
+        except FakeUniqueViolation:
+            # 🔒 진짜는 **한 트랜잭션**이라 시크릿도 남지 않는다. 지금은 위 orphan
+            #    검사 때문에 닿지 않지만, 그 검사를 지우는 순간 가짜가 진짜보다
+            #    관대해진다 — 그 길을 미리 막는다
+            del self.secrets[team_id]
+            raise
+        if written == 0:
+            # 🔴 event_id 선점 — 옛 정의는 여기서 조용히 1 을 돌려줬다.
+            #    한 트랜잭션이므로 시크릿도 남지 않는다.
+            del self.secrets[team_id]
+            return FakeResponse(400, {
+                "message": f"조 {team_id} 의 생성 기록을 쓰지 못했다"})
+        return FakeResponse(200, written)
+
+    def _rpc_workspace_verify_passcode(self, p):
+        """🔒 참·거짓만. 없는 조와 틀린 passcode 가 **같은 값**이다 (`20260917053500`)."""
+        stored = self.secrets.get(p["p_team_id"])
+        return FakeResponse(200, stored is not None and stored == p.get("p_encoded"))
 
     def _rpc_workspace_passcode_params(self, p):
         stored = self.secrets.get(p["p_team_id"])
@@ -1019,6 +1053,11 @@ class FakePostgrest:
             return FakeResponse(200, 0)     # 🔴 passcode 검사 **앞**이다 (머리주석)
         if len(rows) > 50:
             return FakeResponse(400, {"message": "한 번에 보낼 수 있는 이벤트는 50건까지다"})
+        # 🔴 조 생성은 `workspace_create_team` 만 한다 (`20260917053600` ②).
+        #    🔒 passcode 검사 **앞**이다 — 종류 오류가 "틀린 passcode" 로 묻히면 안 된다
+        if any(r.get("kind") == "team.created" for r in rows):
+            return FakeResponse(400, {
+                "message": "조 생성은 append 로 하지 않는다 — workspace_create_team 을 쓴다"})
         team_id = p["p_team_id"]
         stored = self.secrets.get(team_id)
         if stored is None or stored != p.get("p_encoded"):
@@ -1035,11 +1074,23 @@ class FakePostgrest:
         self.publish[bas_dd] = p.get("p_note")
         return FakeResponse(204)            # void — 본문이 없다
 
+    def _created_rows(self, team_id: str) -> list[dict]:
+        return [r for r in self.rows.values()
+                if r["team_id"] == team_id and r["kind"] == "team.created"]
+
     def _insert(self, row) -> int:
         # 🔒 DB 의 `check (not (payload ? 'passcode_hash'))` 를 픽스처도 갖는다
         assert "passcode_hash" not in (row.get("payload") or {}), "해시가 원장으로 갔다"
         if row["event_id"] in self.rows:
             return 0                        # on conflict (event_id) do nothing
+        # 🔒 부분 유니크 인덱스 — 한 조에 `team.created` 는 하나 (`20260917053600` ①).
+        # 🔴 arbiter 가 `event_id` 이므로 **다른** 인덱스 위반은 `do nothing` 이
+        #    삼키지 않고 에러가 된다. 위 두 RPC 규칙이 둘 다 지워져야 여기까지 온다 —
+        #    그때 조용히 통과하지 않게 백스톱을 둔다.
+        if row["kind"] == "team.created" and self._created_rows(row["team_id"]):
+            raise FakeUniqueViolation(
+                f'duplicate key value violates unique constraint '
+                f'"workspace_event_one_created_per_team" ({row["team_id"]})')
         self.rows[row["event_id"]] = row
         return 1
 
@@ -1084,10 +1135,11 @@ def test_Supabase_도_같은_계약을_지킨다():
 
 
 def test_Supabase_검증이_원장을_늘리지_않는다():
-    """🔴 `verify` 가 쓰기 경로를 쓴다 — 그런데 **0건 쓰인다.**
+    """🔒 `verify` 는 **쓰기 경로를 아예 지나지 않는다** (2026-09-17 · ADR-SC-0011 ⑭).
 
-    이미 있는 이벤트를 다시 보내므로 passcode 는 검사되고 `on conflict do nothing`
-    이 삽입을 막는다. 원장의 멱등성을 우회가 아니라 그대로 쓰는 것이 요점이다.
+    옛 경로는 이미 있는 이벤트를 되보내 0건 쓰기로 확인했다. 그것은 `workspace_append`
+    가 `team.created` 를 받아 준다는 데 기대고 있었고, 그 한 줄이 곧 원장 위조
+    경로였다. 이제 `workspace_verify_passcode` 가 참·거짓만 돌려준다.
     """
     st, fake = supabase()
     stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
@@ -1220,6 +1272,145 @@ def test_Supabase_참가_검증이_가짜_조_생성_줄에_막히지_않는다(
     assert fake.rows == before                     # 🔒 검증이 원장을 늘리지 않는다
 
 
+def test_Supabase_append_가_조_생성을_거절한다():
+    """🔴 원장 위험 ② — 막는 곳이 Python 뿐이었다. **RPC 는 화면을 지나지 않는다.**
+
+    그 조 passcode 를 가진 조원이 `at` 이 더 이른 유효한 `team.created` 를 쓰면
+    `fold` 가 그것을 먼저 것으로 골라 조 이름 · 만든 사람 · 만든 시각이 바뀐다.
+    원장은 append-only 라 **지울 수도 없다.**
+    """
+    st, fake = supabase()
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    st.create_team(team(AT2), passcode_hash=stored)
+    forged = events.team_created(team_id="team_a", name="가로챈조",
+                                 actor="조원", at="2026-09-12T00:00:00+00:00")
+
+    # ① 앱이 먼저 막는다 — 세 구현 공통 (`_reject_team_created`)
+    with pytest.raises(store.StoreError, match="조를 만들 수 없다"):
+        st.append([forged], credential=stored)
+
+    # ② 🔴 앱을 건너뛰어도 DB 가 막는다. 이것이 이번에 닫은 구멍이다
+    with pytest.raises(store.StoreError, match="append 로 하지 않는다"):
+        st._rpc("workspace_append", {"p_team_id": "team_a", "p_encoded": stored,
+                                     "p_events": [forged.to_json()]})
+
+    # 🔒 조의 정체가 그대로다
+    team_a = fold.fold(st.read_all()).team("team_a")
+    assert (team_a.name, team_a.created_by, team_a.created_at) == ("A조", "동원", AT2)
+
+
+def test_Supabase_참가_검증이_읽히는_생성_기록이_없으면_거절한다():
+    """🔒 **회귀가 아니라 가드다** — 옛 `verify` 도 이 성질을 갖고 있었다.
+
+    ⑭ 로 `verify` 를 다시 쓰면서 "RPC 하나면 되는데 GET 은 왜 하나" 로 줄이고 싶어지는
+    자리가 생겼다. 그때 조용히 열리는 것이 여기다.
+
+    시크릿은 남아 있으므로 passcode 는 **맞다**. 그런데 원장의 생성 기록이 전부
+    읽히지 않으면 `fold` 에 그 조가 없다 — True 를 주면 화면은 "참가했다" 고 말한 뒤
+    아무 데도 들여보내지 못하고, 이후 쓰기는 전부 "없는 조" 이상이 된다.
+    """
+    st, fake = supabase()
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    st.create_team(team(), passcode_hash=stored)
+    assert st.verify("team_a", stored) is True          # 🔒 먼저 참인 것을 확인한다
+
+    # 생성 기록을 읽지 못하게 만든다 — id 는 내용의 해시라 한 칸만 바꿔도 어긋난다
+    only = next(iter(fake.rows))
+    fake.rows[only] = {**fake.rows[only], "actor": "   "}
+
+    assert fake.secrets["team_a"] == stored             # 🔒 passcode 는 그대로 맞다
+    assert st.verify("team_a", stored) is False
+
+
+def test_Supabase_조_생성이_조용히_성공하지_않는다():
+    """🔴 옛 정의는 `on conflict do nothing` 뒤에 무조건 `return 1` 이었다.
+
+    공격자가 그 `event_id` 를 **다른 종류**로 먼저 차지하면(부분 유니크 인덱스에도
+    걸리지 않는다) 진짜 조 생성이 0건으로 삼켜지는데 화면은 "조를 만들었다" 를
+    띄우고 세션까지 묶는다. 시크릿은 들어갔으므로 같은 id 로 다시 만들 수도 없다.
+    """
+    st, fake = supabase()
+    target = team(team_id="team_b").event_id
+    fake.rows[target] = {"event_id": target, "kind": "comment.posted",
+                         "team_id": "team_z", "actor": "공격자", "at": AT1, "payload": {}}
+
+    with pytest.raises(store.StoreError, match="쓰지 못했다"):
+        st.create_team(team(team_id="team_b"), passcode_hash=HASH)
+    # 🔒 한 트랜잭션이다 — 시크릿도 남지 않는다. 남으면 그 id 가 영구 사망한다
+    assert "team_b" not in fake.secrets
+
+
+def test_Supabase_가_원장의_생성_기록_위에_조를_다시_만들지_않는다():
+    """🔴 orphan — 시크릿은 없는데 원장에는 생성 기록이 있다 (옛 원장 backfill 등).
+
+    인덱스가 생기면 여기서 영문 제약 이름이 화면에 그대로 뜬다. 함수가 먼저
+    사람이 읽을 수 있는 문장을 준다 — 🔒 마스터 RPC 가 없으므로 줄 수 있는 다음
+    할 일은 "다른 id" 뿐이고, 그 사실까지 문장에 있다.
+    """
+    st, fake = supabase()
+    created = team()
+    fake.rows[created.event_id] = created.to_json()      # 시크릿 없이 원장에만
+    with pytest.raises(store.StoreError, match="이미 원장에 있다"):
+        st.create_team(created, passcode_hash=HASH)
+    assert "team_a" not in fake.secrets
+
+
+def test_Supabase_검증이_실패에_열리지_않는다():
+    """🔴 ADR-SC-0011 ⑭ 의 fail-closed 주장을 **테스트로** 못 박는다.
+
+    주장만 적어 두면 다음 사람이 `except` 로 감싸 "확인할 수 없으니 통과" 로 바꾼다.
+    세 가지 실패를 각각 본다 — 어느 것도 참가를 열지 않아야 한다.
+    """
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+
+    # ① 새 앱 + 옛 DB — 마이그레이션 전에 배포했다. 검증 RPC 가 아직 없다
+    class BeforeMigration(FakePostgrest):
+        _rpc_workspace_verify_passcode = None
+
+    st, _ = supabase(BeforeMigration())
+    st.create_team(team(), passcode_hash=stored)
+    with pytest.raises(store.StoreError, match="함수가 없다"):
+        st.verify("team_a", stored)
+
+    # ② 원장을 못 읽는다 — 빈 원장으로 보고 통과시키지 않는다
+    class Down(FakePostgrest):
+        def get(self, url, **kw):
+            return FakeResponse(503, {"message": "service unavailable"})
+
+    st, _ = supabase(Down())
+    with pytest.raises(store.StoreError, match="503"):
+        st.verify("team_a", stored)
+
+    # ③ RPC 가 `null` 을 실어 보낸다 — **모르는 답을 통과로 읽지 않는다**
+    class Null(FakePostgrest):
+        def _rpc_workspace_verify_passcode(self, p):
+            return FakeResponse(200, None)
+
+    st, _ = supabase(Null())
+    st.create_team(team(), passcode_hash=stored)
+    assert st.verify("team_a", stored) is False
+
+
+def test_Supabase_검증이_조_id_를_두_호출에_같게_보낸다():
+    """🔴 옛 코드는 GET 에만 `require_team_id` 를 통과시키고 RPC 에는 원본을 보냈다.
+
+    결과가 fail-closed 라 사고로 드러나지 않았을 뿐, **두 호출이 다른 조를 가리켰다.**
+    """
+    st, fake = supabase()
+    stored = auth.hash_passcode("산-바다-강-들", salt=b"0" * 16)
+    st.create_team(team(), passcode_hash=stored)
+    seen: list[str] = []
+    original = fake._rpc_workspace_verify_passcode
+
+    def spy(p):
+        seen.append(p["p_team_id"])
+        return original(p)
+
+    fake._rpc_workspace_verify_passcode = spy
+    assert st.verify("  team_a  ", stored) is True
+    assert seen == ["team_a"], "RPC 가 다듬지 않은 id 를 받았다"
+
+
 def test_Supabase_하트비트가_void_를_받아낸다():
     """🔒 7일 pause 를 이것으로 푼다 — 본문 없는 204 에서 죽으면 안 된다."""
     st, fake = supabase()
@@ -1276,19 +1467,115 @@ def test_시크릿이_없으면_무엇을_해야_하는지_말한다(monkeypatch
         store.SupabaseStore(url=FakePostgrest.URL, transport=FakePostgrest())
 
 
+def _migrations() -> list[Path]:
+    """마이그레이션 전부를 **버전 순**으로. 파일명 타임스탬프가 곧 DB 버전이다."""
+    root = Path(__file__).resolve().parents[2] / "supabase" / "migrations"
+    paths = sorted(root.glob("*.sql"))
+    assert paths, "마이그레이션을 하나도 찾지 못했다"
+    return paths
+
+
+def _live_function(name: str) -> str:
+    """그 함수의 **살아 있는** 정의 — 마지막으로 `create or replace` 한 것.
+
+    🔴 파일 하나를 하드코딩하면, 다음 마이그레이션이 같은 함수를 갈아끼운 순간
+       이 검사가 **죽은 파일**을 읽으며 통과한다. README 가 경고한 사고
+       ("갈라지면 클라이언트가 거부를 통신 오류로 오인한다")가, 그것을 막으라고
+       만든 테스트를 통과한 채로 일어난다.
+    """
+    marker = f"create or replace function public.{name}("
+    live = None
+    for path in _migrations():
+        text = path.read_text(encoding="utf-8")
+        start = text.rfind(marker)
+        if start == -1:
+            continue
+        # 🔒 마커가 주석 줄에 있으면 정의가 아니다 — 슬라이스가 엉뚱해진다
+        line_start = text.rfind("\n", 0, start) + 1
+        assert not text[line_start:start].lstrip().startswith("--"), \
+            f"{path.name} 의 {name} 마커가 주석 안에 있다"
+        # 🔴 본문 시작(`as $$`)을 찾고 **그 뒤 첫 `$$;`** 로 닫는다.
+        #    `end $$;` 만 찾으면 `language sql` 함수(`$$;` 로 끝난다)에서 종료를 놓쳐
+        #    **다음 함수를 통째로 삼킨다** — 예외가 아니라 조용한 오답이 된다.
+        body = text.find("as $$", start)
+        assert body != -1, f"{path.name} 의 {name} 에 `as $$` 본문이 없다"
+        end = text.find("$$;", body + len("as $$"))
+        assert end != -1, f"{path.name} 의 {name} 정의가 닫히지 않았다"
+        live = text[start:end + len("$$;")]
+    assert live is not None, f"{name} 정의를 마이그레이션에서 찾지 못했다"
+    return live
+
+
+def test_살아있는_정의_헬퍼가_다음_함수를_삼키지_않는다():
+    """🔴 `language sql` 함수는 `$$;` 로 끝난다 — `end $$;` 만 찾으면 못 닫는다.
+
+    이 헬퍼가 조용히 틀리면 아래 대조들이 **엉뚱한 함수를 검사하며 통과**한다.
+    """
+    for name in ("workspace_ct_eq", "workspace_passcode_params",       # language sql
+                 "workspace_append", "workspace_create_team",          # language plpgsql
+                 "workspace_verify_passcode"):
+        live = _live_function(name)
+        assert live.startswith(f"create or replace function public.{name}(")
+        assert live.endswith("$$;")
+        assert live.count("create or replace function") == 1, f"{name} 이 다음 함수를 삼켰다"
+
+
 def test_거부_문장이_마이그레이션과_같다():
     """🔴 갈라지면 **거부를 통신 오류로 오인**해 화면이 엉뚱한 말을 한다.
 
     `SupabaseStore._decode` 가 PostgREST 가 실어 보낸 문장을 보고
     `PasscodeRejected` 로 올린다. 그 문장의 정본은 SQL 이다.
     """
-    sql = (Path(__file__).resolve().parents[2] / "supabase" / "migrations"
-           / "20260912095328_workspace_ledger.sql").read_text(encoding="utf-8")
-    assert f"'{store.REJECTED_MESSAGE}'" in sql, store.REJECTED_MESSAGE
+    assert f"'{store.REJECTED_MESSAGE}'" in _live_function("workspace_append"), \
+        store.REJECTED_MESSAGE
 
 
 def test_원장_CHECK_와_코어가_같은_키를_막는다():
     """🔒 DB 와 코어가 같은 규칙을 갖는다 — 두 곳이 갈라지면 한쪽이 새거나 거부한다."""
-    sql = (Path(__file__).resolve().parents[2] / "supabase" / "migrations"
-           / "20260912095328_workspace_ledger.sql").read_text(encoding="utf-8")
+    sql = "".join(path.read_text(encoding="utf-8") for path in _migrations())
     assert f"payload ? '{events.LEGACY_SECRET_KEY}'" in sql
+
+
+def test_마이그레이션이_조_생성을_append_에서_막는다():
+    """🔴 원장 위험 ② — 막는 곳이 Python 뿐이면 RPC 가 앱을 건너뛴다."""
+    live = _live_function("workspace_append")
+    assert "'team.created'" in live, "append 가 조 생성을 거르지 않는다"
+    # 🔒 passcode 검사 **앞**이어야 한다 — 종류 오류가 "틀린 passcode" 로 묻히지 않게
+    assert live.index("'team.created'") < live.index(store.REJECTED_MESSAGE)
+
+
+def test_마이그레이션이_조_생성의_두_실패를_말한다():
+    """🔴 앵커가 없으면 `FakePostgrest` 만 그 성질을 붙잡는다.
+
+    가짜는 이 커밋에서 손으로 고친 것이라, SQL 쪽 `create_team` 을 옛 정의로
+    되돌려도 테스트가 **전부 통과**한다 — 실제로 그랬다. 진짜를 묶는다.
+    """
+    live = _live_function("workspace_create_team")
+    # orphan — 원장에 생성 기록이 있는데 시크릿이 없다
+    assert "이미 원장에 있다" in live
+    assert "kind = 'team.created'" in live
+    # 0건 삽입 — 옛 정의는 `on conflict do nothing` 뒤에 무조건 `return 1` 이었다
+    assert "v_written = 0" in live
+    assert "return 1;" not in live, "조 생성이 다시 무조건 1 을 돌려준다"
+
+
+def test_마이그레이션이_조마다_생성_기록_하나를_강제한다():
+    """🔒 규칙은 함수에, 불변식은 인덱스에. 함수는 갈아끼울 수 있고 인덱스는 남는다."""
+    sql = "".join(path.read_text(encoding="utf-8") for path in _migrations())
+    assert "unique index if not exists workspace_event_one_created_per_team" in sql
+    assert "where kind = 'team.created'" in sql
+
+
+def test_검증_RPC_가_stable_이_아니다():
+    """🔴 PostgREST 는 STABLE 함수를 **GET 으로도** 노출한다.
+
+    `p_encoded` 는 저장된 해시 그 자체 — 곧 그 조의 영구 쓰기 자격증명이다.
+    STABLE 이 되는 순간 그것이 쿼리스트링에 실려 로그·프록시·브라우저 히스토리에
+    남고, passcode 를 바꾸는 RPC 가 없으므로 **회수할 수 없다.**
+    """
+    head = _live_function("workspace_verify_passcode").split("as $$")[0]
+    # 🔒 주석을 걷어낸 뒤 본다 — 머리에 "STABLE 로 바꾸지 마라" 가 적혀 있어서,
+    #    문자열만 보면 그 경고문 자체에 걸린다
+    code = "\n".join(line.split("--")[0] for line in head.splitlines()).lower()
+    assert "volatile" in code, "검증 RPC 가 volatile 이 아니다"
+    assert "stable" not in code and "immutable" not in code
