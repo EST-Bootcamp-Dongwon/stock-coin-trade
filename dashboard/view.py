@@ -111,21 +111,35 @@ def scored(frame: Any, weighting: Weighting) -> Any:
         out[RANK_COLUMN] = frame[weighting.column("rank")].array
         return out
 
-    work = frame.reset_index(drop=True)      # 🔒 0..n-1 로 다시 세운 **자리** 색인
-    scores: list[int | None] = [None] * len(work)
-    ranks: list[int | None] = [None] * len(work)
-    for day, group in work.groupby("bas_dd", sort=False):
+    # 🔴 **열을 먼저 파이썬 리스트로 꺼낸다.** `itertuples` 를 날짜별 그룹마다 부르면 pandas 가
+    #    **그룹마다 열 수만큼** `_ixs` 를 탄다 — 285그룹 × 26열 = **7,411번**(실측 · 새 경로는 6번).
+    #    361ms 였고, 슬라이더는 한 칸 움직일 때마다 rerun 이라 그대로 체감 지연이 됐다 (이슈 #1).
+    #    ⚠️ 비용이 **그룹 수**에 비례하므로 창을 자르면 줄기는 한다 — 그래도 자르지 않는다.
+    #       이유는 성능이 아니라 계약이다(ADR-SC-0014 ⑦ — 하단에는 원본 프레임이 간다).
+    #    🔒 결과는 글자 그대로 같다 — 같은 `weighted_score_bp` · `rank_scores` 에 같은 값을 준다
+    days = [str(d) for d in frame["bas_dd"]]
+    sector_ids = [str(v) for v in frame["sector_id"]]
+    z_of_axis = {a: _int_list(frame[f"{_AXIS_PREFIX[a]}_z_bp"]) for a in AXES}
+
+    #: 자리(0..n-1)를 날짜별로 묶는다. 🔒 **자리로 다룬다** — 색인 라벨로 맞추면 색인이
+    #:  중복된 프레임에서 한 값이 여러 행으로 퍼진다(2026-09-17에 실제로 그랬다)
+    by_day: dict[str, list[int]] = {}
+    for position, day in enumerate(days):
+        by_day.setdefault(day, []).append(position)
+
+    scores: list[int | None] = [None] * len(days)
+    ranks: list[int | None] = [None] * len(days)
+    for day, positions in by_day.items():
         again: dict[str, int | None] = {}
         at: dict[str, int] = {}
-        for position, row in zip(group.index, group.itertuples(index=False), strict=True):
-            sector_id = str(row.sector_id)
+        for position in positions:
+            sector_id = sector_ids[position]
             if sector_id in again:
                 # 🔴 하루에 같은 섹터가 둘이면 순위가 조용히 한 줄을 잃는다
                 raise ViewError(f"{day} 에 섹터 {sector_id} 가 두 번 있다 — 파생본이 깨졌다")
-            at[sector_id] = int(position)
+            at[sector_id] = position
             again[sector_id] = weighted_score_bp(
-                {a: _int_or_none(getattr(row, f"{_AXIS_PREFIX[a]}_z_bp")) for a in AXES},
-                weighting.weights)
+                {a: z_of_axis[a][position] for a in AXES}, weighting.weights)
         ranked = rank_scores(again)
         for sector_id, position in at.items():
             scores[position] = again[sector_id]
@@ -272,6 +286,17 @@ def axis_breakdown(frame: Any, sector_id: str, *,
             "rank": _axis_rank(latest, axis, z) if has else None,
         })
     return out
+
+
+def _int_list(column: Any) -> list[int | None]:
+    """열 하나를 `int | None` 리스트로. 🔒 결측은 **`None`** 이지 0 이 아니다.
+
+    🔴 `Int64` 열의 `.tolist()` 는 결측을 `pd.NA` 로 준다. `float64` 로 올라온 열은
+       `nan` 이다 — 둘을 한 번에 접는다.
+    """
+    import pandas as pd
+
+    return [None if v is None or pd.isna(v) else int(v) for v in column.tolist()]
 
 
 def _notna(value: Any) -> bool:

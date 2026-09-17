@@ -20,6 +20,24 @@ from sector.conftest import Snapshot
 GOLDEN_DIR = Path(__file__).parent / "agent" / "testdata" / "golden"
 
 
+@pytest.fixture(autouse=True)
+def _clear_score_cache():
+    """🔴 `data.load_scores` 는 `st.cache_data` 라 **pytest 세션 전체를 넘어 산다**.
+
+    앞선 테스트가 넣어 둔 프레임을 다음 테스트가 받는데, 대개 **그래도 통과한다** —
+    가장 나쁜 실패다. 실증: `_from_local` 만 가로채고 캐시를 안 비운 테스트가 자기가
+    만든 합성 프레임(27행) 대신 앞 테스트의 실데이터(5985행)를 받았다(적대적 리뷰).
+
+    🔒 규율을 **테스트마다 기억하는 것**에서 **장치가 지키는 것**으로 옮긴다.
+    """
+    from dashboard import data
+
+    clear = getattr(data.load_scores, "clear", lambda: None)
+    clear()
+    yield
+    clear()
+
+
 @pytest.fixture
 def snapshot(request: pytest.FixtureRequest) -> Snapshot:
     update = bool(request.config.getoption("--snapshot-update", default=False))

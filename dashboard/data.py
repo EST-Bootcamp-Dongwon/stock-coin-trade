@@ -10,6 +10,12 @@
 그래서 `load_scores()` 는 `(프레임, Source)` 를 돌려주고 화면이 `Source.label` 을
 그대로 보여준다. 🔒 **조용한 폴백이 아니다** — 어디서 읽었는지 화면에 남는다.
 
+## 🔒 이 모듈은 **streamlit 을 요구한다**
+
+`load_scores` 가 `st.cache_data` 를 쓴다 (이슈 #2). `dashboard/view.py`·`weights.py` 와 달리
+화면 없이는 import 되지 않는다 — `sector/`·`batch/`·`dashboard/agent/` 는 이 모듈을
+**쓰지 않으므로** "`sector` 는 Streamlit 에 의존하지 않는다" 는 규율은 그대로다.
+
 ## 🔒 시크릿은 `secret_access` 하나로만
 
 `st.secrets` 는 파일이 없으면 **접근만으로** 던진다(V19 · `.get()` 도 던진다).
@@ -26,11 +32,22 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import streamlit as st
+
 from sector.datastore import hub
 from sector.sources.krx_common import repo_root
 
 __all__ = ["DataUnavailable", "Source", "load_scores", "load_sectors", "latest_day",
            "sector_master", "sector_names", "sector_notes"]
+
+#: 점수 표를 다시 읽기까지의 시간(초). 🔴 **왜 캐시하는가** — 위젯을 하나 만질 때마다
+#:    `hf_hub_download`(ETag 재검증 왕복) → 745KB → `read_parquet` 이 통째로 돌았다
+#:    (실측 220ms). M9 가 이 화면에 슬라이더 4 · 체크박스 2 · 멀티셀렉트 1 · 라디오 1 ·
+#:    셀렉트박스 1 을 얹어 rerun 이 잦아지면서 그 값이 곧 체감 지연이 됐다 (이슈 #2).
+#: 🔒 **짧게 잡는다.** 배치는 하루 한 번 게시하지만, 로컬에서 `build_scores` 를 돌린 뒤
+#:    화면이 10분 넘게 옛 값을 보여 주면 "왜 안 바뀌지" 를 디버깅하게 된다.
+#:    급하면 Streamlit 메뉴의 **Clear cache** 로 즉시 비운다.
+SCORES_TTL_SECONDS = 300
 
 #: HF 에 게시된 앱 전용 파일. 🔒 앱은 `latest/` 만 읽는다 — 월별 샤드를 전부
 #:    받으면 메모리 2.7GB 한도에 닿는다.
@@ -96,11 +113,21 @@ def _from_local() -> tuple[Any, Source] | None:
     )
 
 
+@st.cache_data(ttl=SCORES_TTL_SECONDS, show_spinner=False)
 def load_scores() -> tuple[Any, Source]:
     """점수 표와 그 출처. 🔒 순서가 의도다 — **게시된 것이 먼저다.**
 
     로컬이 먼저면 배포 앱에서도 개발용 파일을 보게 되고, 팀원과 내가 다른 숫자를
     보면서 같은 것을 본다고 믿게 된다.
+
+    ## 🔒 캐시는 `SCORES_TTL_SECONDS` 로 만료된다
+
+    🔒 `st.cache_data` 는 **사본**을 돌려준다 — 화면이 프레임을 고쳐도 캐시가 오염되지
+       않는다. `Source` 도 함께 캐시되므로 "이 화면이 읽은 것" 문구가 값과 어긋나지 않는다.
+    🔒 **예외는 캐시되지 않는다.** 토큰이 없어 `DataUnavailable` 이 나는 동안 시크릿을
+       채워 넣으면 다음 rerun 에 바로 읽힌다.
+    🔒 인자가 없으므로 캐시는 **서버 프로세스 하나에 한 칸**이다. 게시된 파생값은 모든
+       팀원에게 같으니 그것이 맞다 — 사람마다 다른 값을 줄 이유가 없다.
     """
     for reader in (_from_hf, _from_local):
         result = reader()
@@ -189,7 +216,7 @@ def _master() -> Any:
     """`sectors.yaml`. 🔒 못 읽어도 화면은 살아 있어야 한다 — `None` 을 돌려준다.
 
     🔒 `st.cache_data` 가 아니라 `lru_cache` 다 — `SectorMaster` 는 직렬화 대상이
-       아니고, 이 모듈은 `streamlit` 을 import 하지 않아 화면 없이 테스트된다.
+       아니다 — `st.cache_data` 는 값을 피클하는데 `SectorMaster` 는 그럴 물건이 아니다.
 
     이름이 없는 것은 **점수가 없는 것과 다르다.** 점수를 못 읽으면 화면이 멈추지만
     (`DataUnavailable`), 이름을 못 읽으면 코드로라도 그릴 수 있다.

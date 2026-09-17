@@ -1288,6 +1288,165 @@ def test_막대도_걸러도_순위_순서를_지킨다():
     assert list(bars.index) == [KOREAN.sector_label("sec_2"), KOREAN.sector_label("sec_0")]
 
 
+# ── 성능 — 팀 7명이 매일 쓴다 (이슈 #1 · #2) ────────────────────────────────
+
+def test_커스텀_재계산이_행_수에_비례해_pandas_를_타지_않는다():
+    """🔴 `itertuples` 를 날짜별 그룹마다 부르면 pandas 가 **그룹마다 열 수만큼** `_ixs` 를
+    탄다 — 285그룹 × 26열 = 7,411번, 361ms. 슬라이더는 한 칸 움직일 때마다 rerun 이라
+    그대로 체감 지연이 된다 (이슈 #1).
+
+    🔒 **시간을 재지 않는다** — 느린 CI 에서 흔들린다. 대신 **행 단위 접근 횟수**를 센다.
+    🔴 소스에서 `itertuples` 글자를 찾는 검사로는 모자랐다(적대적 리뷰) — 헬퍼로 빼거나
+       `.iloc` 행 루프로 바꾸거나 `apply(axis=1)` 로 쓰면 **초록불인 채로** 무장해제된다.
+       그래서 행 수만 다른 두 프레임에서 **호출 수가 늘지 않는 것**을 본다.
+    """
+    import pandas as pd
+
+    counted = {"n": 0}
+    real = pd.DataFrame._ixs
+
+    def watched(self, i, axis=0):
+        counted["n"] += 1
+        return real(self, i, axis=axis)
+
+    only_m = weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0})
+    taken = []
+    for n_sectors in (3, 12):
+        data = frame(n_sectors)
+        counted["n"] = 0
+        pd.DataFrame._ixs = watched
+        try:
+            view.scored(data, only_m)
+        finally:
+            pd.DataFrame._ixs = real
+        taken.append((len(data), counted["n"]))
+
+    (small_rows, small_hits), (big_rows, big_hits) = taken
+    assert big_rows > small_rows * 3, taken          # 픽스처가 실제로 커졌는가
+    # 🔒 행이 4배로 늘어도 행 단위 접근은 **거의 그대로**여야 한다
+    assert big_hits <= small_hits + 2, (
+        f"행 {small_rows}→{big_rows} 인데 행 단위 접근이 {small_hits}→{big_hits} 로 늘었다 — "
+        f"열을 통째로 꺼내 쓰지 않는다")
+
+
+def _with_gaps() -> "pd.DataFrame":
+    """z 가 군데군데 빈 판. 🔴 **`_int_list` 의 존재 이유가 결측이다** — 결측이 없는
+    픽스처로는 `pd.NA`→`None` 변환이 한 번도 검증되지 않는다(적대적 리뷰)."""
+    data = frame(n_sectors=4)
+    last = data["bas_dd"] == DAYS[-1]
+    for column in ("m_z_bp", "f_z_bp", "b_z_bp", "v_z_bp"):
+        data[column] = data[column].astype("Int64")
+    data.loc[data["sector_id"] == "sec_0", "m_z_bp"] = pd.NA
+    data.loc[last & (data["sector_id"] == "sec_1"), ["f_z_bp", "b_z_bp"]] = pd.NA
+    # 🔒 축이 하나도 없는 행 — 실데이터에 399행 있다
+    data.loc[last & (data["sector_id"] == "sec_3"),
+             ["m_z_bp", "f_z_bp", "b_z_bp", "v_z_bp"]] = pd.NA
+    return data
+
+
+def test_커스텀_재계산이_배치_값과_한_칸도_다르지_않다():
+    """🔒 빠르게 만들면서 답이 바뀌면 아무 소용이 없다. 두 경로를 **전 행** 대조한다.
+
+    🔒 **점수와 순위를 둘 다** 본다 — 점수만 보면 `rank` 를 전부 1 로 바꿔도 통과한다.
+    🔒 결측이 섞인 판으로도 돌린다 (`_with_gaps`).
+    """
+    from sector.scoring import rank_scores, weighted_score_bp
+
+    for data in (frame(n_sectors=3), _with_gaps()):
+        for raw in ({"M": 100, "F": 0, "B": 0, "V": 0}, {"M": 10, "F": 10, "B": 10, "V": 70},
+                    {"M": 1, "F": 1, "B": 1, "V": 1}):
+            weighting = weights.Weighting.of(raw)
+            out = view.scored(data, weighting)
+            for day, group in out.groupby("bas_dd"):
+                again = {
+                    str(row.sector_id): weighted_score_bp(
+                        {a: view._int_or_none(getattr(row, f"{view._AXIS_PREFIX[a]}_z_bp"))
+                         for a in AXES}, weighting.weights)
+                    for row in group.itertuples(index=False)}
+                ranked = rank_scores(again)
+                for row in group.itertuples(index=False):
+                    sid = str(row.sector_id)
+                    assert view._int_or_none(row.score_bp) == again[sid], (raw, day, sid)
+                    assert view._int_or_none(row.rank) == ranked[sid], (raw, day, sid)
+            assert str(out[view.SCORE_COLUMN].dtype) == "Int64"
+            assert str(out[view.RANK_COLUMN].dtype) == "Int64"
+
+
+def test_살아있는_축이_하나도_없으면_점수가_없다():
+    """🔴 0 이 아니라 **없음**이다 (ADR-SC-0007). 결측을 0 으로 채우면 그 섹터가
+    가운데로 올라와 순위가 통째로 거짓이 된다."""
+    out = view.scored(_with_gaps(), weights.Weighting.of({"M": 1, "F": 1, "B": 1, "V": 1}))
+    blank = out[(out["bas_dd"] == DAYS[-1]) & (out["sector_id"] == "sec_3")]
+    assert blank[view.SCORE_COLUMN].isna().all()
+    assert blank[view.RANK_COLUMN].isna().all()
+
+
+def test_점수_캐시의_수명이_고정돼_있다():
+    """🔴 TTL 은 이 변경의 **유일한 운용 파라미터**다 — 너무 길면 배치가 게시해도 팀이
+    못 본다(이슈 #2). `ttl=None` 으로 바꿔도 다른 테스트는 전부 통과한다."""
+    from dashboard import data as _data
+
+    assert 0 < _data.SCORES_TTL_SECONDS <= 600, "게시 주기(하루 1회)에 비해 너무 길다"
+    info = getattr(_data.load_scores, "_info", None)
+    assert info is not None, "`load_scores` 가 캐시되지 않았다"
+    assert info.ttl == _data.SCORES_TTL_SECONDS
+
+
+def test_점수를_매_rerun_마다_다시_읽지_않는다(monkeypatch):
+    """🔴 `load_scores` 는 HF ETag 왕복 + 745KB + `read_parquet` 이라 220ms 다.
+    위젯을 하나 만질 때마다 그것이 돌면 슬라이더 한 칸에 네트워크 왕복이 붙는다.
+
+    🔒 **뒤끝을 남기지 않는다** — 가짜를 캐시에 남기면 뒤따르는 AppTest 가 그것을 읽는다.
+       그래서 앞뒤로 비운다(`pytest-randomly` 로 순서가 섞여도 안전하게).
+    """
+    from dashboard import data as _data
+
+    # 🔒 캐시가 **없을 때도** 의도한 단언이 울려야 한다. `clear()` 를 그냥 부르면
+    #    데코레이터가 사라진 순간 `AttributeError` 로 먼저 죽어, 실패 메시지가
+    #    "캐시가 없다" 가 아니라 엉뚱한 것이 된다
+    clear = getattr(_data.load_scores, "clear", lambda: None)
+    reads: list[int] = []
+
+    def fake_local():
+        reads.append(1)
+        return frame(), _data.Source(kind="local", label="테스트용")
+
+    monkeypatch.setattr(_data, "_from_hf", lambda: None)
+    monkeypatch.setattr(_data, "_from_local", fake_local)
+    clear()
+    try:
+        first, _ = _data.load_scores()
+        second, _ = _data.load_scores()
+        assert reads == [1], f"원천을 {len(reads)}번 읽었다 — 캐시가 없다"
+        assert first.equals(second)
+        # 🔒 사본을 준다 — 화면이 고쳐도 캐시가 더러워지지 않는다
+        first.loc[0, "score_balanced_bp"] = 999_999
+        third, _ = _data.load_scores()
+        assert int(third.loc[0, "score_balanced_bp"]) != 999_999
+    finally:
+        clear()
+
+
+def test_읽지_못한_것은_캐시하지_않는다(monkeypatch):
+    """🔒 토큰이 없어 실패하는 동안 시크릿을 채우면 **다음 rerun 에 바로** 읽혀야 한다.
+    예외가 캐시되면 TTL 이 끝날 때까지 빈 화면이 남는다."""
+    from dashboard import data as _data
+
+    monkeypatch.setattr(_data, "_from_hf", lambda: None)
+    monkeypatch.setattr(_data, "_from_local", lambda: None)
+    clear = getattr(_data.load_scores, "clear", lambda: None)
+    clear()
+    try:
+        with pytest.raises(_data.DataUnavailable):
+            _data.load_scores()
+        monkeypatch.setattr(_data, "_from_local",
+                            lambda: (frame(), _data.Source(kind="local", label="테스트용")))
+        recovered, _ = _data.load_scores()
+        assert len(recovered) > 0, "예외가 캐시돼 복구되지 않았다"
+    finally:
+        clear()
+
+
 # ── 랭킹 화면 — 커스텀 가중치의 경계 (M9) ───────────────────────────────────
 
 def _app_with(**state):
