@@ -390,3 +390,54 @@ def test_입력_순서가_달라도_같은_출력이다():
     a = gate.project_sector(frame)
     b = gate.project_sector(frame.sample(frac=1.0, random_state=7))
     pd.testing.assert_frame_equal(a, b)
+
+
+# ── 재현성 — 게시본만으로 그 점수에 닿는가 (M9 · 2026-09-17) ────────────────
+
+def test_게시되는_z_로_점수를_재현할_수_없으면_막는다(published):
+    """🔴 앱은 `*_z_bp` 밖에 못 본다. 슬라이더가 그 열을 가중합해 점수를 다시 내는데,
+    게시된 점수가 그 방식으로 나온 값이 아니면 **같은 화면의 표와 근거가 다른 숫자를
+    말한다.** 실측에서 한 섹터의 순위 진폭이 표에서 4.4, 근거에서 4.5 로 나왔다.
+    """
+    sector, market, score = published
+    tampered = score.copy()
+    tampered.loc[0, "score_balanced_bp"] = int(tampered.loc[0, "score_balanced_bp"]) + 1
+    report = gate.check(sector=sector, market=market, score=tampered, as_of=DAYS[-1])
+    assert not report.ok
+    assert any("재현할 수 없다" in v for v in report.violations), report.violations
+
+
+def test_순위만_어긋나도_막는다(published):
+    """🔒 점수가 맞아도 tie-break 가 갈리면 화면과 근거의 등수가 달라진다."""
+    sector, market, score = published
+    tampered = score.copy()
+    tampered["rank_momentum"] = tampered["rank_momentum"].max() + 1 - tampered["rank_momentum"]
+    report = gate.check(sector=sector, market=market, score=tampered, as_of=DAYS[-1])
+    assert not report.ok
+    assert any("rank" in v or "순위" in v for v in report.violations), report.violations
+
+
+def test_재현성_검사가_배치와_같은_함수를_쓴다():
+    """🔒 검사가 산수를 되풀이하면 배치와 검사가 같이 틀릴 수 있다. 검사하는 것은
+    "계산이 맞나" 가 아니라 **"게시본만으로 이 값에 닿을 수 있나"** 다."""
+    import inspect
+
+    source = inspect.getsource(gate._check_score_reproducible)
+    assert "weighted_score_bp" in source and "rank_scores" in source
+
+
+def test_실제_채점_결과가_재현성을_통과한다():
+    """🔴 합성 프레임은 네 축 z 가 같아 어떤 가중치로도 같은 답이 나온다 — 반올림
+    지형을 대표하지 못한다. 그래서 **골든 픽스처로 실제 채점을 돌려** 통과를 본다.
+    """
+    import dataclasses as _dc
+
+    from sector import scoring
+    from sector.scoring_golden_test import FETCHED_AT, _read, golden_config
+
+    sector_frame, market_frame = _read("golden_sector_daily.csv"), _read("golden_market_daily.csv")
+    days = sorted(sector_frame["bas_dd"].dropna().unique())
+    rows = scoring.score_history(sector_frame, market_frame, as_of=days[-1],
+                                 config=golden_config(), fetched_at=FETCHED_AT)
+    score = pd.DataFrame([_dc.asdict(r) for r in rows])
+    assert gate._check_score_reproducible(None, None, score, days[-1]) == []

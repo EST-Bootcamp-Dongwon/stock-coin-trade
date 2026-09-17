@@ -70,6 +70,15 @@ z 가 거의 안 움직이는 것은 우연이 아니다. `r20_mkt` 는 모든 �
 골든 스냅샷이 환경마다 흔들리면 없느니만 못하기 때문이다(`AGENTS.md` 5장).
 원시값을 **먼저 bp 정수로 양자화한 뒤** 그 위에서 z 를 계산한다 — 그래야 게시된
 `*_raw_bp` 로 앱이 z 를 다시 계산해도 같은 값이 나온다(축 분해 표가 재현 가능하다).
+
+## 🔴 같은 규율이 z → 점수 단계에도 걸린다 (2026-09-17)
+
+한동안 **점수만 양자화 *전* z(Decimal)로** 계산했다. 게시되는 것은 양자화된 z 인데
+점수는 그보다 정밀한 값에서 나왔으니, 게시본만 가진 앱은 같은 점수를 낼 수 없었다 —
+5985행 중 670~827행이 ±1bp 어긋났고 285영업일 중 1일에서 순위가 뒤집혔다.
+
+지금은 `weighted_score_bp` 가 **게시되는 `*_z_bp` 를 받아** 점수를 낸다. 배치와 앱이
+그 함수 하나를 쓰고, `gate._check_score_reproducible` 이 게시 때마다 재현을 검사한다.
 """
 
 from __future__ import annotations
@@ -90,8 +99,10 @@ __all__ = [
     "VALUE_WINDOW",
     "ScoreRow",
     "ScoringError",
+    "rank_scores",
     "score",
     "score_history",
+    "weighted_score_bp",
 ]
 
 
@@ -488,29 +499,49 @@ def _standardize(raw: Mapping[str, int | None]) -> tuple[dict[str, Decimal | Non
     return out, kind
 
 
-def _weighted_score(
-    z: Mapping[str, Decimal | None], weights: Mapping[str, int]
-) -> Decimal | None:
-    """`Σ w·z / Σ w`. **NaN 축은 분자·분모 양쪽에서 빠진다** (계획서 D-3).
+def weighted_score_bp(
+    z_bp: Mapping[str, int | None], weights: Mapping[str, int]
+) -> int | None:
+    """`Σ w·z / Σ w` 를 **게시되는 z(bp 정수)** 위에서. **결측 축은 분자·분모 양쪽에서 빠진다**
+    (계획서 D-3) — 가중치를 재정규화하므로 3축 섹터와 4축 섹터가 같은 척도로 비교된다.
 
-    가중치를 재정규화하므로 3축 섹터와 4축 섹터가 같은 척도로 비교된다.
+    ## 🔴 왜 양자화된 z 를 받는가 — 게시값이 재현되어야 한다
+
+    바로 위 `_score_at` 이 `raw` 를 먼저 bp 로 양자화하는 이유가 *"게시된 raw 로 앱이
+    z 를 다시 계산해도 같은 값이 나와야 한다"* 다. **z → 점수 단계만 그 원칙을 따르지
+    않았다** — 점수를 양자화 *전* z(Decimal)로 계산해 게시하면서 z 는 양자화해 게시했다.
+    그래서 게시된 `*_z_bp` 로 가중합을 다시 하면 5985행 중 670~827행이 ±1bp 어긋났고,
+    285영업일 중 1일에서 순위가 실제로 뒤집혔다(2026-09-17 실측).
+
+    앱의 가중치 슬라이더가 그 어긋남을 화면으로 끌어낸다 — 슬라이더를 프리셋 값에
+    맞췄는데 프리셋과 다른 숫자가 나온다. 그래서 축당 0.0001σ 를 버리고 **재현성을**
+    택했다. `gate._check_score_reproducible` 이 게시 때마다 이것을 검사한다.
+
+    🔒 **가중치를 미리 합 100 으로 정규화하지 마라.** 정수 나눗셈이 끼면 스칼라배
+       불변(35/30/20/15 == 70/60/40/30)이 깨진다. 여기서 한 번에 나눈다.
+    🔒 컨텍스트를 스스로 고정한다 — 배치는 `score()` 안에서, 앱은 그 밖에서 부른다.
+       전역 `getcontext()` 에 기대면 두 호출처가 다른 답을 낼 수 있다.
     """
-    numerator, denominator = _ZERO, 0
-    for axis, weight in weights.items():
-        value = z.get(axis)
-        if value is None or weight <= 0:
-            continue
-        numerator += Decimal(weight) * value
-        denominator += weight
-    if denominator == 0:
-        return None
-    return numerator / Decimal(denominator)
+    with localcontext(_CONTEXT):
+        numerator, denominator = _ZERO, 0
+        for axis, weight in weights.items():
+            value = z_bp.get(axis)
+            if value is None or weight <= 0:
+                continue
+            numerator += Decimal(weight) * Decimal(int(value))
+            denominator += weight
+        if denominator == 0:
+            return None
+        return _to_bp(numerator / Decimal(denominator))
 
 
-def _ranks(scores: Mapping[str, int | None]) -> dict[str, int | None]:
+def rank_scores(scores: Mapping[str, int | None]) -> dict[str, int | None]:
     """내림차순 순위. 🔒 동점은 `(−score_bp, sector_id)` 로 갈라 tie-break 를 명시한다.
 
     점수가 없는 섹터는 순위도 없다 — 맨 뒤에 두면 "꼴찌"로 읽힌다.
+
+    🔒 배치와 앱이 **이 함수 하나**를 쓴다. 화면이 따로 정렬하면 tie-break 가 갈려
+       같은 점수에서 다른 순위가 나온다.
     """
     ordered = sorted(
         (sid for sid, value in scores.items() if value is not None),
@@ -551,15 +582,18 @@ def _score_at(panel: _Panel, t: int, config: SectorMaster, *, fetched_at: str) -
         if kind == "meanad":
             degraded.append(axis)
 
-    z_of = {sid: {a: z_by_axis[a][sid] for a in AXES} for sid in panel.sector_ids}
-    preset_scores: dict[str, dict[str, int | None]] = {}
-    for name, weights in PRESETS.items():
-        column: dict[str, int | None] = {}
-        for sid in panel.sector_ids:
-            weighted = _weighted_score(z_of[sid], weights)
-            column[sid] = None if weighted is None else _to_bp(weighted * _BP)
-        preset_scores[name] = column
-    preset_ranks = {name: _ranks(values) for name, values in preset_scores.items()}
+    # 🔒 **게시되는 z(bp 정수) 위에서** 가중합한다 — 양자화 전 Decimal 로 계산하면
+    #    게시본만 가진 앱이 같은 점수를 낼 수 없다(`weighted_score_bp` 머리주석).
+    z_bp_of = {
+        sid: {a: _to_bp(z_by_axis[a][sid] * _BP) if z_by_axis[a][sid] is not None else None
+              for a in AXES}
+        for sid in panel.sector_ids
+    }
+    preset_scores: dict[str, dict[str, int | None]] = {
+        name: {sid: weighted_score_bp(z_bp_of[sid], weights) for sid in panel.sector_ids}
+        for name, weights in PRESETS.items()
+    }
+    preset_ranks = {name: rank_scores(values) for name, values in preset_scores.items()}
 
     rows: list[ScoreRow] = []
     for sid in panel.sector_ids:
@@ -575,10 +609,11 @@ def _score_at(panel: _Panel, t: int, config: SectorMaster, *, fetched_at: str) -
             f_raw_bp=raw_bp["F"][sid],
             b_raw_bp=raw_bp["B"][sid],
             v_raw_bp=raw_bp["V"][sid],
-            m_z_bp=_to_bp(z_by_axis["M"][sid] * _BP) if z_by_axis["M"][sid] is not None else None,
-            f_z_bp=_to_bp(z_by_axis["F"][sid] * _BP) if z_by_axis["F"][sid] is not None else None,
-            b_z_bp=_to_bp(z_by_axis["B"][sid] * _BP) if z_by_axis["B"][sid] is not None else None,
-            v_z_bp=_to_bp(z_by_axis["V"][sid] * _BP) if z_by_axis["V"][sid] is not None else None,
+            # 🔒 점수를 낸 것과 **같은** z 를 싣는다. 따로 양자화하면 언젠가 갈라진다
+            m_z_bp=z_bp_of[sid]["M"],
+            f_z_bp=z_bp_of[sid]["F"],
+            b_z_bp=z_bp_of[sid]["B"],
+            v_z_bp=z_bp_of[sid]["V"],
             n_axes_used=len(used),
             axes_missing=missing,
             axes_degraded="".join(a for a in AXES if a in degraded),

@@ -487,6 +487,71 @@ def _check_score_rank_consistent(sector: Any, market: Any, score: Any, as_of: st
     return bad
 
 
+def _check_score_reproducible(sector: Any, market: Any, score: Any, as_of: str) -> list[str]:
+    """게시하는 점수·순위가 **게시하는 z 만으로 재현되는가.**
+
+    ## 🔴 왜 이것이 게시 조건인가
+
+    앱은 게시본(`*_z_bp`)밖에 못 본다. 가중치 슬라이더는 그 열을 가중합해 점수를
+    다시 내는데, 게시된 `score_*_bp` 가 그 방식으로 나온 값이 아니면 **같은 화면의
+    위(표)와 아래(근거)가 다른 숫자를 말한다.** 2026-09-17 실측에서 최근 20영업일
+    창의 첫날이 갈려 한 섹터의 순위 진폭이 표에서 4.4, 근거에서 4.5 로 나왔다.
+
+    🔒 이 검사는 배치의 산수를 되풀이하지 않는다 — `weighted_score_bp` · `rank_scores`
+       라는 **배치가 실제로 쓴 함수**에 게시될 열을 도로 먹여 본다. 즉 검사하는 것은
+       "계산이 맞나" 가 아니라 **"게시본만으로 이 값에 닿을 수 있나"** 다.
+    """
+    from sector.scoring import PRESETS, rank_scores, weighted_score_bp
+
+    letters_of = dict(zip(_AXIS_LETTERS, _Z_COLUMNS))
+    need = [c for c in (*_Z_COLUMNS, *_SCORE_COLUMNS, "bas_dd", "sector_id")
+            if c not in score.columns]
+    if need:
+        return [f"score_daily 에 {need} 이 없어 재현성을 볼 수 없다"]
+
+    bad = []
+    for name, weights in PRESETS.items():
+        score_column = f"score_{name}_bp"
+        rank_column = f"rank_{name}"
+        score_off, rank_off, off_days = 0, 0, []
+        for day, group in score.groupby("bas_dd", sort=True):
+            again: dict[str, int | None] = {}
+            for row in group.itertuples(index=False):
+                z_bp = {a: _int_or_none(getattr(row, column))
+                        for a, column in letters_of.items()}
+                again[str(row.sector_id)] = weighted_score_bp(z_bp, weights)
+            ranked = rank_scores(again)
+            hit = False
+            for row in group.itertuples(index=False):
+                sid = str(row.sector_id)
+                if again[sid] != _int_or_none(getattr(row, score_column)):
+                    score_off += 1
+                    hit = True
+                if rank_column in score.columns and \
+                        ranked[sid] != _int_or_none(getattr(row, rank_column)):
+                    rank_off += 1
+                    hit = True
+            if hit:
+                off_days.append(str(day))
+        if score_off or rank_off:
+            bad.append(
+                f"score_daily.{score_column} 을 게시되는 z 로 재현할 수 없다 — "
+                f"점수 {score_off}행 · 순위 {rank_off}행 · {len(off_days)}일"
+                f"{': ' + str(off_days[:3]) if off_days else ''}")
+    return bad
+
+
+def _int_or_none(value: Any) -> int | None:
+    """pandas 의 `<NA>` · `NaN` · `None` 을 하나로 접는다.
+
+    🔒 `bool(value != value)` 같은 요령을 쓰지 않는다 — `pd.NA` 는 그 비교에서
+       진리값을 못 내고 예외를 던진다.
+    """
+    import pandas as pd
+
+    return None if value is None or pd.isna(value) else int(value)
+
+
 #: 🔴 **이 집합이 전부 돌아야 통과다.** 호출부가 `checks_run` 과 대조한다.
 _CHECKS: tuple[tuple[str, Callable[[Any, Any, Any, str], list[str]]], ...] = (
     ("rows_present", _check_rows_present),
@@ -500,6 +565,7 @@ _CHECKS: tuple[tuple[str, Callable[[Any, Any, Any, str], list[str]]], ...] = (
     ("score_bounds", _check_score_bounds),
     ("score_axes_consistent", _check_score_axes_consistent),
     ("score_rank_consistent", _check_score_rank_consistent),
+    ("score_reproducible", _check_score_reproducible),
 )
 
 REQUIRED_CHECKS: frozenset[str] = frozenset(name for name, _ in _CHECKS)

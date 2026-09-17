@@ -80,10 +80,14 @@ def frames():
     return _read("golden_sector_daily.csv"), _read("golden_market_daily.csv")
 
 
-@pytest.fixture(scope="module")
-def config() -> SectorMaster:
+def golden_config() -> SectorMaster:
     """합성 섹터 마스터. 🔒 실제 `sectors.yaml` 을 읽지 않는다 —
-    설정이 바뀔 때마다 점수 스냅샷이 흔들리면 그건 골든이 아니다."""
+    설정이 바뀔 때마다 점수 스냅샷이 흔들리면 그건 골든이 아니다.
+
+    🔒 픽스처가 아니라 **평범한 함수**다 — 다른 테스트 파일(`gate_test`)이 골든
+       픽스처로 실제 채점을 돌려 보는데, pytest 내부 속성(`__wrapped__`)에 기대면
+       pytest 를 올릴 때 조용히 깨진다.
+    """
     return SectorMaster(
         version="golden-2026-09-11",
         source_notice="합성 데이터 (시험용)",
@@ -100,6 +104,11 @@ def config() -> SectorMaster:
         ),
         config_sha256="0" * 64,
     )
+
+
+@pytest.fixture(scope="module")
+def config() -> SectorMaster:
+    return golden_config()
 
 
 @pytest.fixture(scope="module")
@@ -406,3 +415,59 @@ def test_유동성은_판정불가와_미달을_구별한다(frames, config, day
     assert late["bravo"].liquidity_ok is False, "거래대금이 1억 미만인 섹터다"
     assert late["alpha"].liquidity_ok is True
     assert late["echo"].liquidity_ok is None, "ETF 가 없으면 판정할 재료가 없다"
+
+
+# ── 재현성 — 게시본만으로 같은 점수에 닿는가 (2026-09-17) ────────────────────
+# 🔴 앱은 `*_z_bp` 밖에 못 본다. 슬라이더가 그 열을 가중합해 점수를 다시 내는데,
+#    게시된 점수가 그 방식으로 나온 값이 아니면 **같은 화면의 표와 근거가 다른
+#    숫자를 말한다.** 실측에서 최근 20영업일 창의 첫날이 갈려 한 섹터의 순위
+#    진폭이 표에서 4.4, 근거에서 4.5 로 나왔다. 아래 둘이 그것을 구조적으로 막는다.
+
+def test_게시된_z_로_프리셋_점수를_정확히_재현한다(frames, config, days):
+    """🔒 `±1bp 안` 이 아니라 **정확히 같아야** 한다. 1bp 가 순위를 뒤집는 날이 있다."""
+    for day in (days[-1], days[len(days) // 2], days[MILESTONE_INDEXES[5]]):
+        rows = _score(frames, config, day)
+        for row in rows:
+            z_bp = {"M": row.m_z_bp, "F": row.f_z_bp, "B": row.b_z_bp, "V": row.v_z_bp}
+            for name, weights in scoring.PRESETS.items():
+                again = scoring.weighted_score_bp(z_bp, weights)
+                stored = getattr(row, f"score_{name}_bp")
+                assert again == stored, f"{day} {row.sector_id} {name}: {again} != {stored}"
+
+
+def test_게시된_z_로_프리셋_순위를_정확히_재현한다(frames, config, days):
+    """점수가 같아도 tie-break 가 갈리면 순위가 달라진다 — 그것까지 고정한다."""
+    for day in (days[-1], days[len(days) // 2]):
+        rows = _score(frames, config, day)
+        for name, weights in scoring.PRESETS.items():
+            again = scoring.rank_scores({
+                r.sector_id: scoring.weighted_score_bp(
+                    {"M": r.m_z_bp, "F": r.f_z_bp, "B": r.b_z_bp, "V": r.v_z_bp}, weights)
+                for r in rows})
+            stored = {r.sector_id: getattr(r, f"rank_{name}") for r in rows}
+            assert again == stored, f"{day} {name}"
+
+
+def test_가중치를_배로_올려도_점수가_같다(frames, config, days):
+    """`Σw·z/Σw` 는 가중치 스칼라배에 불변이다 — 35/30/20/15 == 70/60/40/30.
+
+    🔒 슬라이더는 합이 100 이 아닌 값을 낸다. 이 성질이 없으면 "합을 100 으로 맞춰
+       주세요" 라는 요구가 화면에 생기고, 그건 재정규화를 두 번 하는 것이다.
+    🔒 **미리 합 100 으로 정규화하면 깨진다** — 정수 나눗셈이 끼기 때문이다.
+    """
+    rows = _score(frames, config, days[-1])
+    for row in rows:
+        z_bp = {"M": row.m_z_bp, "F": row.f_z_bp, "B": row.b_z_bp, "V": row.v_z_bp}
+        for name, weights in scoring.PRESETS.items():
+            doubled = {a: w * 2 for a, w in weights.items()}
+            assert scoring.weighted_score_bp(z_bp, doubled) == \
+                   scoring.weighted_score_bp(z_bp, weights), f"{row.sector_id} {name}"
+
+
+def test_살아있는_축의_가중치가_전부_0_이면_점수가_없다():
+    """🔒 0 점이 아니라 **없음**이다 (ADR-SC-0007). 화면이 그 섹터를 지워야 한다."""
+    assert scoring.weighted_score_bp({"M": 1000, "F": None}, {"M": 0, "F": 50}) is None
+    assert scoring.weighted_score_bp({"M": 1000}, {"M": 0}) is None
+    assert scoring.weighted_score_bp({"M": None}, {"M": 35}) is None
+    # 살아 있는 축이 하나라도 가중치를 받으면 점수가 있다
+    assert scoring.weighted_score_bp({"M": 1000, "F": None}, {"M": 35, "F": 30}) == 1000
