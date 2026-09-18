@@ -37,8 +37,8 @@ import streamlit as st
 from sector.datastore import hub
 from sector.sources.krx_common import repo_root
 
-__all__ = ["DataUnavailable", "Source", "load_scores", "load_sectors", "latest_day",
-           "sector_master", "sector_names", "sector_notes"]
+__all__ = ["DataUnavailable", "SCORES_SPINNER", "Source", "load_scores", "load_sectors",
+           "latest_day", "sector_master", "sector_names", "sector_notes"]
 
 #: 점수 표를 다시 읽기까지의 시간(초). 🔴 **왜 캐시하는가** — 위젯을 하나 만질 때마다
 #:    `hf_hub_download`(ETag 재검증 왕복) → 745KB → `read_parquet` 이 통째로 돌았다
@@ -48,6 +48,21 @@ __all__ = ["DataUnavailable", "Source", "load_scores", "load_sectors", "latest_d
 #:    화면이 10분 넘게 옛 값을 보여 주면 "왜 안 바뀌지" 를 디버깅하게 된다.
 #:    급하면 Streamlit 메뉴의 **Clear cache** 로 즉시 비운다.
 SCORES_TTL_SECONDS = 300
+
+#: 점수를 읽는 동안 화면이 하는 말. 🔴 **왜 문구를 주는가** — 팀원 7명은 개발자가
+#:    아니다. 첫 로드는 실측 **6,367ms**(HF `latest/` · 5,985행)인데 그동안 우상단
+#:    RUNNING 표시 말고는 안내가 없어 "멈췄나" 로 읽힌다 (이슈 #8).
+#: 🔒 **깜빡임 대가가 없다.** Streamlit 은 `DELAY_SECS = 0.5` 가 지난 뒤에야 문구를
+#:    띄우고(`elements/spinner.py`), TTL 이 만료된 뒤의 재읽기는 실측 **260.6ms** 다 —
+#:    모듈과 HF 로컬 캐시가 이미 더워져 ETag 왕복만 남기 때문이다. 그 문턱에 닿지
+#:    않으므로 이 문구는 **정말 오래 걸릴 때만** 나온다.
+#: 🔒 캐시가 **맞으면 아예 지나가지 않는다** — 스피너는 미스 경로에만 있다
+#:    (`cache_utils._get_or_create_cached_value`). 평소 rerun 에는 비용이 0 이다.
+#: 🔒 `True` 가 아니라 **문구**를 준다. `True` 면 Streamlit 이 ``Running
+#:    `load_scores()`.`` 라는 영어 함수 이름을 그린다 — 팀원에게 할 말이 아니다.
+#: 🔒 이것은 **우리가 쓴 글**이라 마크다운으로 나가도 된다. 사람이 입력한 글에
+#:    적용되는 HTML 블록 규율(ADR-SC-0012 ④)의 대상이 아니다.
+SCORES_SPINNER = "점수 표를 읽는 중…"
 
 #: HF 에 게시된 앱 전용 파일. 🔒 앱은 `latest/` 만 읽는다 — 월별 샤드를 전부
 #:    받으면 메모리 2.7GB 한도에 닿는다.
@@ -113,7 +128,7 @@ def _from_local() -> tuple[Any, Source] | None:
     )
 
 
-@st.cache_data(ttl=SCORES_TTL_SECONDS, show_spinner=False)
+@st.cache_data(ttl=SCORES_TTL_SECONDS, show_spinner=SCORES_SPINNER)
 def load_scores() -> tuple[Any, Source]:
     """점수 표와 그 출처. 🔒 순서가 의도다 — **게시된 것이 먼저다.**
 

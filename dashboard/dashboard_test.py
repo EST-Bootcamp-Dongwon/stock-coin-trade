@@ -1442,6 +1442,68 @@ def test_점수_캐시의_수명이_고정돼_있다():
     assert info.ttl == _data.SCORES_TTL_SECONDS
 
 
+def test_점수를_읽는_동안_화면이_말을_한다():
+    """🔴 첫 로드는 실측 **6,367ms** 다(HF `latest/` · 5,985행). 그동안 안내가 없으면
+    팀원 7명은 "멈췄다" 고 읽는다 — 그들은 개발자가 아니다 (이슈 #8).
+
+    🔒 **렌더된 스피너로는 검사할 수 없다.** Streamlit 의 스피너는 transient 라
+       `AppTest` 가 `new_transient` 델타를 통째로 건너뛴다
+       (`streamlit/testing/v1/element_tree.py`). 그래서 계약을 **캐시 설정**에서
+       고정한다 — 바로 위 TTL 을 지키는 것과 같은 방식이다. 못 보는 것을 본 척하는
+       테스트보다, 볼 수 있는 곳에서 정확히 거는 편이 낫다.
+
+    🔒 `True` 를 거른다. `show_spinner=True` 도 "말을 하긴" 하지만 Streamlit 이
+       ``Running `load_scores()`.`` 라는 영어 함수 이름을 그린다.
+    """
+    from dashboard import data as _data
+
+    info = getattr(_data.load_scores, "_info", None)
+    assert info is not None, "`load_scores` 가 캐시되지 않았다"
+    assert isinstance(info.show_spinner, str), (
+        "읽는 동안 화면이 아무 말도 하지 않는다 — `show_spinner` 에 **문구**를 준다")
+    assert info.show_spinner.strip(), "문구가 비어 있다"
+    assert info.show_spinner == _data.SCORES_SPINNER
+
+
+def test_캐시가_빌_때만_스피너가_돈다(monkeypatch):
+    """🔴 **설정만 보면 중첩 함정을 못 잡는다.** Streamlit 은 캐시 함수가 다른 캐시 함수
+    **안에서** 불리면 스피너를 조용히 끈다(`is_nested_cache_function` · `cache_utils`).
+    그때도 `_info.show_spinner` 는 그대로라 바로 위 테스트는 통과하고, 화면만 다시
+    말을 잃는다. 그래서 미스 경로에서 **우리 문구로 실제 열리는지**까지 본다.
+
+    🔒 히트 경로에서는 열리지 않아야 한다 — 평소 rerun 에 비용이 붙으면 이슈 #2 가
+       고친 지점으로 되돌아간다.
+    """
+    import contextlib
+
+    from streamlit.elements.spinner import SpinnerMixin
+
+    from dashboard import data as _data
+
+    opened: list[str] = []
+
+    @contextlib.contextmanager
+    def recording(self, text: str = "In progress...", **kwargs):
+        # 🔒 `cache_utils` 는 문구를 **위치 인자**로 준다 — `_cache`·`show_time` 만 kwargs 다
+        opened.append(text)
+        yield
+
+    monkeypatch.setattr(SpinnerMixin, "spinner", recording)
+    monkeypatch.setattr(_data, "_from_hf", lambda: None)
+    monkeypatch.setattr(_data, "_from_local",
+                        lambda: (frame(), _data.Source(kind="local", label="테스트용")))
+
+    clear = getattr(_data.load_scores, "clear", lambda: None)
+    clear()
+    try:
+        _data.load_scores()
+        assert opened == [_data.SCORES_SPINNER], f"미스인데 스피너가 이렇게 돌았다: {opened}"
+        _data.load_scores()
+        assert opened == [_data.SCORES_SPINNER], "캐시 히트인데도 스피너가 돌았다"
+    finally:
+        clear()
+
+
 def test_점수를_매_rerun_마다_다시_읽지_않는다(monkeypatch):
     """🔴 `load_scores` 는 HF ETag 왕복 + 745KB + `read_parquet` 이라 220ms 다.
     위젯을 하나 만질 때마다 그것이 돌면 슬라이더 한 칸에 네트워크 왕복이 붙는다.
