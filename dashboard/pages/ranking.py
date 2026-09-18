@@ -26,6 +26,17 @@
 
 `sector_story` 의 `total` 이 곧 "21개 중 3위" 의 21 이다. 걸러진 프레임이 새면
 그 문장이 "5개 중 1위" 가 된다.
+
+## 🔴 점수 없는 섹터는 **정상**이다 — 그리다 죽지 않는다 (이슈 #3)
+
+파생본의 정수 열은 nullable `Int64` 이고, 창이 안 찬 초기 영업일과 **새로 넣은 섹터**는
+점수·순위가 `pd.NA` 다. 실제로 `score_daily.parquet` 5985행 중 399행이 그렇다.
+
+🔒 그 칸을 `int()` 로 캐스팅하거나 비교에 넣으면 `TypeError` 로 **페이지가 통째로
+   죽는다** — 한 섹터의 빈칸이 나머지 20개까지 가린다. 칸은 `view.int_or_none` 으로
+   내려 받고, 등수는 `rank_badge` 가 `—` 로 그린다 (ADR-SC-0007).
+🔒 `nsmallest` 는 결측을 **버리지 않는다** — 순위가 있는 섹터가 `n` 보다 적으면 `pd.NA`
+   행으로 채워 돌려준다(pandas 3.0.5 실측). 그래서 세기 전에 `notna()` 로 거른다.
 """
 
 from __future__ import annotations
@@ -108,8 +119,10 @@ def render() -> None:
         shown = [sid for sid in table.index if sid in keep]
         chosen = st.selectbox(
             "섹터", shown, key="rank_detail",
-            format_func=lambda sid: f"{int(table.loc[sid, '순위'])}위 · "
-                                    f"{names.sector_full(sid)}",
+            # 🔒 순위가 없는 섹터는 `— · 이름` 이다. `int()` 로 캐스팅하면 그 한 줄이
+            #    셀렉트박스를 죽이고 페이지 전체가 사라진다 (머리주석 · 이슈 #3)
+            format_func=lambda sid: f"{rank_badge(view.int_or_none(table.loc[sid, '순위']))}"
+                                    f" · {names.sector_full(sid)}",
         )
         if chosen and weighting.is_preset:
             # 🔒 **원본 프레임**을 넘긴다 (머리주석) — 걸러진 것도, `scored()` 를 지난
@@ -307,7 +320,14 @@ def _render_consensus(frame, names) -> None:
        그것이 이 칸의 요점이다.
     """
     latest = view.latest_frame(frame).set_index("sector_id")
-    top = {p: set(latest.nsmallest(5, f"rank_{p}").index) for p in view.PROFILES}
+    # 🔴 **세기 전에 결측을 버린다.** `nsmallest` 는 순위가 있는 섹터가 5개보다 적으면
+    #    모자란 만큼 `pd.NA` 행으로 채워 준다(pandas 3.0.5 실측). 그 `pd.NA` 가 아래
+    #    정렬 키로 들어가 `boolean value of NA is ambiguous` 로 페이지를 죽였다 (이슈 #3).
+    top = {p: set(latest[latest[f"rank_{p}"].notna()].nsmallest(5, f"rank_{p}").index)
+           for p in view.PROFILES}
+    # 🔒 정렬 키에 결측이 들어올 수 없다 — 위 `notna()` 가 거른 집합의 교집합이기
+    #    때문이다. 🔴 여기에 "결측이면 맨 뒤" 같은 가지를 **더 두지 않는다**: 닿지
+    #    않는 가지는 테스트가 지킬 수 없고, 그러면 위 필터를 지워도 아무도 모른다
     consensus = sorted(set.intersection(*top.values()),
                        key=lambda sid: latest.loc[sid, "rank_balanced"])
     if not consensus:
@@ -318,7 +338,8 @@ def _render_consensus(frame, names) -> None:
         return
     for sid in consensus:
         row = latest.loc[sid]
-        ranks = " · ".join(f"{p} {int(row[f'rank_{p}'])}위" for p in view.PROFILES)
+        ranks = " · ".join(f"{p} {rank_badge(view.int_or_none(row[f'rank_{p}']))}"
+                           for p in view.PROFILES)
         st.markdown(f"- **{names.sector_label(sid)}** — {ranks}")
     st.markdown("<div class='sc-muted'>프리셋 셋을 고정으로 본다 — 슬라이더와 필터를 "
                 "따르지 않는다.</div>", unsafe_allow_html=True)
@@ -332,9 +353,17 @@ def _render_breakdown(frame, sector_id: str, profile: str, names) -> None:
 
 
 def _floor(column) -> int:
-    """막대 눈금의 아래끝. 🔒 0 으로 고정하지 않는다 — 음수 점수가 잘린다."""
-    return int(min(column.min(), 0))
+    """막대 눈금의 아래끝. 🔒 0 으로 고정하지 않는다 — 음수 점수가 잘린다.
+
+    🔴 **결측을 먼저 버린다.** 최신일이 전부 결측이면 `column.min()` 이 `pd.NA` 이고,
+       `min(pd.NA, 0)` 은 `boolean value of NA is ambiguous` 로 표를 못 그리게 한다
+       (이슈 #3). 그때 눈금은 `0~1` 이고 막대는 전부 비어 그려진다 — 값이 없다는
+       사실이 화면에 그대로 남는다.
+    """
+    values = column.dropna()
+    return int(min(values.min(), 0)) if len(values) else 0
 
 
 def _ceil(column) -> int:
-    return int(max(column.max(), 1))
+    values = column.dropna()
+    return int(max(values.max(), 1)) if len(values) else 1

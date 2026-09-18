@@ -23,7 +23,8 @@ from sector.scoring import AXES, PRESETS, rank_scores, weighted_score_bp
 __all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "Names", "ViewError",
            "latest_frame", "scored", "rank_stability", "stability_window",
            "sector_story", "podium", "score_bars", "arithmetic_table",
-           "ranking_table", "axis_breakdown", "gics_options", "visible_ids"]
+           "ranking_table", "axis_breakdown", "gics_options", "visible_ids",
+           "int_or_none"]
 
 
 class ViewError(RuntimeError):
@@ -180,7 +181,7 @@ def visible_ids(frame: Any, *, gics: "frozenset[str] | None" = None,
         keep -= {sid for sid in latest.index
                  if _bool_or_none(latest.loc[sid, "liquidity_ok"]) is False}
     if hide_single_etf:
-        keep -= {sid for sid in latest.index if _int_or_none(latest.loc[sid, "etf_n"]) == 1}
+        keep -= {sid for sid in latest.index if int_or_none(latest.loc[sid, "etf_n"]) == 1}
     return frozenset(keep)
 
 
@@ -338,15 +339,15 @@ def sector_story(frame: Any, sector_id: str, *, profile: str = "balanced",
 
     return {
         "label": names.sector_label(sector_id),
-        "rank": _int_or_none(row.get(f"rank_{profile}")),
+        "rank": int_or_none(row.get(f"rank_{profile}")),
         "total": len(latest),
-        "score_bp": _int_or_none(row.get(f"score_{profile}_bp")),
+        "score_bp": int_or_none(row.get(f"score_{profile}_bp")),
         "parts": axis_breakdown(frame, sector_id, weights=PRESETS[profile]),
         "mean_rank": _float_or_none(stat["rank_mean"]) if stat is not None else None,
         "spread": _float_or_none(stat["rank_spread"]) if stat is not None else None,
         "window": stability_window(frame, days=days),
         "liquidity_ok": _bool_or_none(row.get("liquidity_ok")),
-        "etf_n": _int_or_none(row.get("etf_n")),
+        "etf_n": int_or_none(row.get("etf_n")),
         "missing": row.get("axes_missing") or None,
         "degraded": row.get("axes_degraded") or None,
     }
@@ -382,12 +383,12 @@ def podium(frame: Any, *, weighting: Weighting, top: int = 3,
         out.append({
             "sector_id": sector_id,
             "label": names.sector_label(sector_id),
-            "rank": _int_or_none(row[column]),
-            "score_bp": _int_or_none(row[SCORE_COLUMN]),
+            "rank": int_or_none(row[column]),
+            "score_bp": int_or_none(row[SCORE_COLUMN]),
             # 🔒 기여가 음수뿐이면 "끌어올린 축" 은 없다. 지어내지 않는다
             "lead_axis": best["axis"] if best and best["contribution_bp"] > 0 else None,
             "liquidity_ok": _bool_or_none(row.get("liquidity_ok")),
-            "etf_n": _int_or_none(row.get("etf_n")),
+            "etf_n": int_or_none(row.get("etf_n")),
         })
     return out
 
@@ -417,7 +418,14 @@ def score_bars(frame: Any, *, names: Names | None = None,
     )
 
 
-def _int_or_none(value: Any) -> int | None:
+def int_or_none(value: Any) -> int | None:
+    """표의 한 칸을 `int | None` 으로. 🔒 **결측을 파이썬 `None` 으로 내리는 유일한 문.**
+
+    🔴 **공개다.** 화면이 `int(table.loc[sid, "순위"])` 처럼 칸을 직접 캐스팅하면
+       `pd.NA` 에서 `TypeError` 로 **페이지가 통째로 죽는다** — 실제로 랭킹 화면이
+       세 자리에서 그랬다(이슈 #3). 파생본의 정수 열은 전부 nullable `Int64` 이고
+       결측은 정상 상태다(창이 안 찬 초기 영업일 · 새로 넣은 섹터).
+    """
     return int(value) if _notna(value) else None
 
 

@@ -76,6 +76,42 @@ def scored(n_sectors: int = 3, weighting: weights.Weighting = BALANCED) -> pd.Da
     return view.scored(frame(n_sectors), weighting)
 
 
+#: 결측으로 만들 열. 🔒 **z 와 원시값까지** 비운다 — 점수만 비우면 축 분해가 값을 갖고
+#:    있어 "점수는 없는데 근거는 있다" 는, 실제로는 나올 수 없는 모양이 된다
+_BLANK_COLUMNS = (["m_z_bp", "f_z_bp", "b_z_bp", "v_z_bp",
+                   "m_raw_bp", "f_raw_bp", "b_raw_bp", "v_raw_bp"]
+                  + [f"score_{p}_bp" for p in PRESETS] + [f"rank_{p}" for p in PRESETS])
+
+
+def blank_latest(n_sectors: int = 3, *, blanks: int | None = None) -> pd.DataFrame:
+    """최신일의 점수·순위가 **결측인** 프레임. `blanks=None` 이면 전부, 정수면 그만큼.
+
+    🔴 `sectors.yaml` 에 섹터를 하나 더 넣으면 **그날부터 이 모양이다.** 새 섹터는
+       20영업일 창이 찰 때까지 z 를 못 내고, z 가 없으면 점수도 순위도 없다
+       (`weighted_score_bp` 가 분모 0 에서 `None`). 실제 파생본도 5985행 중 **399행**이
+       이 모양이다 — 창이 안 찬 초기 19영업일.
+
+    🔒 dtype 을 `Int64`·`boolean` 으로 맞춘다. `float64` 로 눕히면 결측이 `nan` 이 되어
+       **재현하려는 `pd.NA` 경로를 안 밟는다.** 실제 파생본은 정수 열이 전부 nullable 이다.
+    """
+    out = frame(n_sectors)
+    for column in _BLANK_COLUMNS + ["n_axes_used", "etf_n"]:
+        out[column] = out[column].astype("Int64")
+    out["liquidity_ok"] = out["liquidity_ok"].astype("boolean")
+
+    last = out["bas_dd"] == out["bas_dd"].max()
+    ids = sorted(out.loc[last, "sector_id"].unique())
+    mask = last & out["sector_id"].isin(ids if blanks is None else ids[:blanks])
+    for column in _BLANK_COLUMNS:
+        out.loc[mask, column] = pd.NA
+    out.loc[mask, "n_axes_used"] = 0
+    out.loc[mask, "axes_missing"] = ",".join(AXES)
+    out.loc[mask, "is_partial"] = True
+    # 🔒 유동성도 **판정 불가**다 — 창이 안 찼으면 거래대금 평균도 못 낸다
+    out.loc[mask, "liquidity_ok"] = pd.NA
+    return out
+
+
 def test_마지막_날만_고른다():
     assert set(view.latest_frame(frame())["bas_dd"]) == {DAYS[-1]}
 
@@ -1360,14 +1396,14 @@ def test_커스텀_재계산이_배치_값과_한_칸도_다르지_않다():
             for day, group in out.groupby("bas_dd"):
                 again = {
                     str(row.sector_id): weighted_score_bp(
-                        {a: view._int_or_none(getattr(row, f"{view._AXIS_PREFIX[a]}_z_bp"))
+                        {a: view.int_or_none(getattr(row, f"{view._AXIS_PREFIX[a]}_z_bp"))
                          for a in AXES}, weighting.weights)
                     for row in group.itertuples(index=False)}
                 ranked = rank_scores(again)
                 for row in group.itertuples(index=False):
                     sid = str(row.sector_id)
-                    assert view._int_or_none(row.score_bp) == again[sid], (raw, day, sid)
-                    assert view._int_or_none(row.rank) == ranked[sid], (raw, day, sid)
+                    assert view.int_or_none(row.score_bp) == again[sid], (raw, day, sid)
+                    assert view.int_or_none(row.rank) == ranked[sid], (raw, day, sid)
             assert str(out[view.SCORE_COLUMN].dtype) == "Int64"
             assert str(out[view.RANK_COLUMN].dtype) == "Int64"
 
@@ -1458,6 +1494,21 @@ def _app_with(**state):
         at.session_state[key] = value
     at.run()
     return at
+
+
+def _app_with_frame(monkeypatch, data_frame, **state):
+    """합성 프레임을 **원천으로 꽂고** 앱을 띄운다 — 실제 파생본에 없는 모양을 보려고.
+
+    🔒 캐시는 `conftest` 의 autouse 가 앞뒤로 비운다. 여기서 또 비우지 않는다 —
+       비우는 규율이 두 곳에 있으면 한 곳이 조용히 썩는다.
+    """
+    from dashboard import data as _data
+
+    monkeypatch.setattr(_data, "_from_hf", lambda: None)
+    monkeypatch.setattr(
+        _data, "_from_local",
+        lambda: (data_frame.copy(), _data.Source(kind="local", label="테스트용")))
+    return _app_with(**state)
 
 
 CUSTOM_STATE = {"rank_custom": True, "rank_w_M": 10, "rank_w_F": 10,
@@ -1610,3 +1661,80 @@ def test_위젯을_그린_뒤에_session_state_를_쓰지_않는다():
     assert found == set(allowed), (
         f"session_state 에 쓰는 자리가 바뀌었다 — 새로 생긴 것 {found - set(allowed)} · "
         f"사라진 것 {set(allowed) - found}. 콜백이거나 위젯 키가 아님을 확인하고 적는다")
+
+
+# ── 랭킹 화면 — 점수 없는 섹터 (이슈 #3) ────────────────────────────────────
+# 🔴 **한 섹터의 빈칸이 나머지 20개까지 가리면 안 된다.** 세 자리가 그랬고 세 자리 다
+#    `TypeError` 로 페이지를 통째로 죽였다 — 셀렉트박스 `format_func` · 막대 눈금
+#    `_floor`/`_ceil` · '셋 다 상위' 의 `nsmallest`. 앞의 둘은 이슈가 짚었고
+#    **세 번째는 이 AppTest 가 찾았다** — 순수 함수 테스트로는 안 보이는 자리다.
+
+def test_최신일_일부가_결측이어도_랭킹이_그려진다(monkeypatch):
+    """🔴 `sectors.yaml` 에 섹터를 하나만 추가해도 그날 이 모양이 된다 (`blank_latest`)."""
+    at = _app_with_frame(monkeypatch, blank_latest(3, blanks=1))
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    # 🔒 **숨기지 않는다.** 점수가 없다는 것도 사실이고, 화면은 `—` 로 말한다
+    options = at.selectbox[0].options
+    assert "— · sec_0" in options, options
+    assert [o for o in options if o.startswith("1위 · ")], options
+
+    # 🔒 '셋 다 상위' 가 살아 있다 — 순위가 있는 섹터가 5개보다 적은 자리다
+    consensus = [m.value for m in at.markdown if m.value.startswith("- **sec_")]
+    assert consensus, [m.value[:60] for m in at.markdown]
+    # 🔴 **예외 0 만 보면 안 된다.** `nsmallest` 의 `notna()` 를 지워도 페이지는 죽지 않고
+    #    순위 없는 섹터가 "셋 다 상위" 에 **섞여 들어온다** — 등수 칸이 `—` 인 채로.
+    #    돌연변이 검사에서 실제로 그랬다(2026-09-18). 그리는 내용을 본다
+    assert not any("sec_0" in line for line in consensus), consensus
+    # 🔒 줄마다 **프리셋 수만큼 등수**가 있다. `rank_badge` 가 `—` 를 그렸다면 0 개다
+    #    (구분자도 `—` 라 글자로는 못 가른다 — 세는 것은 `위` 다)
+    assert all(line.count("위") == len(view.PROFILES) for line in consensus), consensus
+
+
+def test_결측_섹터를_골라도_근거_칸이_죽지_않는다(monkeypatch):
+    """🔒 기본 선택은 1위라 결측 경로를 안 밟는다 — **골라서** 밟는다.
+
+    🔴 그리고 값을 지어내지 않는다 (ADR-SC-0007) — "점수를 낼 수 없다" 고 말한다.
+    """
+    at = _app_with_frame(monkeypatch, blank_latest(3, blanks=1), rank_detail="sec_0")
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert at.selectbox[0].value == "sec_0"
+    drawn = " ".join(m.value for m in at.markdown)
+    assert "점수를 낼 수 없" in drawn
+
+
+def test_최신일이_전부_결측이어도_랭킹이_그려진다(monkeypatch):
+    """🔴 이때 `_floor` 가 `min(pd.NA, 0)` 을 해서 표를 못 그렸다."""
+    at = _app_with_frame(monkeypatch, blank_latest(3))
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    options = at.selectbox[0].options
+    assert all(o.startswith("— · ") for o in options), options
+    # 🔒 등수를 지어내지 않는다 — 없으면 없다고 한다
+    assert any("순위를 낼 수 있는 섹터가 없다" in m.value for m in at.markdown)
+
+
+def test_막대_눈금이_결측만_있어도_무너지지_않는다():
+    """🔴 `min(pd.NA, 0)` 은 `boolean value of NA is ambiguous` 다. 눈금 한 칸이 표를 죽였다.
+
+    🔒 전부 결측일 때 `0~1` 로 두는 것은 **값이 아니라 눈금**이다 — 막대는 전부 비어
+       그려지고, "값이 없다" 는 사실이 화면에 그대로 남는다.
+    """
+    from dashboard.pages import ranking as ranking_page
+
+    blank = pd.Series(pd.array([None, None], dtype="Int64"))
+    assert (ranking_page._floor(blank), ranking_page._ceil(blank)) == (0, 1)
+
+    mixed = pd.Series(pd.array([-3000, None, 4000], dtype="Int64"))
+    assert (ranking_page._floor(mixed), ranking_page._ceil(mixed)) == (-3000, 4000)
+
+
+def test_결측_칸을_내리는_문이_하나다():
+    """🔒 `view.int_or_none` 이 **공개**인 이유 — 화면·에이전트가 각자 캐스팅하면
+       한 곳만 고쳐도 다른 곳이 같은 `TypeError` 로 죽는다 (실제로 세 자리였다)."""
+    assert view.int_or_none(pd.NA) is None
+    assert view.int_or_none(None) is None
+    assert view.int_or_none(float("nan")) is None
+    assert view.int_or_none(pd.array([7], dtype="Int64")[0]) == 7
+    assert "int_or_none" in view.__all__
+

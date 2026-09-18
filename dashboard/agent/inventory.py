@@ -190,7 +190,9 @@ def kst_date(at: str) -> str:
 
 
 def _int(value: Any) -> int | None:
-    return view._int_or_none(value)  # noqa: SLF001 — NA 판정을 뷰와 같은 규칙으로
+    # 🔒 NA 판정을 뷰와 **같은 규칙으로** — 장부의 숫자와 화면의 숫자가 갈리면
+    #    guard 의 대조가 대조이기를 그친다
+    return view.int_or_none(value)
 
 
 def _find_sector(master: Any, sector_id: str) -> Any | None:
