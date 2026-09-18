@@ -471,3 +471,60 @@ def test_살아있는_축의_가중치가_전부_0_이면_점수가_없다():
     assert scoring.weighted_score_bp({"M": None}, {"M": 35}) is None
     # 살아 있는 축이 하나라도 가중치를 받으면 점수가 있다
     assert scoring.weighted_score_bp({"M": 1000, "F": None}, {"M": 35, "F": 30}) == 1000
+
+
+def test_프리셋에는_가중치_0_인_축이_없다():
+    """🔴 이 계약이 깨지면 **저장 열 `n_axes_used` 가 조용히 거짓이 된다.**
+
+    그 열은 `z` 가 있는 축을 셀 뿐 가중치를 보지 않는다. 지금 프리셋 셋에서 그 값이
+    "점수에 쓴 축 수" 와 같은 것은 네 축이 전부 0 보다 크기 때문일 뿐이다.
+    에이전트 장부도 그 열을 `EV-AXES-USED "점수에 쓴 축 수"` 로 싣는다
+    (`dashboard/agent/inventory.py`) — 프리셋에서만 에이전트가 돌기 때문에 참이다.
+
+    🔒 어느 프리셋에 0 을 하나 넣고 싶어지면, 먼저 그 두 곳을 고친다.
+    """
+    for name, weights in scoring.PRESETS.items():
+        assert all(w > 0 for w in weights.values()), name
+
+
+def test_scoring_axes_는_점수가_실제로_더한_축이다():
+    """🔒 `weighted_score_bp` 와 **같은 조건**임을 성질로 고정한다.
+
+    화면의 '축수' 칸이 이 함수의 규칙을 따라가므로, 둘이 갈라지면 표가 점수를
+    설명하지 못한다 (이슈 #4).
+    """
+    weights = {"M": 35, "F": 30, "B": 20, "V": 0}
+    z_bp = {"M": 1000, "F": 2000, "B": None, "V": 9999}
+
+    # ① 빈 목록 ⟺ 점수 없음
+    assert scoring.scoring_axes({"M": 1000}, {"M": 0}) == ""
+    assert scoring.weighted_score_bp({"M": 1000}, {"M": 0}) is None
+    assert scoring.scoring_axes({"M": None}, {"M": 35}) == ""
+    assert scoring.weighted_score_bp({"M": None}, {"M": 35}) is None
+
+    # ② 결측 축(B)도 가중치 0 축(V)도 목록에 없다. 순서는 AXES 다
+    assert scoring.scoring_axes(z_bp, weights) == "MF"
+
+    # ③ 목록 **밖** 축의 z 를 아무리 흔들어도 점수가 한 bp 도 안 움직인다
+    base = scoring.weighted_score_bp(z_bp, weights)
+    for value in (-30000, 0, 30000):
+        moved = dict(z_bp, V=value)
+        assert scoring.weighted_score_bp(moved, weights) == base
+        assert scoring.scoring_axes(moved, weights) == "MF"
+
+    # ④ 목록 **안** 축을 흔들면 점수가 움직인다 — 목록이 형식뿐이 아님을 막는다
+    assert scoring.weighted_score_bp(dict(z_bp, M=-30000), weights) != base
+
+
+def test_scoring_axes_의_길이가_결측축과_짝이_맞는다(frames, config, days):
+    """🔒 프리셋에서는 `len(scoring_axes) == n_axes_used` 여야 한다 — 골든 원천으로 대조.
+
+    앞의 두 테스트(프리셋에 0 이 없다 · 조건이 같다)의 **귀결**을 실제 행에서 확인한다.
+    """
+    rows = scoring.score(*frames, as_of=days[-1], config=config, fetched_at=FETCHED_AT)
+    for row in rows:
+        z_bp = {"M": row.m_z_bp, "F": row.f_z_bp, "B": row.b_z_bp, "V": row.v_z_bp}
+        for name, weights in scoring.PRESETS.items():
+            axes = scoring.scoring_axes(z_bp, weights)
+            assert len(axes) == row.n_axes_used, f"{row.sector_id} {name}"
+            assert set(axes).isdisjoint(set(row.axes_missing)), f"{row.sector_id} {name}"

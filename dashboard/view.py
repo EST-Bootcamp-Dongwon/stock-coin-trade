@@ -18,9 +18,10 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from dashboard.weights import Weighting
-from sector.scoring import AXES, PRESETS, rank_scores, weighted_score_bp
+from sector.scoring import AXES, PRESETS, rank_scores, scoring_axes, weighted_score_bp
 
-__all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "UNCLASSIFIED", "Names", "ViewError",
+__all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "SCORE_AXES_COLUMN",
+           "UNCLASSIFIED", "Names", "ViewError",
            "latest_frame", "scored", "rank_stability", "stability_window",
            "sector_story", "podium", "score_bars", "arithmetic_table",
            "ranking_table", "axis_breakdown", "gics_options", "visible_ids",
@@ -36,6 +37,11 @@ class ViewError(RuntimeError):
 #:    (ADR-SC-0013 ④-1)가 그 순간 거짓이 된다.
 SCORE_COLUMN = "score_bp"
 RANK_COLUMN = "rank"
+
+#: 이 가중치에서 **실제로 점수에 들어간** 축 수. 🔒 저장 열 `n_axes_used` 와 **다른 열**이다 —
+#:    그 열은 `z` 가 있는 축을 셀 뿐 가중치를 보지 않아, 커스텀에서 한 축만 남겨도 4 라고
+#:    말했다(이슈 #4). 프리셋 셋은 네 축이 전부 0 보다 커서 두 값이 같다.
+SCORE_AXES_COLUMN = "score_axes_n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +91,25 @@ def latest_frame(frame: Any) -> Any:
     return frame[frame["bas_dd"] == frame["bas_dd"].max()].copy()
 
 
+def _axes_used_n(frame: Any, weights: Mapping[str, int]) -> list[int]:
+    """행마다 **실제로 점수에 들어간 축 수** — `scoring_axes` 와 같은 규칙이다.
+
+    🔒 규칙의 정본은 `sector.scoring.scoring_axes` 다. 여기서 다시 세는 이유는 **속도**
+       하나뿐이다 — 5985행을 행 단위로 돌면 슬라이더 한 칸이 다시 느려진다(이슈 #1).
+       그래서 열 단위로 `notna()` 를 더한다. 🔒 둘이 같은 답을 내는지는 테스트가 지킨다
+       (`test_축수는_scoring_axes_와_한_글자도_다르지_않다`).
+    """
+    live = [axis for axis in AXES if weights.get(axis, 0) > 0]
+    total = None
+    for axis in live:
+        # 🔒 `.to_numpy()` 로 **자리**로 다룬다 — 색인이 중복된 프레임에서 라벨로 맞추면
+        #    한 값이 여러 행으로 퍼진다(점수 열이 실제로 그랬다 · 2026-09-17)
+        present = frame[f"{_AXIS_PREFIX[axis]}_z_bp"].notna().to_numpy()
+        total = present.astype("int64") if total is None else total + present
+    # 🔒 가중치가 전부 0 이면 점수도 없다 — 축수는 0 이지 결측이 아니다
+    return [0] * len(frame) if total is None else [int(v) for v in total]
+
+
 def scored(frame: Any, weighting: Weighting) -> Any:
     """`score_bp` · `rank` 열을 붙인 프레임. **화면의 표·막대·등수는 이것만 읽는다.**
 
@@ -100,16 +125,31 @@ def scored(frame: Any, weighting: Weighting) -> Any:
 
     커스텀 가중치에는 저장된 열이 없으므로 그때만 `weighted_score_bp` 로 다시 낸다 —
     배치가 쓰는 바로 그 함수다. 🔒 두 화면이 점수를 각자 구현하지 않는다(`AGENTS.md` 6장).
+
+    ## 🔴 축수(`SCORE_AXES_COLUMN`)는 점수와 반대로 **언제나 다시 센다**
+
+    점수는 게시된 값이 정답이라 프리셋이면 읽어 오지만, 축수의 저장 열(`n_axes_used`)은
+    **다른 질문에 답한다** — "`z` 가 있는 축이 몇인가" 이지 "이 가중치에서 몇이 점수에
+    들어갔나" 가 아니다. 지금 둘이 같아 보이는 것은 프리셋 셋의 네 축이 전부 0 보다
+    크기 때문일 뿐이다. 🔒 저장 열은 **덮지 않는다** (ADR-SC-0014 ③).
     """
     import pandas as pd
 
     out = frame.copy()
+    axes_n = pd.array(_axes_used_n(frame, weighting.weights), dtype="Int64")
+
     # 🔒 **자리로 넣는다.** 색인 라벨로 맞추면 색인이 중복된 프레임에서 한 값이 여러
     #    행으로 퍼진다 — 실제로 커스텀 경로가 21행에 같은 점수를 조용히 넣었다(2026-09-17).
     #    `.array` 는 `Int64` 를 지키면서 자리로 들어간다.
     if weighting.is_preset:
         out[SCORE_COLUMN] = frame[weighting.column("score")].array
         out[RANK_COLUMN] = frame[weighting.column("rank")].array
+        # 🔒 프리셋에서도 **다시 센다.** 저장 열 `n_axes_used` 를 읽지 않는 이유는, 그 값이
+        #    맞는 것이 "프리셋 넷이 전부 0 보다 크다" 는 **지금의 우연**에 기대기 때문이다.
+        #    어느 프리셋에 0 이 하나 생기면 그날부터 표가 조용히 거짓을 말한다.
+        #    ⚠️ 점수·순위와는 규율이 다르다 — 저것은 **게시된 값이 정답**이라 읽어 오지만,
+        #       축수는 게시된 열이 아예 다른 질문에 답한다(가중치를 보지 않는다).
+        out[SCORE_AXES_COLUMN] = axes_n
         return out
 
     # 🔴 **열을 먼저 파이썬 리스트로 꺼낸다.** `itertuples` 를 날짜별 그룹마다 부르면 pandas 가
@@ -150,6 +190,7 @@ def scored(frame: Any, weighting: Weighting) -> Any:
     #    규약이 금지한 float 가 화면 계층에 들어온다 (V26 · `AGENTS.md` 4장)
     out[SCORE_COLUMN] = pd.array(scores, dtype="Int64")
     out[RANK_COLUMN] = pd.array(ranks, dtype="Int64")
+    out[SCORE_AXES_COLUMN] = axes_n
     return out
 
 
@@ -320,7 +361,9 @@ def ranking_table(frame: Any, *, days: int = 20, names: Names | None = None) -> 
         **{f"{_AXIS_PREFIX[a]}_z_bp": f"{a}" for a in AXES},
         "liquidity_ok": "유동성",
         "etf_n": "ETF수",
-        "n_axes_used": "축수",
+        # 🔴 저장 열 `n_axes_used` 가 아니라 `scored()` 가 붙인 열이다 — 저장 열은
+        #    가중치를 보지 않아 커스텀에서 점수를 설명하지 못했다 (이슈 #4)
+        SCORE_AXES_COLUMN: "축수",
         "axes_missing": "결측축",
         "axes_degraded": "강등축",
         "is_partial": "부분",

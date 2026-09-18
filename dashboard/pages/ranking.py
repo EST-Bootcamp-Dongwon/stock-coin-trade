@@ -430,6 +430,10 @@ def _render_table(table, keep: frozenset[str]) -> None:
                 "표본일", help="평균을 실제로 몇 영업일에서 냈는가", format="%d"),
             "진폭": st.column_config.NumberColumn(
                 "진폭", help="순위 표준편차. 작을수록 꾸준하다", format="%.1f"),
+            # 🔴 저장 열이 아니라 `view.scored` 가 **지금 가중치로** 센 값이다 (이슈 #4)
+            "축수": st.column_config.NumberColumn(
+                "축수", help="지금 가중치에서 실제로 점수에 들어간 축 수. "
+                            "가중치를 0 으로 둔 축과 값이 없는 축은 빠진다", format="%d"),
             **{a: st.column_config.NumberColumn(
                 f"{a} ({AXIS_NAMES[a]})", help=AXIS_NOT[a], format="%d") for a in AXES},
         },

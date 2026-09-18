@@ -102,6 +102,7 @@ __all__ = [
     "rank_scores",
     "score",
     "score_history",
+    "scoring_axes",
     "weighted_score_bp",
 ]
 
@@ -499,6 +500,24 @@ def _standardize(raw: Mapping[str, int | None]) -> tuple[dict[str, Decimal | Non
     return out, kind
 
 
+def scoring_axes(
+    z_bp: Mapping[str, int | None], weights: Mapping[str, int]
+) -> str:
+    """`weighted_score_bp` 가 **실제로 더하는** 축 — 예 `"MF"`. 하나도 없으면 빈 문자열.
+
+    🔒 **조건을 여기 한 곳에만 둔다.** 점수는 아래 `weighted_score_bp` 가 내고 화면의
+       '축수' 칸은 `view.scored` 가 세는데, 둘이 같은 조건을 각자 적고 있으면 한쪽만
+       바뀐 날 표가 점수를 설명하지 못한다.
+
+    🔴 실제로 그랬다 — 화면이 저장 열 `n_axes_used` 를 그대로 그렸는데 그 열은
+       **가중치를 보지 않는다**(`z` 가 있는 축을 셀 뿐이다). 프리셋 셋은 네 축이 전부
+       0 보다 커서 우연히 맞았고, 커스텀 가중치에서 한 축만 남기면 `점수 == M` 인데
+       `축수 4` 가 나왔다 (이슈 #4).
+    """
+    return "".join(a for a in AXES
+                   if z_bp.get(a) is not None and weights.get(a, 0) > 0)
+
+
 def weighted_score_bp(
     z_bp: Mapping[str, int | None], weights: Mapping[str, int]
 ) -> int | None:
@@ -519,19 +538,20 @@ def weighted_score_bp(
 
     🔒 **가중치를 미리 합 100 으로 정규화하지 마라.** 정수 나눗셈이 끼면 스칼라배
        불변(35/30/20/15 == 70/60/40/30)이 깨진다. 여기서 한 번에 나눈다.
+    🔒 더하는 축은 `scoring_axes` 가 정한다 — 그래서 **`AXES` 밖의 키는 무시된다**
+       (`weights.items()` 를 직접 돌던 때는 더해졌다). `normalize` 가 애초에 넷만
+       통과시키므로 값은 달라지지 않고, 합산 순서도 `AXES` 로 고정되어 오히려 굳는다.
     🔒 컨텍스트를 스스로 고정한다 — 배치는 `score()` 안에서, 앱은 그 밖에서 부른다.
        전역 `getcontext()` 에 기대면 두 호출처가 다른 답을 낼 수 있다.
     """
+    axes = scoring_axes(z_bp, weights)
+    if not axes:
+        return None
     with localcontext(_CONTEXT):
         numerator, denominator = _ZERO, 0
-        for axis, weight in weights.items():
-            value = z_bp.get(axis)
-            if value is None or weight <= 0:
-                continue
-            numerator += Decimal(weight) * Decimal(int(value))
-            denominator += weight
-        if denominator == 0:
-            return None
+        for axis in axes:
+            numerator += Decimal(weights[axis]) * Decimal(int(z_bp[axis]))
+            denominator += weights[axis]
         return _to_bp(numerator / Decimal(denominator))
 
 

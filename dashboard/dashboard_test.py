@@ -18,7 +18,8 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 from dashboard import explain, view, weights
-from sector.scoring import AXES, AXIS_NAMES, PRESETS, rank_scores, weighted_score_bp
+from sector.scoring import (AXES, AXIS_NAMES, PRESETS, rank_scores, scoring_axes,
+                            weighted_score_bp)
 
 # ── 뷰 모델 (화면 없이) ─────────────────────────────────────────────────────
 
@@ -2425,3 +2426,108 @@ def test_대분류_이름이_겹치면_검증기가_막는다():
 
 def test_대분류_분포는_빈_집합에서_죽지_않는다():
     assert len(view.gics_distribution(scored(3), only=frozenset())) == 0
+
+
+# ── 축수 — 표가 점수를 설명한다 (이슈 #4) ────────────────────────────────────
+
+def test_커스텀에서_축수가_점수를_설명한다():
+    """🔴 이슈 #4 의 재현. M 만 가중하면 `점수 == M` 인데 표는 **축수 4** 라고 말했다.
+
+    저장 열 `n_axes_used` 는 `z` 가 있는 축을 셀 뿐 **가중치를 보지 않기** 때문이다.
+    """
+    only_m = weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0})
+    out = view.scored(frame(), only_m)
+
+    assert list(out[view.SCORE_COLUMN]) == list(out["m_z_bp"]), "점수가 M 축 그 자체가 아니다"
+    assert set(out[view.SCORE_AXES_COLUMN]) == {1}
+    # 🔒 저장 열은 **덮지 않는다** (ADR-SC-0014 ③) — 에이전트 guard 가 원천으로 읽는다
+    assert set(out["n_axes_used"]) == {4}
+
+
+def test_표의_축수_칸이_새_열을_읽는다():
+    """🔴 `ranking_table` 이 저장 열을 그리면 이슈 #4 가 표에 그대로 남는다."""
+    only_m = weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0})
+    assert set(view.ranking_table(view.scored(frame(), only_m))["축수"]) == {1}
+    # 프리셋은 네 축을 다 쓰므로 4 다
+    assert set(view.ranking_table(scored())["축수"]) == {4}
+
+
+def test_프리셋에서는_축수가_저장_열과_같다():
+    """🔒 프리셋 셋은 네 축이 전부 0 보다 크다(`test_프리셋에는_가중치_0_인_축이_없다`).
+
+    그래서 다시 세도 저장 열과 같은 답이 나와야 한다 — 다르면 둘 중 하나가 틀렸다.
+    """
+    data = frame(4)
+    data["v_z_bp"] = data["v_z_bp"].astype("Int64")
+    data["n_axes_used"] = data["n_axes_used"].astype("Int64")
+    # 🔴 결측이 없으면 두 값이 우연히 같아 테스트가 무력하다 — 배치가 적는 모양대로 심는다
+    blank = data["sector_id"] == "sec_0"
+    data.loc[blank, "v_z_bp"] = pd.NA
+    data.loc[blank, "n_axes_used"] = 3
+
+    for name in PRESETS:
+        out = view.scored(data, weights.Weighting.preset(name))
+        assert set(out[view.SCORE_AXES_COLUMN]) == {3, 4}, "결측 행이 안 섞였다"
+        assert list(out[view.SCORE_AXES_COLUMN]) == list(out["n_axes_used"]), name
+
+
+def test_축수는_scoring_axes_와_한_글자도_다르지_않다():
+    """🔒 `view._axes_used_n` 은 속도 때문에 **열 단위**로 세고(이슈 #1), 규칙의 정본은
+    `sector.scoring.scoring_axes` 다. 두 구현이 갈라지지 않는지 행마다 대조한다.
+
+    🔴 축을 **골고루** 비운다 — 결측이 없으면 어떤 잘못된 구현도 통과한다.
+    """
+    data = frame(4)
+    for axis in AXES:
+        column = f"{axis.lower()}_z_bp"
+        data[column] = data[column].astype("Int64")
+    for i, axis in enumerate(AXES):
+        data.loc[data["sector_id"] == f"sec_{i}", f"{axis.lower()}_z_bp"] = pd.NA
+
+    for weighting in (BALANCED,
+                      weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0}),
+                      weights.Weighting.of({"M": 0, "F": 1, "B": 0, "V": 2}),
+                      weights.Weighting.of({"M": 0, "F": 0, "B": 0, "V": 7})):
+        out = view.scored(data, weighting)
+        for row in out.itertuples(index=False):
+            z_bp = {"M": row.m_z_bp, "F": row.f_z_bp, "B": row.b_z_bp, "V": row.v_z_bp}
+            # 🔒 `pd.NA` 는 `is not None` 이 참이다 — 정본 함수에 넘기기 전에 `None` 으로
+            plain = {a: (None if pd.isna(v) else int(v)) for a, v in z_bp.items()}
+            expected = scoring_axes(plain, weighting.weights)
+            assert row.score_axes_n == len(expected), (row.sector_id, weighting.weights)
+            # 🔒 축수가 0 인 것과 점수가 없는 것은 **같은 사건**이어야 한다.
+            #    `np.int64 == 0` 은 `np.False_` 라 `is` 로 비교되지 않는다
+            assert bool(row.score_axes_n == 0) == bool(pd.isna(row.score_bp))
+
+
+def test_점수가_없으면_축수가_0_이고_결측이_아니다():
+    """🔒 축수는 **셀 수 있는 것**이라 0 이 정직하다 — `—` 로 비우면 '모른다' 가 된다.
+
+    점수 쪽은 반대다. 점수 0 은 "중립적으로 평가됐다" 는 뜻이 되므로 **없음**으로 남긴다
+    (ADR-SC-0007).
+    """
+    data = frame()
+    data["m_z_bp"] = data["m_z_bp"].astype("Int64")
+    data.loc[data["sector_id"] == "sec_0", "m_z_bp"] = pd.NA
+    only_m = weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0})
+
+    out = view.scored(data, only_m)
+    assert str(out[view.SCORE_AXES_COLUMN].dtype) == "Int64"
+    row = out[out["sector_id"] == "sec_0"]
+    assert len(row) == len(DAYS), "픽스처가 바뀌었다 — sec_0 은 날마다 한 행이다"
+    assert row[view.SCORE_COLUMN].isna().all()
+    assert set(row[view.SCORE_AXES_COLUMN]) == {0}
+
+
+def test_축수도_색인이_중복된_프레임에서_밀리지_않는다():
+    """🔒 점수 열이 실제로 그랬다(2026-09-17) — 라벨로 맞추면 한 값이 여러 행으로 퍼진다."""
+    plain = frame(4)
+    plain["m_z_bp"] = plain["m_z_bp"].astype("Int64")
+    plain.loc[plain["sector_id"] == "sec_0", "m_z_bp"] = pd.NA
+    duplicated = plain.copy()
+    duplicated.index = [0] * len(duplicated)
+
+    only_m = weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0})
+    expected = list(view.scored(plain, only_m)[view.SCORE_AXES_COLUMN])
+    assert set(expected) == {0, 1}, "픽스처가 두 값을 만들지 못했다 — 테스트가 무력하다"
+    assert list(view.scored(duplicated, only_m)[view.SCORE_AXES_COLUMN]) == expected
