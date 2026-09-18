@@ -92,11 +92,17 @@ def _render_worked_example() -> None:
     # 🔒 읽는 법 화면은 **언제나 균형 프리셋**이다. 랭킹의 슬라이더를 따라가면
     #    "네 걸음" 설명이 사람마다 다른 숫자 위에서 돌아간다
     balanced = weights.Weighting.preset("balanced")
-    top = view.podium(view.scored(frame, balanced), weighting=balanced, top=1, names=names)
-    if not top:
+    try:
+        top = view.podium(view.scored(frame, balanced), weighting=balanced, top=1,
+                          names=names)
+        if not top:
+            return
+        sector_id = top[0]["sector_id"]
+        story = view.sector_story(frame, sector_id, names=names)
+    except view.ViewError as exc:
+        # 🔴 랭킹과 같은 규율이다 — 깨진 파생본으로 **예시를 지어내지 않는다**
+        theme.failure("점수 표가 화면이 읽을 수 있는 모양이 아니다 — 파생본을 다시 만들어야 한다.", exc)
         return
-    sector_id = top[0]["sector_id"]
-    story = view.sector_story(frame, sector_id, names=names)
     label = story["label"]
 
     st.markdown(

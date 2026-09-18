@@ -1267,11 +1267,311 @@ def test_scored_는_Int64_를_지킨다():
     assert missing[view.RANK_COLUMN].isna().all()
 
 
-def test_하루에_같은_섹터가_둘이면_던진다():
-    """🔒 조용히 한 줄을 잃지 않는다 — 순위가 말없이 비뚤어진다."""
+# ── `scored()` 의 입력 계약 — 프렐류드 (이슈 #7 · #9) ───────────────────────
+# 🔴 두 이슈는 **같은 함수의 입구 하나**다. #9 는 "기준일이 비면 없는 점수를 지어낸다",
+#    #7 은 "부분 프레임에서 등수의 뜻이 갈린다" 이고, 둘 다 `scored()` 가 **무엇을 받기로
+#    했는지** 적어 두지 않아서 생겼다. 그래서 규칙을 입구 한 곳에 세우고 여기서 고정한다.
+# 🔒 모든 검사를 **두 경로에 다** 건다 — 계약이 하나이기 때문이다. 옛 구현은 중복 검사가
+#    커스텀 루프 안에만 있어서 프리셋이 중복 프레임을 조용히 통과시켰다.
+
+#: 프리셋이 아닌 가중치 — 커스텀 경로(다시 계산)를 태운다
+CUSTOM_W = weights.Weighting.of({"M": 70, "F": 10, "B": 10, "V": 10})
+
+#: 🔒 두 경로를 **같은 입력**으로 돌린다. 한쪽만 보면 계약이 반쪽이 된다
+BOTH_PATHS = [BALANCED, CUSTOM_W]
+BOTH_IDS = ["프리셋", "커스텀"]
+
+
+def _renamed(data: pd.DataFrame, column: str) -> pd.DataFrame:
+    """`column` 과 같은 이름의 열을 하나 더 붙인다 — 열 중복을 만든다."""
+    out = data.copy()
+    out["__tmp"] = out[column]
+    out.columns = [column if c == "__tmp" else c for c in out.columns]
+    return out
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_기준일이_비면_점수를_지어내지_않는다(weighting):
+    """🔴 이슈 #9 의 본체. 옛 구현은 `str(d)` 로 묶어 결측을 **`'nan'` 한 그룹**으로 만들고,
+       그 행들에 점수와 **1위·2위**를 붙였다(실측). 제약 8 정면 위반이다.
+
+    🔒 `None` 으로 남기지 않고 **던진다.** 기준일은 값이 아니라 **키**라 `is_partial` 로
+       표시할 자리가 없고, 옛 `groupby` 의 '조용히 버리기' 는 `ViewError` 머리주석이
+       금지하는 바로 그 행동이다. 그리고 어차피 `rank_stability` 가 그 프레임에서
+       `TypeError` 로 페이지를 죽인다.
+    """
+    data = frame().astype({"bas_dd": object})
+    data.loc[0, "bas_dd"] = None
+    with pytest.raises(view.ViewError, match="비어 있는 행이 1건"):
+        view.scored(data, weighting)
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_섹터가_비면_점수를_지어내지_않는다(weighting):
+    """🔒 `bas_dd` 옆줄의 **같은 병**이다 — 옛 구현은 `str(v)` 로 `'<NA>'` 라는 이름의
+       섹터를 만들어 점수와 순위를 줬다(실측 rank 14)."""
+    data = frame().astype({"sector_id": object})
+    data.loc[0, "sector_id"] = None
+    with pytest.raises(view.ViewError, match="비어 있는 행이 1건"):
+        view.scored(data, weighting)
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_한_날이_두_표기로_갈려도_1위가_둘이_되지_않는다(weighting):
+    """🔴 **이슈 본문이 놓친 진짜 위험.** 이슈는 "int/str 혼합이면 ViewError" 라고 적었지만
+       실측은 반대다 — `str(20260901) == str("20260901")` 이라 혼합은 **조용히 통과**한다.
+
+    위험한 것은 **float 표기**다. 한 날이 `"20260909"` 와 `20260909.0` 두 표기로 갈리면
+    옛 구현이 그 하루를 **두 횡단면으로 쪼개** 같은 날에 **1위를 둘** 만들었다 — 예외
+    없이 조용히(실측). 결측이 하나만 있어도 pandas 가 정수 열을 float64 로 올리므로
+    실제로 닿는 경로다.
+
+    🔒 **이 테스트가 지키는 것은 ③ dtype 검사다.** `str()` 제거가 아니다 — 돌연변이로
+       확인했다(`str()` 을 되살려도 안 깨지고, dtype 검사만 지우면 깨진다). `str()` 은
+       ③ 덕분에 하는 일이 없어져서 지운 군더더기이고, ③ 없이 그것만 지우면 오히려
+       정수와 문자열이 다른 키가 되어 **더 나빠진다.**
+    """
+    data = frame().astype({"bas_dd": object})
+    last = data.index[data["bas_dd"] == DAYS[-1]]
+    data.loc[last[0], "bas_dd"] = float(DAYS[-1])
+    with pytest.raises(view.ViewError, match="문자열이 아니다"):
+        view.scored(data, weighting)
+
+
+@pytest.mark.parametrize("column", ["bas_dd", "sector_id"])
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_키_열이_둘이면_알아볼_수_있게_거절한다(weighting, column):
+    """🔴 옛 구현은 `ValueError: Length of values (2) does not match length of index (27)`
+       를 냈다 — 무엇이 잘못됐는지 아무도 모르는 메시지다.
+
+    🔒 이 검사가 **맨 앞**이어야 한다. 열이 둘이면 `frame[col]` 이 DataFrame 이라
+       뒤의 `isna().any()` 가 Series 를 돌려주고 `if` 가 *truth value is ambiguous* 로
+       터진다 — 즉 검사 자체가 깨진다.
+    """
+    with pytest.raises(view.ViewError, match=f"{column} 열이 2개다"):
+        view.scored(_renamed(frame(), column), weighting)
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_섹터로_거른_프레임을_거절한다(weighting):
+    """🔴 이슈 #7. 한 행짜리 프레임에서 **프리셋은 3위, 커스텀은 1위**였다(실측) —
+       같은 화면에 두 가지 뜻의 등수가 섞여 나간다.
+
+    🔒 잡는 근거는 휴리스틱이 아니라 **게시 계약**이다. `rank_scores` 가 점수 있는 것만
+       1..k 로 매기고 게시 게이트(`_check_score_rank_consistent`)가 그것을 다시 검사하므로,
+       **섹터로 거른 프레임은 전역 순위를 그대로 들고 있어 1..k 가 깨진다.**
+    """
+    only_one = frame()[frame()["sector_id"] == "sec_0"]
+    with pytest.raises(view.ViewError, match="부분 프레임"):
+        view.scored(only_one, weighting)
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_날짜로_자른_프레임은_받는다(weighting):
+    """🔒 계약은 "날짜로 자른 것은 되고, 섹터로 거른 것은 안 된다" 이다. 날짜로 자르면
+       그 날들의 횡단면은 **온전한 채로** 남으므로 등수의 뜻이 갈리지 않는다."""
+    data = frame()
+    recent = data[data["bas_dd"] >= DAYS[-3]]
+    out = view.scored(recent, weighting)
+    assert set(out[view.RANK_COLUMN]) == {1, 2, 3}
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+@pytest.mark.parametrize(
+    "column", ["rank_momentum", "m_z_bp", "score_balanced_bp", "liquidity_ok", "fetched_at"])
+def test_열이_빠진_옛_파생본을_거절한다(weighting, column):
+    """🔴 **키 2열과 순위 3열만 보던 때는 이 프레임이 프렐류드를 지나갔다.** 그리고 화면
+       깊은 곳에서 `KeyError` 로 터졌는데(실측), 그 예외는 `ViewError` 가 아니라서
+       페이지가 잡지 못하고 **팀원이 파이썬 스택트레이스를 봤다** — 이 변경이 없애려던
+       바로 그 화면이다. HF 에 옛 파생본이 남아 있으면 실제로 닿는 경로다.
+
+    🔒 **조용히 건너뛰지 않는다** — "판정 불가는 통과가 아니다"(`gate.check`).
+       열 계약의 정본은 `gate.SCORE_PUBLISHED_COLUMNS` **하나**다.
+    """
+    with pytest.raises(view.ViewError, match="없는 열"):
+        view.scored(frame().drop(columns=[column]), weighting)
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+@pytest.mark.parametrize("bad", [20_000_000, 0, -5], ids=["거대", "0", "음수"])
+def test_손상된_순위가_검사를_OOM_으로_죽이지_않는다(weighting, bad):
+    """🔴 유일성 검사는 (날짜, 순위)를 정수 하나로 접어 `bincount` 로 센다. 그 앞에
+       조밀성 검사가 없으면 손상된 순위 하나(2천만)가 **42.5 GiB** 를 요구한다(실측 ·
+       3ms 만에 MemoryError). Streamlit Cloud 컨테이너는 2.7GB 라 거기서는 프로세스가
+       통째로 죽고 `except ViewError` 로 잡히지 않는다 — **가장 깨진 입력에서 계약이
+       먼저 무너진다.**
+
+    🔒 고침은 가드를 더 세운 것이 아니라 **순서**다 — 조밀성이 먼저 돌면 날짜별
+       최댓값이 그날 행 수와 같아야 하므로 칸 수가 구조적으로 묶인다.
+    """
+    data = frame()
+    last = data["bas_dd"] == DAYS[-1]
+    data.loc[last & (data["sector_id"] == "sec_0"), "rank_balanced"] = bad
+    with pytest.raises(view.ViewError):
+        view.scored(data, weighting)
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_조밀해_보이는_음수_순위를_잡는다(weighting):
+    """🔴 **조밀성만으로는 음수를 못 잡는다.** `{1, 2, 4, -5}` 는 개수 4 · 최댓값 4 라
+       "1..4" 검사를 그대로 통과한다. 그대로 두면 유일성 검사의 `key` 가 음수가 되어
+       `bincount` 가 `ValueError` 로 터지는데, 그것은 `ViewError` 가 아니라서 페이지가
+       잡지 못하고 **트레이스백**이 된다.
+
+    🔒 이 모양이 없으면 `ranks.min() < 1` 검사를 지워도 아무 테스트도 안 깨진다
+       (돌연변이로 확인했다) — 다른 케이스는 전부 조밀성이 먼저 잡기 때문이다.
+    """
+    data = frame(n_sectors=4)
+    last = data["bas_dd"] == DAYS[-1]
+    graded = sorted(int(r) for r in data.loc[last, "rank_balanced"])
+    assert graded == [1, 2, 3, 4], graded
+    # 3 위를 -5 로 바꾼다 → {1, 2, 4, -5} · 개수 4 · 최댓값 4 → 조밀성은 통과한다
+    target = data.loc[last & (data["rank_balanced"] == 3), "sector_id"].iloc[0]
+    data.loc[last & (data["sector_id"] == target), "rank_balanced"] = -5
+    with pytest.raises(view.ViewError, match="1 보다 작은 순위"):
+        view.scored(data, weighting)
+
+
+def _preset_split_frame() -> pd.DataFrame:
+    """세 프리셋이 **서로 다른 순위**를 내는 프레임.
+
+    🔒 기본 픽스처는 네 축이 섹터를 같은 순서로 세워 세 프리셋의 순위가 똑같다
+       (`diverging=True` 로도 그렇다 — V 가중치 45 가 M+F+B 55 를 못 이긴다).
+       그래서 "순위 열을 셋 다 봐야 한다" 는 주장을 그 위에서는 고정할 수 없다.
+
+    M 과 V 를 **정반대**로 두면 균형·모멘텀은 M 을 따라가고 역발상(V45)만 뒤집힌다.
+    """
+    data = frame(3)
+    z_of = {"sec_0": {"M": 30000, "F": 0, "B": 0, "V": -30000},
+            "sec_1": {"M": -30000, "F": 0, "B": 0, "V": 30000},
+            "sec_2": {"M": 0, "F": 0, "B": 0, "V": 0}}
+    for axis, prefix in view._AXIS_PREFIX.items():
+        data[f"{prefix}_z_bp"] = [z_of[sid][axis] for sid in data["sector_id"]]
+    # 🔒 저장 열을 **배치가 쓰는 함수로** 채운다 — 손으로 적으면 픽스처가 스스로 모순된다
+    for name, weight in PRESETS.items():
+        scores = {}
+        for day, group in data.groupby("bas_dd"):
+            for sid in group["sector_id"]:
+                scores[(day, sid)] = weighted_score_bp(z_of[sid], weight)
+        data[f"score_{name}_bp"] = [scores[(d, s)]
+                                    for d, s in zip(data["bas_dd"], data["sector_id"])]
+        ranks = {}
+        for day, group in data.groupby("bas_dd"):
+            ranked = rank_scores({sid: scores[(day, sid)] for sid in group["sector_id"]})
+            ranks.update({(day, sid): r for sid, r in ranked.items()})
+        data[f"rank_{name}"] = [ranks[(d, s)]
+                                for d, s in zip(data["bas_dd"], data["sector_id"])]
+    return data
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_순위_열을_셋_다_봐야_부분_프레임을_잡는다(weighting):
+    """🔴 **하나만 보면 구멍이 뚫린다.** 그 프리셋 기준 상위 k 만 남긴 부분집합은 그
+       열에서는 여전히 조밀한 1..k 라 통과한다. 나머지 둘이 그것을 잡는다.
+
+    🔒 이 테스트가 없으면 조밀 검사 루프를 `("rank_balanced",)` 한 열로 좁혀도 **아무
+       테스트도 안 깨진다**(돌연변이로 확인). 즉 `_RANK_COLUMNS` 가 셋인 이유가
+       코드와 주석에만 있고 테스트에는 없는 상태였다.
+    """
+    data = _preset_split_frame()
+    keep = data[data["rank_balanced"] <= 2]
+
+    # 전제 — 균형 열만 보면 조밀해서 **못 잡는다**
+    for day, group in keep.groupby("bas_dd"):
+        balanced = sorted(int(r) for r in group["rank_balanced"])
+        assert balanced == list(range(1, len(balanced) + 1)), (day, balanced)
+    # 🔒 그런데 역발상 열이 잡는다
+    with pytest.raises(view.ViewError, match="부분 프레임"):
+        view.scored(keep, weighting)
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_같은_날_같은_순위가_둘이면_거절한다(weighting):
+    """🔴 개수·합·최댓값만 보면 `{4,4,1,1}` 이 `1..4` 를 **완벽히 흉내 낸다**
+       (개수 4 · 합 10 · 최댓값 4). 그래서 유일성까지 본다."""
+    data = frame(n_sectors=4)
+    last = data["bas_dd"] == DAYS[-1]
+    data.loc[last & (data["sector_id"] == "sec_0"), "rank_balanced"] = 4
+    data.loc[last & (data["sector_id"] == "sec_1"), "rank_balanced"] = 1
+    with pytest.raises(view.ViewError, match="같은 순위가 둘"):
+        view.scored(data, weighting)
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+def test_하루에_같은_섹터가_둘이면_프리셋도_던진다(weighting):
+    """🔴 옛 구현은 이 검사가 **커스텀 루프 안에만** 있어서 프리셋이 중복 프레임을
+       조용히 통과시켰다(실측: 168행을 그대로 돌려주고 `visible_ids` 가 21을 말했다).
+       계약이 하나라면 거절도 하나여야 한다."""
     data = pd.concat([frame(), frame().tail(1)], ignore_index=True)
     with pytest.raises(view.ViewError, match="두 번"):
-        view.scored(data, weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0}))
+        view.scored(data, weighting)
+
+
+@pytest.mark.parametrize("weighting", BOTH_PATHS, ids=BOTH_IDS)
+@pytest.mark.parametrize(
+    "maker",
+    [lambda: frame(3), lambda: frame(21), lambda: frame(3, diverging=True),
+     lambda: _with_gaps(), lambda: blank_latest(3), lambda: blank_latest(3, blanks=1),
+     lambda: blank_latest(3, blanks=2)],
+    ids=["기본", "21섹터", "갈리는축", "결측섞임", "최신일전부결측", "결측1", "결측2"])
+def test_정상_프레임은_프렐류드를_지난다(maker, weighting):
+    """🔴 **거절만 고정하면 반쪽이다.** 검사가 너무 엄해 멀쩡한 프레임을 막으면 화면이
+       통째로 죽는다 — 특히 `blank_latest` 는 `sectors.yaml` 에 섹터를 하나 더 넣으면
+       **그날부터 실제로 나오는 모양**이고, 실데이터에도 399행 있다."""
+    assert len(view.scored(maker(), weighting)) > 0
+
+
+def _long_frame(n_days: int = 285, n_sectors: int = 21) -> pd.DataFrame:
+    """실데이터와 같은 크기(5,985행 · 285영업일 × 21섹터)의 합성 프레임.
+
+    🔒 실제 KRX 데이터를 픽스처로 쓰지 않는다 (AGENTS.md 5장). 하루치를 날짜만 바꿔
+       쌓으므로 **날마다 횡단면이 온전하다** — 프렐류드가 통과해야 정상이다.
+    """
+    by_day = [g for _, g in frame(n_sectors).groupby("bas_dd", sort=True)]
+    out = []
+    for i in range(n_days):
+        chunk = by_day[i % len(by_day)].copy()
+        chunk["bas_dd"] = f"2026{(i // 30) + 1:02d}{(i % 30) + 1:02d}"
+        out.append(chunk)
+    return pd.concat(out, ignore_index=True)
+
+
+def test_프렐류드가_슬라이더를_느리게_하지_않는다():
+    """🔴 이슈 #1 이 이 함수를 606ms → 85ms 로 되돌린 적이 있다. 슬라이더는 한 칸마다
+       rerun 이고 `scored()` 는 한 rerun 에 여러 번 돈다.
+
+    🔒 고정하는 것은 **구현 방식**이다 — 날짜별 `groupby` 루프로 짜면 같은 프레임에서
+       **86.6ms** 이고(실측), `factorize` + `bincount` 로 짜면 **2.5~4.0ms** 다. 30배
+       차이라 문턱을 30ms 에 두면 되돌림은 잡고 기계 편차는 안 잡는다.
+    """
+    import time
+
+    data = _long_frame()
+    assert len(data) == 5985, len(data)
+    view._check_frame(data)                      # 워밍업 — 첫 호출의 import 비용을 뺀다
+    best = min(_elapsed_ms(lambda: view._check_frame(data)) for _ in range(5))
+    assert best < 30, f"프렐류드가 {best:.1f}ms 다 — groupby 로 되돌아갔는지 본다"
+
+
+def _elapsed_ms(fn) -> float:
+    import time
+
+    started = time.perf_counter()
+    fn()
+    return (time.perf_counter() - started) * 1000
+
+
+def test_stability_window_가_결측을_영업일로_세지_않는다():
+    """🔴 `unique()` 는 `<NA>` 를 값 하나로 센다 — 8영업일 프레임에서 **9** 가 나왔다(실측).
+       화면이 "최근 9영업일" 이라 적으면 그것이 곧 **없는 날을 지어낸 것**이고, 이 함수는
+       정확히 그 거짓말을 막으려고 있다 (머리주석)."""
+    eight = frame()
+    eight = eight[eight["bas_dd"] != DAYS[-1]].copy().astype({"bas_dd": object})
+    extra = eight.tail(1).copy()
+    extra["bas_dd"] = None
+    with_na = pd.concat([eight, extra], ignore_index=True)
+    assert eight["bas_dd"].nunique() == 8
+    assert view.stability_window(with_na, days=20) == 8
 
 
 def _liquidity_frame() -> pd.DataFrame:
@@ -1791,6 +2091,28 @@ def test_최신일이_전부_결측이어도_랭킹이_그려진다(monkeypatch)
     assert all(o.startswith("— · ") for o in options), options
     # 🔒 등수를 지어내지 않는다 — 없으면 없다고 한다
     assert any("순위를 낼 수 있는 섹터가 없다" in m.value for m in at.markdown)
+
+
+def test_깨진_파생본이_트레이스백_대신_설명을_보여준다(monkeypatch):
+    """🔴 **던지기만 하고 잡지 않으면 이 변경이 팀원 7명의 화면을 파이썬 스택트레이스로
+       바꾼다.** `ViewError` 를 잡는 곳이 저장소에 0곳이었고, `client.showErrorDetails`
+       는 기본 `full` 이라 메시지와 스택이 그대로 그려진다(실측). 팀원은 개발자가 아니다.
+
+    🔒 **가짜 표를 그리지 않는다** — 소제목이 하나도 없어야 한다. 그리고 출처 표시는
+       살아남아야 한다 (절대 제약 12 · 약관 제10조③).
+    """
+    broken = frame(3)
+    broken = broken[broken["sector_id"] == "sec_0"]        # 섹터로 거른 프레임 (#7)
+    at = _app_with_frame(monkeypatch, broken)
+
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert any("읽을 수 있는 모양이 아니" in e.value for e in at.error), \
+        [e.value[:120] for e in at.error]
+    # 🔒 지어낸 순위표를 그리다 만 상태로 두지 않는다
+    assert len(at.subheader) == 0, [s.value for s in at.subheader]
+    # 🔒 출처는 `finally` 덕에 남는다 — 이 줄이 깨지면 약관 위반이다
+    assert any("한국거래소 통계정보" in c.value for c in at.caption), \
+        [c.value[:80] for c in at.caption]
 
 
 def test_막대_눈금이_결측만_있어도_무너지지_않는다():

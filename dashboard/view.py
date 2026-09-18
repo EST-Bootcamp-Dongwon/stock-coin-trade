@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from dashboard.weights import Weighting
+from sector.datastore.gate import SCORE_PUBLISHED_COLUMNS
 from sector.scoring import AXES, PRESETS, rank_scores, scoring_axes, weighted_score_bp
 
 __all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "SCORE_AXES_COLUMN",
@@ -110,8 +111,166 @@ def _axes_used_n(frame: Any, weights: Mapping[str, int]) -> list[int]:
     return [0] * len(frame) if total is None else [int(v) for v in total]
 
 
+#: 프렐류드가 대조하는 **저장 순위 열.** 🔒 셋을 **함께** 본다 — 하나만 보면 그 프리셋
+#:    기준 상위 k 만 남긴 부분집합이 조밀해서 통과한다(실측: `rank_balanced <= 5` 로 자른
+#:    프레임을 balanced 는 놓치고 momentum·contrarian 이 잡았다). 게시 계약이 셋을 함께
+#:    싣는다 (`gate.SCORE_PUBLISHED_COLUMNS`).
+_RANK_COLUMNS = ("rank_balanced", "rank_momentum", "rank_contrarian")
+
+#: 행을 식별하는 **키.** 🔴 값이 아니라 키다 — 비면 `is_partial` 로 표시할 자리조차 없다.
+_KEY_COLUMNS = ("bas_dd", "sector_id")
+
+
+def _check_frame(frame: Any) -> None:
+    """`scored()` 의 입력 계약을 **입구 한 곳에서** 지킨다 (이슈 #7 · #9).
+
+    ## 🔒 순서가 계약의 일부다
+
+    뒤 검사가 앞 검사의 전제 위에 선다. 바꾸면 검사 자체가 틀린 말을 한다 — 전부 실측이다.
+
+    1. **열 중복이 먼저다.** 열이 둘이면 `frame["bas_dd"]` 가 Series 가 아니라 DataFrame 이라
+       `isna().any()` 가 Series 를 돌려주고 `if` 가 *truth value is ambiguous* 로 터진다.
+       즉 검사 자체가 깨진다.
+    2. **결측이 타입보다 먼저다.** `object` 열에 `None` 이 섞이면 `is_string_dtype` 이
+       **`False`** 다(pandas 3.0.5 실측). 타입을 먼저 보면 "비어 있다" 를 "문자열이 아니다"
+       라고 **틀리게 진단한다.**
+    3. **중복이 조밀성보다 먼저다.** 중복 프레임은 저장 순위도 겹쳐 보여 조밀성 검사가
+       "부분 프레임" 으로 **오진한다.** 원인은 중복이다.
+
+    ## 🔴 이 검사가 보증하지 **않는** 것
+
+    `*_z_bp` 가 저장 순위와 같은 시점인지는 모른다. z 열만 옛 값인 프레임은 그대로
+    통과한다. **부분 프레임을 잡는 검사이지 파생본의 모든 오염을 잡는 검사가 아니다.**
+    """
+    import numpy as np
+    import pandas as pd
+
+    # ① 열 중복 — 무엇보다 먼저다 (머리주석 1)
+    for column in _KEY_COLUMNS:
+        if column not in frame.columns:
+            raise ViewError(f"프레임에 {column} 열이 없다 — 게시된 score_daily 가 아니다")
+        if not isinstance(frame[column], pd.Series):
+            raise ViewError(f"{column} 열이 {frame.columns.tolist().count(column)}개다 "
+                            f"— 파생본이 깨졌다")
+
+    # ② 결측 — 타입보다 먼저다 (머리주석 2)
+    #    🔴 여기서 `None` 으로 넘기지 않고 **던진다.** 키가 빈 행은 어느 날의 횡단면에도
+    #       속하지 못해 순위를 낼 수 없고, 화면에서는 "창이 안 찬 새 섹터"(실데이터
+    #       399행)의 빈칸과 구별되지 않는다. 옛 `groupby` 는 그 행을 **조용히 버렸다** —
+    #       `ViewError` 머리주석이 금지하는 바로 그 행동이다. 실데이터 결측은 0행이고
+    #       생산자가 dtype 을 못박으므로(`batch/build_scores.py`) 정상 상태가 아니다.
+    for column in _KEY_COLUMNS:
+        missing = int(frame[column].isna().sum())
+        if missing:
+            raise ViewError(f"{column} 이 비어 있는 행이 {missing}건 있다 — 파생본이 깨졌다")
+
+    # ③ 타입 — 🔴 **한 날이 두 표기로 갈리는 것을 막는 방어가 여기 하나다.**
+    #    `"20260909"` 와 `20260909.0` 이 섞이면 그 하루가 두 횡단면으로 쪼개져
+    #    **같은 날에 1위가 둘** 나온다 — 예외 없이 조용히(실측). 결측이 하나만 있어도
+    #    pandas 가 정수 열을 float64 로 올리므로 실제로 닿는 경로다.
+    #    🔒 아래 `days`·`sector_ids` 가 `str()` 없이 값을 그대로 쓰는 근거도 이 검사다 —
+    #       순서가 거꾸로가 아니다. 이 검사가 없으면 `str()` 제거는 오히려 해롭다.
+    #    🔒 값 루프가 아니라 dtype 으로 본다 (0.011ms vs 값 루프 3.1ms).
+    for column in _KEY_COLUMNS:
+        if not pd.api.types.is_string_dtype(frame[column]):
+            raise ViewError(f"{column} 이 문자열이 아니다 (dtype={frame[column].dtype}) "
+                            f"— 게시본은 언제나 문자열이다")
+
+    # ④ 중복 — 조밀성보다 먼저다 (머리주석 3). 🔒 프리셋 경로도 지난다. 옛 구현은 이
+    #    검사가 커스텀 루프 **안에만** 있어서 프리셋은 중복 프레임을 조용히 통과시켰다
+    duplicated = frame.duplicated(list(_KEY_COLUMNS)).to_numpy()
+    if duplicated.any():
+        first = int(np.flatnonzero(duplicated)[0])
+        day = frame["bas_dd"].to_numpy()[first]
+        sector_id = frame["sector_id"].to_numpy()[first]
+        raise ViewError(f"{day} 에 섹터 {sector_id} 가 두 번 있다 — 파생본이 깨졌다")
+
+    # ⑤ 열 — 🔴 **게시 계약 전체를 본다.** 키 2열과 순위 3열만 보던 때는 `m_z_bp` 나
+    #    `score_balanced_bp` 가 빠진 옛 파생본이 프렐류드를 지나 화면 깊은 곳에서
+    #    `KeyError` 로 터졌다(실측). 그 예외는 `ViewError` 가 아니라서 페이지가 잡지
+    #    못하고, 이 변경이 없애려던 **트레이스백 화면**이 그대로 남았다.
+    #    🔒 정본은 `gate.SCORE_PUBLISHED_COLUMNS` 하나다 — 열 계약을 두 곳에 적지 않는다
+    absent = [c for c in SCORE_PUBLISHED_COLUMNS if c not in frame.columns]
+    if absent:
+        raise ViewError(f"게시된 score_daily 가 아니다 — 없는 열 {len(absent)}개: "
+                        f"{', '.join(absent[:5])}")
+
+    # ⑥ 완전성 — 부분 프레임을 거절한다 (이슈 #7)
+    _check_whole(frame)
+
+
+def _check_whole(frame: Any) -> None:
+    """날짜별 저장 순위가 **조밀한 1..k** 인가 — 부분 프레임이면 깨진다.
+
+    🔴 이것은 휴리스틱이 아니라 **게시 계약의 재확인**이다. `rank_scores` 가 점수 있는
+       것만 1..k 로 매기고(`sector/scoring.py`), 게시 게이트가 그것을 다시 검사한다
+       (`gate._check_score_rank_consistent`). 실데이터 285일 × 3열 = 855건 위반 0건.
+       섹터로 거른 프레임은 원래 전역 순위를 그대로 들고 있어 구멍이 뚫린다.
+
+    🔒 **`groupby` 로 짜지 않는다.** 날짜별 루프는 38.4ms · `groupby().agg()` 는 6.2ms ·
+       `factorize` + `bincount` 는 **0.72ms** 다(5,985행 실측). 프리셋 경로는 한 rerun 에
+       여러 번 돌고 그 경로 전체가 1.6ms 라, 여기서 느려지면 이슈 #1 을 되돌린다.
+    """
+    import numpy as np
+    import pandas as pd
+
+    # 🔒 순위 열의 **존재**는 `_check_frame` ⑤ 가 이미 봤다 (게시 계약 전체)
+    codes, days = pd.factorize(frame["bas_dd"].to_numpy())
+    n_days = len(days)
+    for column in _RANK_COLUMNS:
+        values = frame[column].to_numpy(dtype="float64", na_value=np.nan)
+        graded = ~np.isnan(values)
+        if not graded.any():
+            # 그날 점수가 하나도 없으면 순위도 없어야 정상이다 (실데이터 19일)
+            continue
+        ranks = values[graded].astype("int64")
+        day_of = codes[graded]
+        # ① 양수인가 — 🔒 **조밀성만으로는 못 잡는다.** `{1,2,4,-5}` 는 개수 4 · 최댓값 4
+        #    라 아래 ② 를 그대로 통과하고, 그대로 두면 ③ 의 `key` 가 음수가 되어
+        #    `bincount` 가 `ValueError` 로 터진다 — `ViewError` 가 아니라 트레이스백이다
+        if ranks.min() < 1:
+            raise ViewError(f"{column} 에 1 보다 작은 순위가 있다 — 파생본이 깨졌다")
+
+        # ② 조밀성 — 🔒 **③ 보다 먼저다. 이 순서가 메모리 안전의 근거다.**
+        #    ② 를 지나면 날짜별 최댓값 == 그날 행 수이므로 최대순위 ≤ 전체 행 수이고,
+        #    ③ 의 칸 수(날짜수 × (최대순위+1))가 **구조적으로** 묶인다.
+        #    🔴 순서를 뒤집으면 손상된 순위 하나(2천만)가 `bincount` 에 **42.5 GiB** 를
+        #       요구한다(실측 · 3ms 만에 MemoryError). Streamlit Cloud 는 2.7GB 라
+        #       거기서는 프로세스가 통째로 죽고 `except ViewError` 로 잡히지 않는다 —
+        #       가장 깨진 입력에서 계약이 먼저 무너진다. 가드를 더 세우지 않고
+        #       **순서로** 막는다
+        count = np.bincount(day_of, minlength=n_days)
+        top = np.zeros(n_days, dtype="int64")
+        np.maximum.at(top, day_of, ranks)
+        # 서로 다른 양의 정수 k 개의 최댓값이 k 라면 그 집합은 정확히 1..k 다
+        broken = np.flatnonzero((count > 0) & (top != count))
+        if len(broken):
+            day = days[int(broken[0])]
+            # 🔒 마크다운을 쓰지 않는다 — `theme.failure` 가 HTML 블록으로 그려서
+            #    백틱·별표가 **글자 그대로** 팀원 화면에 나온다(ADR-SC-0012 ④ 경로)
+            raise ViewError(
+                f"{day} 의 {column} 이 1..{count[broken[0]]} 로 이어지지 않는다"
+                f"(최대 {top[broken[0]]}). 섹터로 거른 부분 프레임이거나 순위가 손상됐다 "
+                f"— 거르지 않은 전체 프레임을 넘겨야 한다")
+
+        # ③ 유일성 — 🔒 ② 만으로는 `{4,4,1,1}` 이 1..4 를 흉내 낸다(개수 4 · 최댓값 4).
+        #    🔒 `np.unique` 로 정렬하지 않는다 — (날짜, 순위)를 정수 하나로 접어 **세면**
+        #       O(n) 이다. ② 덕에 칸 수는 285일 × 22 = 6,270 으로 묶여 있다
+        key = day_of.astype("int64") * (int(ranks.max()) + 1) + ranks
+        if np.bincount(key).max() > 1:
+            raise ViewError(f"{column} 에 같은 날 같은 순위가 둘 있다 — 파생본이 깨졌다")
+
+
 def scored(frame: Any, weighting: Weighting) -> Any:
     """`score_bp` · `rank` 열을 붙인 프레임. **화면의 표·막대·등수는 이것만 읽는다.**
+
+    ## 🔒 입력은 **거르지 않은 전체 프레임**이다 (이슈 #7)
+
+    날짜로 자른 것은 되고, **섹터로 거른 것은 안 된다.** 두 경로가 등수의 뜻이 다르기
+    때문이다 — 프리셋은 저장된 **전역** 등수를 읽고, 커스텀은 주어진 프레임 **안에서**
+    다시 매긴다. 한 행짜리 프레임에서 프리셋은 3위, 커스텀은 1위였다(실측).
+    거르려면 **행을 숨기는 `only=`** 로 한다 (ADR-SC-0014 ⑦ — 필터는 점수를 다시 매기지
+    않는다). 계약은 `_check_frame` 이 **기계로도** 지킨다.
 
     ## 🔴 프리셋은 저장된 열을 그대로 읽는다 — 다시 계산하지 않는다
 
@@ -134,6 +293,9 @@ def scored(frame: Any, weighting: Weighting) -> Any:
     크기 때문일 뿐이다. 🔒 저장 열은 **덮지 않는다** (ADR-SC-0014 ③).
     """
     import pandas as pd
+
+    # 🔒 **두 경로 공통이다.** 계약이 하나이므로 검사도 한 곳이다 (이슈 #7 · #9)
+    _check_frame(frame)
 
     out = frame.copy()
     axes_n = pd.array(_axes_used_n(frame, weighting.weights), dtype="Int64")
@@ -158,8 +320,14 @@ def scored(frame: Any, weighting: Weighting) -> Any:
     #    ⚠️ 비용이 **그룹 수**에 비례하므로 창을 자르면 줄기는 한다 — 그래도 자르지 않는다.
     #       이유는 성능이 아니라 계약이다(ADR-SC-0014 ⑦ — 하단에는 원본 프레임이 간다).
     #    🔒 결과는 글자 그대로 같다 — 같은 `weighted_score_bp` · `rank_scores` 에 같은 값을 준다
-    days = [str(d) for d in frame["bas_dd"]]
-    sector_ids = [str(v) for v in frame["sector_id"]]
+    # 🔒 **`str()` 을 씌우지 않는다.** 프렐류드 ③ 이 이미 문자열임을 보증했으므로
+    #    강제변환은 **하는 일이 없다** — 지운 것은 방어가 아니라 군더더기다.
+    #    🔴 방어는 ③ dtype 검사 **하나**다. 착각하기 쉬운데, ③ 없이 `str()` 만 지우면
+    #       오히려 나빠진다 — 정수 `20260901` 과 문자열 `"20260901"` 이 **다른 키**가
+    #       되어 하루가 둘로 갈린다(`str()` 이 있을 때는 같은 키로 합쳐져 무해했다).
+    #       즉 이 두 줄은 ③ 이 있기 때문에만 옳다 (이슈 #9)
+    days: list[str] = frame["bas_dd"].tolist()
+    sector_ids: list[str] = frame["sector_id"].tolist()
     z_of_axis = {a: _int_list(frame[f"{_AXIS_PREFIX[a]}_z_bp"]) for a in AXES}
 
     #: 자리(0..n-1)를 날짜별로 묶는다. 🔒 **자리로 다룬다** — 색인 라벨로 맞추면 색인이
@@ -174,10 +342,9 @@ def scored(frame: Any, weighting: Weighting) -> Any:
         again: dict[str, int | None] = {}
         at: dict[str, int] = {}
         for position in positions:
+            # 🔒 하루에 같은 섹터가 둘인 경우는 **프렐류드**가 이미 거절했다 —
+            #    옛 구현은 이 자리에서만 봐서 프리셋 경로가 그대로 통과했다
             sector_id = sector_ids[position]
-            if sector_id in again:
-                # 🔴 하루에 같은 섹터가 둘이면 순위가 조용히 한 줄을 잃는다
-                raise ViewError(f"{day} 에 섹터 {sector_id} 가 두 번 있다 — 파생본이 깨졌다")
             at[sector_id] = position
             again[sector_id] = weighted_score_bp(
                 {a: z_of_axis[a][position] for a in AXES}, weighting.weights)
@@ -328,8 +495,13 @@ def rank_stability(frame: Any, *, days: int = 20) -> Any:
 
 
 def stability_window(frame: Any, *, days: int) -> int:
-    """실제로 쓸 수 있는 영업일 수. 요청한 `days` 보다 작을 수 있다."""
-    return min(days, len(frame["bas_dd"].unique()))
+    """실제로 쓸 수 있는 영업일 수. 요청한 `days` 보다 작을 수 있다.
+
+    🔴 **결측을 영업일로 세지 않는다.** `unique()` 는 `<NA>` 를 값 하나로 세어, 8영업일
+       + 결측 1행인 프레임에서 **9** 를 돌려줬다(실측). 화면이 "최근 9영업일" 이라 적으면
+       그것이 곧 없는 날을 지어낸 것이고, 이 함수는 정확히 그 거짓말을 막으려고 있다.
+    """
+    return min(days, int(frame["bas_dd"].nunique()))
 
 
 def ranking_table(frame: Any, *, days: int = 20, names: Names | None = None) -> Any:
