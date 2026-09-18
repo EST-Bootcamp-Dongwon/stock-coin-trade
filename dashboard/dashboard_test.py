@@ -34,12 +34,22 @@ DAYS = [f"2026090{i}" for i in range(1, 10)]
 _AXIS_OFFSET = {"m": 0, "f": 1200, "b": -800, "v": 300}
 
 
-def frame(n_sectors: int = 3) -> pd.DataFrame:
+def frame(n_sectors: int = 3, *, diverging: bool = False) -> pd.DataFrame:
     """합성 점수 표. 🔒 실제 KRX 데이터를 픽스처로 쓰지 않는다 (AGENTS.md 5장).
 
     🔒 저장 열(`score_*_bp`·`rank_*`)을 **배치가 쓰는 함수로** 채운다 — 즉 이 픽스처는
        게시 게이트를 통과하는 **유효한 게시본**이다. 손으로 적으면 픽스처가 스스로
        모순되고, 그 위에서 고정한 계약은 아무것도 보장하지 않는다.
+
+    ## `diverging=True` — **축마다 순위가 갈린다**
+
+    🔴 기본 픽스처는 `base = (s-1)*5000` 에 축 오프셋만 더해서, 네 축이 섹터를
+       **똑같은 순서로** 세운다. 그래서 어떤 가중치를 주어도 순위가 한 칸도 안 바뀌고,
+       "화면의 이 칸이 가중치를 따르는가" 같은 계약을 **픽스처 위에서 고정할 수 없다**
+       (2026-09-18 실측 — 분포표를 프리셋으로 못 박는 돌연변이가 살아남았다).
+
+    `diverging=True` 는 M 축과 V 축의 순서를 **뒤집어** 둔다. 그러면 균형 프리셋과
+    V 축만 쓰는 가중치가 서로 다른 1위를 낸다.
     """
     rows = []
     for day_i, day in enumerate(DAYS):
@@ -47,6 +57,9 @@ def frame(n_sectors: int = 3) -> pd.DataFrame:
         for s in range(n_sectors):
             base = (s - 1) * 5000 + day_i * 100
             z_of[f"sec_{s}"] = {a.upper(): base + off for a, off in _AXIS_OFFSET.items()}
+            if diverging:
+                # 🔒 V 축만 뒤집는다 — M·F·B 는 그대로라 균형은 여전히 sec_2 를 위로 본다
+                z_of[f"sec_{s}"]["V"] = (n_sectors - 2 - s) * 5000 + day_i * 100
         scores = {name: {sid: weighted_score_bp(z, w) for sid, z in z_of.items()}
                   for name, w in PRESETS.items()}
         ranks = {name: rank_scores(column) for name, column in scores.items()}
@@ -1625,6 +1638,9 @@ def test_위젯을_그린_뒤에_session_state_를_쓰지_않는다():
         ("ranking.py", "_sync_sliders"): "버튼 콜백 — 스크립트 본문보다 먼저 돈다",
         ("ranking.py", "_leave_custom"): "버튼 콜백",
         ("ranking.py", "_weight_controls"): "위젯을 그리기 전 `setdefault` — 아래 테스트가 순서를 본다",
+        ("ranking.py", "_apply_link"): "🔒 **모든 위젯보다 앞**에서 돈다 — `keep` 을 "
+                                       "`view.visible_ids`(순수 함수)로 내므로 위젯이 필요 없다",
+        ("ranking.py", "_share_button"): "`_REPORT` `pop` — 위젯 키가 아니다",
         ("evidence.py", "_fill"): "버튼 콜백",
         ("evidence.py", "_reset_on_new_sector"): "위젯을 그리기 전에 부른다 (`pop` 포함)",
         ("evidence.py", "render_evidence"): "인계 기록 — 위젯 키가 아니다",
@@ -1738,3 +1754,674 @@ def test_결측_칸을_내리는_문이_하나다():
     assert view.int_or_none(pd.array([7], dtype="Int64")[0]) == 7
     assert "int_or_none" in view.__all__
 
+
+
+# ── 공유 링크 (M9c) ─────────────────────────────────────────────────────────
+# 🔴 URL 은 팀원이 링크로 받는 **외부 글**이다 (ADR-SC-0012 ④ 의 목록에 더한다).
+#    그래서 여기 테스트의 요점은 두 가지다 — ① 쓸 수 없는 값이 **화면을 죽이지 않는다**
+#    ② 그 값의 **글자가 어디에도 새지 않는다.**
+
+_PROFILES = list(PRESETS)
+_GICS = ["Materials", "Industrials"]
+_SECTORS = ["steel", "robot"]
+
+
+def _parse(raw, *, as_of="20260909"):
+    from dashboard import share
+
+    return share.parse(raw, profiles=_PROFILES, gics_ids=_GICS, sector_ids=_SECTORS,
+                       as_of=as_of, default_profile="balanced")
+
+
+#: 🔴 키 **이름과 값 양쪽**에 넣는다. 값 쪽에만 넣으면 `ignored` 에 `f"{key}={value}"` 를
+#:    담는 돌연변이가 살아남고, 이름 쪽에만 넣으면 그 키는 `unknown`(개수)으로 세어져
+#:    통과한다 — 적대적 설계 리뷰가 짚은 자리다.
+_PAYLOAD = "<script>alert(1)</script>"
+
+#: 🔴 **한 종류로는 부족했다.** `<script>…` 만 넣은 테스트가 통과하는 동안
+#:    `?w=M²-F30-B20-V15` 한 줄이 페이지를 죽였다 — `"²".isdigit()` 은 `True` 인데
+#:    `int("²")` 는 던진다(적대적 구현 리뷰). 계열을 갈라 둔다.
+_NASTY = [
+    "<script>alert(1)</script>",     # 마크다운·HTML
+    "M²-F30-B20-V15",                # isdigit 은 참, int 는 던진다
+    "M" + "9" * 5000,                # 파이썬 3.12 의 4300자리 한도
+    "٣٥",                            # 아랍 숫자 — isdecimal 도 참이다
+    "２０２６０９０９",                # 전각 숫자
+    "00000000",                      # 모양은 날짜, 실재하지 않는 날짜
+    "",                              # 빈 값
+    "-" * 200,                       # 구분자만
+]
+
+
+def test_링크의_글자가_Parsed_어디에도_새지_않는다():
+    """🔒 이것이 `Parsed` 의 필드를 `Literal`·`int` 로 좁혀 둔 이유다."""
+    parsed = _parse({
+        "profile": [_PAYLOAD], "w": [_PAYLOAD], "gics": [_PAYLOAD, "Materials"],
+        "illiquid": [_PAYLOAD], "single": [_PAYLOAD], "sector": [_PAYLOAD],
+        "as_of": [_PAYLOAD], _PAYLOAD: [_PAYLOAD],
+    })
+    blob = repr(parsed)
+    assert _PAYLOAD not in blob, blob
+    assert "script" not in blob, blob
+    # 🔒 그래도 **무엇을 못 썼는지는 말한다** — 침묵이 `bind` 를 기각한 이유다
+    assert set(parsed.ignored) == {"profile", "w", "illiquid", "single", "sector",
+                                   "as_of", "gics"}, parsed.ignored
+    assert parsed.unknown == 1
+
+
+@pytest.mark.parametrize("value", _NASTY)
+@pytest.mark.parametrize("key", ["profile", "w", "gics", "illiquid", "single",
+                                 "sector", "as_of"])
+def test_어느_키에_무엇이_와도_파싱이_던지지_않는다(key, value):
+    """🔴 `parse` 는 순수 함수라 **아무도 잡아 주지 않는다.** 그리고 적용이 모든 위젯보다
+    앞이라, 여기서 예외가 나면 화면이 한 칸도 안 그려진다.
+
+    🔒 `?w=M²-F30-B20-V15` 가 실제로 그렇게 죽였다 — `isdigit()` 이 `int()` 와 다른
+       집합이기 때문이다(`share._is_number` 의 머리주석).
+    """
+    parsed = _parse({key: [value]})
+    # 🔒 그리고 **글자가 새지 않는다**
+    assert value not in repr(parsed) or value == "", repr(parsed)
+
+
+def test_쓸_수_없는_값은_기본값이_되고_키_이름만_남는다():
+    parsed = _parse({"profile": ["없는프리셋"], "sector": ["없는섹터"]})
+    assert parsed.share.profile == "balanced"
+    assert parsed.share.sector is None
+    assert set(parsed.ignored) == {"profile", "sector"}
+
+
+@pytest.mark.parametrize("value,expected,ignored", [
+    ("1", True, False),
+    ("0", False, False),
+    ("", False, True),
+    ("yes", False, True),
+    ("true", False, True),
+    ("TRUE", False, True),
+    ("2", False, True),
+])
+def test_illiquid_는_1과_0만_받는다(value, expected, ignored):
+    """🔴 `bool(value)` 로 읽으면 `?illiquid=0` 이 필터를 **켠다.**
+
+    🔒 왕복 테스트는 이 경로를 **절대 밟지 않는다** — 꺼짐이면 키를 빼기 때문에
+       `parse(encode(s))` 가 `"0"` 을 한 번도 만들지 않는다. 그래서 표로 따로 고정한다.
+    """
+    parsed = _parse({"illiquid": [value]})
+    assert parsed.share.hide_illiquid is expected
+    assert ("illiquid" in parsed.ignored) is ignored
+
+
+@pytest.mark.parametrize("value", [
+    "M35-F30-B20",          # 축이 셋
+    "M35-F30-B20-V15-X5",   # 모르는 축
+    "M35-F30-B20-M15",      # 축 중복
+    "M35-F30-B20-V101",     # 상한 초과
+    "M35-F30-B20-V-5",      # 음수 — `-` 가 구분자라 토큰이 깨진다
+    "M35-F30-B20-Vabc",     # 숫자가 아니다
+    "35-30-20-15",          # 축 글자가 없다 (손으로 쓴 링크의 순서 착오)
+    "",
+])
+def test_가중치는_전부_또는_무효다(value):
+    """🔒 일부만 받으면 나머지를 **어디선가 채워야** 하고, 그것이 곧 값을 지어내기다."""
+    parsed = _parse({"w": [value]})
+    assert parsed.share.weights is None
+    assert parsed.share.custom is False
+    assert "w" in parsed.ignored
+
+
+def test_네_축이_전부_0_인_상태도_링크에_담긴다():
+    """🔴 슬라이더로 **도달 가능한 상태**다. 그때 화면은 오류를 내고 프리셋으로 그린다.
+
+    파싱이 그것을 거절하면 링크가 그 화면을 재현하지 못한다 — 그래서
+    `share._weights` 는 `weights.normalize` 를 부르지 않는다. 전부-0 판정은 화면이 한다.
+    """
+    parsed = _parse({"w": ["M0-F0-B0-V0"]})
+    assert parsed.share.custom is True
+    assert parsed.share.weights == {a: 0 for a in AXES}
+    assert "w" not in parsed.ignored
+    # 🔒 그리고 화면 쪽 함수는 여전히 거절한다 — 두 계층의 역할이 갈려 있다
+    with pytest.raises(weights.WeightError):
+        weights.Weighting.of(parsed.share.weights)
+
+
+def test_아는_gics_만_남고_버린_것이_있으면_말한다():
+    parsed = _parse({"gics": ["Materials", "없는대분류", "Industrials"]})
+    assert parsed.share.gics == frozenset({"Materials", "Industrials"})
+    assert "gics" in parsed.ignored
+
+
+def test_gics_가_전부_유효하면_아무_말도_안_한다():
+    parsed = _parse({"gics": ["Industrials", "Materials"]})
+    assert parsed.ignored == ()
+
+
+def test_반복_파라미터의_마지막_값을_쓴다():
+    """🔒 Streamlit 의 매핑 접근과 같은 규칙이다 — 두 규칙이 있으면 화면과 링크가 갈린다."""
+    assert _parse({"profile": ["balanced", "momentum"]}).share.profile == "momentum"
+
+
+def test_링크의_기준일이_다르면_말하고_같으면_잠잠하다():
+    """🔒 옛 날짜를 **그리지는 않는다** — 그럴 데이터 경로가 없다. 말할 뿐이다."""
+    assert _parse({"as_of": ["20260901"]}, as_of="20260909").stale_as_of == "20260901"
+    assert _parse({"as_of": ["20260909"]}, as_of="20260909").stale_as_of is None
+    # 🔒 날짜 모양이 아니면 그것도 무시하고 키 이름만 말한다
+    bad = _parse({"as_of": ["2026-09-01"]})
+    assert bad.stale_as_of is None and "as_of" in bad.ignored
+
+
+@pytest.mark.parametrize("value", ["00000000", "20261345", "٣٥٦٧٨٩٠１",
+                                   "２０２６０９０９", "2026-09-01", "2026090"])
+def test_기준일은_실재하는_날짜만_받는다(value):
+    """🔴 `len==8 and isdigit()` 로는 부족했다 — 위 값들이 전부 통과해 화면의 경고
+    문장에 **그대로 그려졌다**(적대적 구현 리뷰). 모양이 아니라 날짜를 본다.
+    """
+    parsed = _parse({"as_of": [value]})
+    assert parsed.stale_as_of is None
+    assert "as_of" in parsed.ignored
+
+
+def test_링크가_지금_표보다_앞서면_방향을_바꿔_말한다():
+    """🔴 방향을 안 재면 거짓이 된다 — `load_scores` 가 HF→로컬로 폴백하면
+    **내 표가 링크보다 옛날**일 수 있다.
+    """
+    behind = _parse({"as_of": ["20260901"]}, as_of="20260909")
+    assert behind.stale_as_of == "20260901" and behind.stale_is_ahead is False
+
+    ahead = _parse({"as_of": ["20260930"]}, as_of="20260909")
+    assert ahead.stale_as_of == "20260930" and ahead.stale_is_ahead is True
+
+
+def test_가려진_섹터는_쓰레기와_다르게_다뤄진다():
+    """🔴 이 id 는 **우리 프레임에서 왔다.** 이름을 말해도 외부 글이 아니고,
+    말해야 링크가 목적("이 섹터의 근거를 보라")을 잃지 않는다.
+    """
+    from dashboard import share
+
+    parsed = _parse({"sector": ["robot"]})
+    assert parsed.share.sector == "robot" and parsed.hidden_sector is None
+
+    hidden = share.with_hidden_sector(parsed, frozenset({"steel"}))
+    assert hidden.share.sector is None
+    assert hidden.hidden_sector == "robot"
+    # 🔒 `ignored` 에 들어가지 않는다 — 사유가 다르므로 화면이 다른 말을 한다
+    assert "sector" not in hidden.ignored
+
+    shown = share.with_hidden_sector(parsed, frozenset({"steel", "robot"}))
+    assert shown.share.sector == "robot" and shown.hidden_sector is None
+
+
+@pytest.mark.parametrize("built", [
+    dict(profile="balanced"),
+    dict(profile="momentum", hide_illiquid=True, hide_single_etf=True),
+    dict(profile="balanced", custom=True, weights={"M": 70, "F": 60, "B": 40, "V": 30}),
+    dict(profile="balanced", custom=True, weights={a: 0 for a in AXES}),
+    dict(profile="momentum", gics=frozenset({"Materials", "Industrials"})),
+    dict(profile="balanced", sector="steel", as_of="20260909"),
+    dict(profile="momentum", custom=True, weights={"M": 1, "F": 0, "B": 0, "V": 100},
+         gics=frozenset({"Materials"}), hide_illiquid=True, hide_single_etf=True,
+         sector="robot", as_of="20260909"),
+])
+def test_링크는_왕복한다(built):
+    """🔒 `encode` → `parse` 가 같은 상태를 돌려준다. 같은 화면은 같은 링크를 낸다."""
+    from dashboard import share
+
+    original = share.Share(**built)
+    raw = {k: (v if isinstance(v, list) else [v])
+           for k, v in share.encode(original).items()}
+    back = _parse(raw)
+    assert back.share == original, (back.share, original)
+    assert back.ignored == () and back.unknown == 0
+
+
+def test_gics_는_정렬해서_담는다():
+    """🔒 같은 화면이 같은 링크를 내야 한다 — `frozenset` 의 순서는 보장이 없다."""
+    from dashboard import share
+
+    first = share.encode(share.Share(profile="balanced",
+                                     gics=frozenset({"Industrials", "Materials"})))
+    second = share.encode(share.Share(profile="balanced",
+                                      gics=frozenset({"Materials", "Industrials"})))
+    # 🔴 `first == second` 만으로는 **절대 실패할 수 없다** — 같은 프로세스에서 같은
+    #    `frozenset` 은 반복 순서가 같아 `sorted` 를 지워도 통과한다(적대적 리뷰).
+    #    일을 하는 것은 아래 리터럴 비교다
+    assert first["gics"] == ["Industrials", "Materials"], first
+    assert second["gics"] == ["Industrials", "Materials"], second
+
+
+def test_기본값은_링크에_넣지_않고_프리셋은_항상_넣는다():
+    """🔴 `profile` 을 빼면 "기본 프리셋" 이라는 뜻이 되고, 나중에 기본을 바꾸는 순간
+    팀에 뿌린 옛 링크의 의미가 **조용히 변한다.**
+    """
+    from dashboard import share
+
+    minimal = share.encode(share.Share(profile="balanced"))
+    assert minimal == {"profile": "balanced"}
+
+
+def test_퍼센트_인코딩이_붙는_글자를_쓰지_않는다():
+    """🔒 `M:35,F:30` 이면 `urlencode` 가 `%3A`·`%2C` 로 바꿔 링크가 읽히지 않는다."""
+    from urllib.parse import urlencode
+
+    from dashboard import share
+
+    encoded = share.encode(share.Share(profile="balanced", custom=True,
+                                       weights={"M": 35, "F": 30, "B": 20, "V": 15}))
+    assert urlencode({"w": encoded["w"]}) == "w=M35-F30-B20-V15"
+
+
+# ── 공유 링크 — 실제 렌더 ───────────────────────────────────────────────────
+
+def _gics_frame(mapping: dict[str, str], n_sectors: int = 3, *,
+                diverging: bool = False) -> pd.DataFrame:
+    out = frame(n_sectors, diverging=diverging)
+    out["gics"] = [mapping[sid] for sid in out["sector_id"]]
+    return out
+
+
+def _app_with_link(monkeypatch, data_frame, **params):
+    """쿼리 파라미터를 달고 앱을 띄운다.
+
+    🔒 `at.query_params` 는 **인스턴스 속성**이고 run 뒤에는 그 스크립트가 남긴
+       쿼리 문자열로 다시 채워진다 — 그래서 왕복을 그대로 관측할 수 있다
+       (streamlit 1.63.0 실측).
+    """
+    from streamlit.testing.v1 import AppTest
+
+    from dashboard import data as _data
+
+    monkeypatch.setattr(_data, "_from_hf", lambda: None)
+    monkeypatch.setattr(
+        _data, "_from_local",
+        lambda: (data_frame.copy(), _data.Source(kind="local", label="테스트용")))
+    at = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=120)
+    for key, value in params.items():
+        at.query_params[key] = value
+    at.run()
+    return at
+
+
+def _warnings(at) -> str:
+    """링크에 대한 경고만. 🔒 **면책을 뺀다** — 면책도 `st.warning` 으로 나온다
+    (`theme.header`). 빼지 않으면 "아무 말도 하지 않는다" 를 단언할 수 없다.
+
+    🔴 `!=` 로는 못 뺀다 — **`st.warning` 은 앞머리 이모지를 `icon` 으로 떼어 내서**
+       `.value` 에 🔴 이 없다(streamlit 1.63.0 실측). 그래서 부분 문자열로 본다.
+       같은 이유로 링크 경고의 ⏳🔎🔗 도 `.value` 에 없으니 **본문 글자로 단언한다.**
+    """
+    from dashboard import theme
+
+    return "\n".join(w.value for w in at.warning if w.value not in theme.DISCLAIMER)
+
+
+def test_링크로_열면_화면이_그_상태다(monkeypatch):
+    at = _app_with_link(monkeypatch, frame(3), profile="momentum", illiquid="1",
+                        single="1", sector="sec_2")
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert at.session_state["rank_profile"] == "momentum"
+    assert at.session_state["rank_hide_illiquid"] is True
+    assert at.session_state["rank_hide_single"] is True
+    assert at.session_state["rank_detail"] == "sec_2"
+    # 🔒 쓸 수 있었으므로 아무 말도 하지 않는다
+    assert _warnings(at) == ""
+
+
+def test_링크의_슬라이더_값이_그대로_열린다(monkeypatch):
+    at = _app_with_link(monkeypatch, frame(3), profile="balanced", w="M70-F60-B40-V30")
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert at.session_state["rank_custom"] is True
+    assert [at.session_state[f"rank_w_{a}"] for a in AXES] == [70, 60, 40, 30]
+
+
+def test_반복된_gics_파라미터를_잃지_않는다(monkeypatch):
+    """🔴 `dict(st.query_params)` 는 반복 파라미터를 **마지막 값으로 접는다.**
+
+    🔒 그래서 `_raw_params` 가 `get_all` 로 모은다. 단일 값 링크만 테스트하면 그
+       차이가 보이지 않아 `get_all` 을 버리는 돌연변이가 **살아남는다**(실제로 그랬다).
+    """
+    data_frame = _gics_frame({"sec_0": "Materials", "sec_1": "Industrials",
+                              "sec_2": "Industrials"})
+    at = _app_with_link(monkeypatch, data_frame, gics=["Materials", "Industrials"])
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert sorted(at.session_state["rank_gics"]) == ["Industrials", "Materials"]
+    # 🔒 하나도 버리지 않았으므로 아무 말도 하지 않는다
+    assert _warnings(at) == ""
+
+
+def test_잘못된_링크가_화면을_죽이지_않고_키_이름만_말한다(monkeypatch):
+    """🔴 `bind="query-params"` 를 기각한 이유가 이것이다 — 그쪽은 **조용히 지운다.**"""
+    at = _app_with_link(monkeypatch, frame(3), profile=_PAYLOAD, w=_PAYLOAD,
+                        illiquid="yes", sector=_PAYLOAD, **{_PAYLOAD: "x"})
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    # 🔒 표는 그려진다 — 링크가 나빠도 화면은 산다
+    assert at.dataframe, "표가 없다"
+    text = _warnings(at)
+    assert "`profile`" in text and "`w`" in text and "`illiquid`" in text
+    assert "모르는 파라미터 **1개**" in text
+    # 🔴 **글자가 새지 않는다.** 화면 전체를 본다 — 경고만 보면 다른 칸으로 새는 것을 놓친다
+    whole = "\n".join(
+        [e.value for e in at.warning] + [e.value for e in at.markdown]
+        + [e.value for e in at.error] + [e.value for e in at.info]
+        + [e.value for e in at.caption] + [str(s.options) for s in at.selectbox]
+    )
+    assert _PAYLOAD not in whole and "script" not in whole
+
+
+def test_링크가_가리킨_섹터가_필터에_가려지면_이름을_말한다(monkeypatch):
+    """🔒 쓰레기와 **다른 사유**다 — 그 id 는 우리 프레임에서 왔다."""
+    data_frame = frame(3)
+    # 🔒 sec_0 만 ETF 1종으로 만들어 '1종 숨기기' 로 가린다
+    data_frame.loc[data_frame["sector_id"] == "sec_0", "etf_n"] = 1
+    at = _app_with_link(monkeypatch, data_frame, sector="sec_0", single="1")
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    text = _warnings(at)
+    assert "sec_0" in text, text
+    assert "필터를 풀면" in text
+    # 🔒 `ignored` 사유로 섞이지 않는다 — 그러면 "기본값으로 열었다" 라고 잘못 말한다
+    assert "`sector`" not in text, text
+
+
+def test_링크의_기준일이_지나면_화면이_말한다(monkeypatch):
+    at = _app_with_link(monkeypatch, frame(3), as_of="20260101")
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert "20260101" in _warnings(at)
+
+
+def test_URL_은_첫_로드에만_이긴다(monkeypatch):
+    """🔴 매 rerun 적용하면 링크로 들어온 사람이 **아무것도 바꿀 수 없다.**
+
+    🔒 검증에 **라디오**를 쓴다 — `profile` 은 `encode` 가 언제나 넣는 키라
+       "URL 이 말한 값" 과 "위젯이 바꾼 값" 이 정면으로 부딪친다. URL 에 없던 키로
+       쓰면 플래그를 지워도 테스트가 통과한다(적대적 설계 리뷰).
+    🔒 같은 세션에 **다른 링크**를 붙여 보는 방식은 쓰지 않는다 — 같은 페이지 rerun 에서
+       백엔드는 URL 을 다시 읽지 않아(`script_runner`) 항상 통과하는 허위 테스트가 된다.
+    """
+    at = _app_with_link(monkeypatch, frame(3), profile="momentum")
+    assert at.session_state["rank_profile"] == "momentum"
+
+    other = next(p for p in view.PROFILES if p != "momentum")
+    at.radio(key="rank_profile").set_value(other).run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert at.session_state["rank_profile"] == other, "URL 이 위젯을 다시 이겼다"
+
+
+@pytest.mark.parametrize("params", [
+    {"profile": "momentum", "sector": "sec_9"},      # 프레임에 없는 섹터
+    {"profile": "momentum", "gics": "없는대분류"},
+    {"profile": "momentum", "as_of": "2026-09-01"},
+    {"profile": "momentum", "sector": "sec_0", "single": "1"},  # 필터에 가려진 섹터
+])
+def test_무시가_생긴_링크로도_위젯을_바꿀_수_있다(monkeypatch, params):
+    """🔴 이것이 **가장 나쁜 버그**였다 — `?sector=sec_9` 한 줄이 그 세션의 모든 위젯을
+    영구히 잠갔다. 오타 하나, 슬랙에서 잘린 링크 하나로 충분했다.
+
+    원인은 "프레임 때문에 무시된 것이 있으면 플래그를 세우지 않는다" 였다(드문 경우를
+    지키려던 조건). 플래그가 없으니 **매 rerun URL 이 위젯을 다시 이겼다.**
+    🔒 이제 플래그는 무조건 선다 (`_apply_link` 머리주석).
+
+    🔒 기존 `test_URL_은_첫_로드에만_이긴다` 는 `profile` 하나짜리 링크로만 검증해서
+       **무시가 생기는 분기를 한 건도 밟지 않았다.** 그래서 이 표가 따로 있다.
+    """
+    data_frame = frame(3)
+    data_frame.loc[data_frame["sector_id"] == "sec_0", "etf_n"] = 1
+    at = _app_with_link(monkeypatch, data_frame, **params)
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    other = next(p for p in view.PROFILES if p != "momentum")
+    at.radio(key="rank_profile").set_value(other).run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert at.session_state["rank_profile"] == other, "URL 이 라디오를 다시 이겼다"
+
+    # 🔒 필터도 만질 수 있어야 한다 — `hidden_sector` 경로는 "필터를 풀면 나온다" 고
+    #    말하면서 매 rerun 필터를 다시 켰다. 그 지시가 불가능한 행동이었다
+    at.checkbox(key="rank_hide_single").set_value(False).run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert at.session_state["rank_hide_single"] is False, "URL 이 체크박스를 다시 이겼다"
+
+
+@pytest.mark.parametrize("value", _NASTY)
+def test_나쁜_값이_어느_키에_와도_화면이_산다(monkeypatch, value):
+    """🔴 `?w=M²-F30-B20-V15` 가 실제로 표를 0개로 만들었다 — 적용이 위젯보다 앞이라
+    파싱 예외가 **페이지 전체**를 가린다.
+    """
+    at = _app_with_link(monkeypatch, frame(3), profile=value, w=value, gics=value,
+                        illiquid=value, single=value, sector=value, as_of=value)
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert at.dataframe, "표가 없다 — 링크 한 줄이 화면을 가렸다"
+
+
+def test_화면의_대분류_분포가_필터를_따른다(monkeypatch):
+    """🔴 순수 함수 테스트로는 **렌더러가 `only=keep` 을 넘기는지 볼 수 없다** —
+    `only=` 를 지우는 돌연변이가 살아남았다(돌연변이 검사). 그리는 것을 본다.
+
+    🔒 필터가 숨긴 대분류가 이 칸에 남으면 "필터는 행을 숨긴다"(ADR-SC-0014 ⑤)를
+       한 화면의 한 칸이 따르지 않는 것이고, 비개발자에게 캡션으로 설명될 차이가 아니다.
+    """
+    data_frame = _gics_frame({"sec_0": "Materials", "sec_1": "Industrials",
+                              "sec_2": "Industrials"})
+    at = _app_with_link(monkeypatch, data_frame, gics="Industrials")
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    # 🔒 표의 색인은 **한국어 이름**이다 (`Names.gics_label`) — 화면이 코드를 보이지 않는다
+    from dashboard import data as _data
+
+    names = _data.sector_names()
+    kept, hidden = names.gics_label("Industrials"), names.gics_label("Materials")
+    assert kept != "Industrials" and hidden != "Materials", (kept, hidden)
+
+    shown = [set(str(v) for v in d.value.index) for d in at.dataframe]
+    assert any(kept in s for s in shown), (kept, shown)
+    # 🔴 걸러진 대분류가 **어느 표에도** 없다 — 표 번호에 기대지 않는다
+    assert not any(hidden in s for s in shown), (hidden, shown)
+
+
+def test_버튼을_누르지_않으면_주소창을_건드리지_않는다(monkeypatch):
+    """🔴 `st.query_params` 쓰기는 프런트엔드에서 `history.pushState` 가 된다.
+
+    매 rerun 자동 갱신은 클릭마다 히스토리를 쌓아 **뒤로가기로 앱을 떠날 수 없게**
+    만든다. 그래서 누를 때만 쓴다.
+    """
+    at = _app_with_link(monkeypatch, frame(3), profile="momentum")
+    before = dict(at.query_params)
+
+    at.radio(key="rank_profile").set_value("balanced").run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert dict(at.query_params) == before, "버튼 없이 주소창이 바뀌었다"
+
+
+def test_버튼을_누르면_주소창이_화면과_같아진다(monkeypatch):
+    from dashboard import share
+
+    at = _app_with_link(monkeypatch, frame(3))
+    at.radio(key="rank_profile").set_value("momentum").run()
+    at.checkbox(key="rank_hide_single").set_value(True).run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    at.button(key="rank_share").click().run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    got = {k: (v if len(v) > 1 else v[0]) for k, v in at.query_params.items()}
+    expected = share.encode(share.Share(
+        profile="momentum", hide_single_etf=True,
+        sector=at.session_state["rank_detail"], as_of=DAYS[-1]))
+    assert got == expected, (got, expected)
+    assert any("주소창" in s.value for s in at.success), [s.value for s in at.success]
+
+
+def test_버튼이_화면의_슬라이더를_담는다_전부_0_이어도(monkeypatch):
+    """🔴 네 축이 전부 0 이면 화면은 오류를 내고 **프리셋으로 그린다.**
+
+    그때 `Weighting.weights` 는 프리셋 값이라 화면의 슬라이더와 다르다. 링크는
+    화면을 재현해야 하므로 **세션값**을 담는다.
+    """
+    at = _app_with_link(monkeypatch, frame(3), profile="balanced", w="M0-F0-B0-V0")
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert at.session_state["rank_custom"] is True
+
+    at.button(key="rank_share").click().run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert at.query_params["w"] == ["M0-F0-B0-V0"], at.query_params
+
+
+def test_필터로_아무것도_안_남는_화면도_공유된다(monkeypatch):
+    """🔒 "내 필터로는 아무것도 안 남는다" 도 사실이고 공유할 만하다.
+
+    🔴 그 화면에는 selectbox 가 **없다.** 그래서 `sector=None` 을 넘긴다 — 그 run 이
+       그린 값이 없기 때문이다.
+
+    ⚠️ **이 테스트는 "세션에서 읽어 오는" 돌연변이를 잡지 못한다** — 실측상 그 run 에서는
+       `rank_detail` 이 `session_state` 에서 사라져 두 코드의 결과가 같다(돌연변이 검사로
+       확인). 무력한 단언을 남겨 두는 대신 **그 전제를 직접 단언한다**: 세션값이 남게
+       바뀌면 여기가 먼저 깨지고, 그때 `sector=None` 이 비로소 값을 하는 코드가 된다.
+    """
+    data_frame = frame(3)
+    data_frame["etf_n"] = 1
+    at = _app_with_link(monkeypatch, data_frame, sector="sec_1")
+    assert at.session_state["rank_detail"] == "sec_1"
+
+    at.checkbox(key="rank_hide_single").set_value(True).run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert not at.selectbox, "빈 화면에 셀렉트박스가 있다"
+    # 🔒 이것이 위에서 말한 전제다. 실측 사실을 테스트가 붙잡는다
+    assert "rank_detail" not in at.session_state, (
+        "그리지 않은 selectbox 의 세션값이 남는다 — `_share_button(sector=None)` 이 "
+        "이제 값을 하는 코드다. 빈 화면 경로를 다시 본다")
+
+    at.button(key="rank_share_empty").click().run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert "sector" not in at.query_params, at.query_params
+
+
+def test_점수_없는_섹터가_있어도_공유_버튼이_산다(monkeypatch):
+    """🔒 이슈 #3 의 결측 프레임과 M9c 가 겹치는 자리를 함께 밟는다."""
+    at = _app_with_link(monkeypatch, blank_latest(3, blanks=1), profile="balanced")
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    at.button(key="rank_share").click().run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+
+# ── 대분류 순위 분포 (M9c) ──────────────────────────────────────────────────
+
+def test_대분류_분포는_순위_목록을_그대로_준다():
+    table = view.gics_distribution(
+        view.scored(_gics_frame({"sec_0": "Materials", "sec_1": "Materials",
+                                 "sec_2": "Industrials"}), BALANCED))
+    # 🔒 순서를 **단정한다.** `or` 로 두 순열을 다 허용하면 아무것도 고정되지 않는다
+    #: 🔒 픽스처는 `base = (s-1)*5000` 이라 **sec_2 가 1위**다 — Industrials 가 앞이다
+    assert list(table.index) == ["Industrials", "Materials"], list(table.index)
+    row = table.loc["Materials"]
+    assert row["테마수"] == 2
+    assert row["순위"].count("·") == 1, row["순위"]
+    assert row["순위없음"] == 0
+
+
+def test_대분류_분포에_평균도_중위도_없다():
+    """🔴 요약값은 정보를 늘리지 않으면서 **점수처럼 읽힌다** — 금지한 롤업으로 가는 길이다.
+
+    🔒 목록이 곧 분포다 (ADR-SC-0014 ⑤).
+    """
+    table = view.gics_distribution(scored(3))
+    assert set(table.columns) == {"테마수", "최고순위", "순위", "순위없음"}
+
+
+def test_대분류_분포는_최고순위로_정렬한다():
+    """🔒 정렬 정본은 **정수 열**이다. 목록 문자열로 정렬하면 사전순이 되어 10 이 2 앞에 온다."""
+    table = view.gics_distribution(
+        view.scored(_gics_frame({"sec_0": "A", "sec_1": "B", "sec_2": "C"}), BALANCED))
+    best = [view.int_or_none(v) for v in table["최고순위"]]
+    assert best == sorted(best), best
+    # 🔒 정수 열이어야 화면이 숫자로 정렬한다
+    assert str(table["최고순위"].dtype) == "Int64", table["최고순위"].dtype
+
+
+def test_순위_없는_섹터를_최악_순위로_취급하지_않는다():
+    """🔴 `None` 은 "창이 안 찼다" 이고 21위가 아니다 (ADR-SC-0007 · 이슈 #3)."""
+    blank = blank_latest(3, blanks=1)
+    blank["gics"] = ["Materials" if sid == "sec_0" else "Industrials"
+                     for sid in blank["sector_id"]]
+    table = view.gics_distribution(view.scored(blank, BALANCED))
+
+    materials = table.loc["Materials"]
+    assert materials["테마수"] == 1
+    assert materials["순위없음"] == 1
+    assert materials["순위"] == "", materials["순위"]
+    # 🔒 최고순위가 **없음**이다 — 0 도 999 도 아니다
+    assert view.int_or_none(materials["최고순위"]) is None
+    # 🔒 그리고 맨 뒤로 간다
+    assert list(table.index)[-1] == "Materials", list(table.index)
+
+
+def test_대분류_분포는_필터를_따른다():
+    """🔒 표·등수·막대와 **같은 규칙**이다. 🔴 그래도 순위 자체는 21개 횡단면 값이다."""
+    data_frame = _gics_frame({"sec_0": "Materials", "sec_1": "Materials",
+                              "sec_2": "Industrials"})
+    ranked = view.scored(data_frame, BALANCED)
+    only = view.gics_distribution(ranked, only=frozenset({"sec_2"}))
+    assert list(only.index) == ["Industrials"]
+
+    # 🔴 숨겼어도 남은 섹터의 순위는 **다시 매겨지지 않는다**
+    whole = view.gics_distribution(ranked)
+    assert only.loc["Industrials", "순위"] == whole.loc["Industrials", "순위"]
+
+
+def test_대분류_분포는_가중치를_따른다():
+    """🔴 프리셋으로 못 박는 돌연변이가 전 스위트를 통과했다 — 그러면 슬라이더를 만진
+    화면에서 표·막대는 커스텀 순위, 분포는 프리셋 순위를 말한다. ADR-SC-0014 ④ 가
+    금지한 "한 화면의 두 숫자" 다.
+    """
+    # 🔒 `diverging=True` 여야 한다 — 기본 픽스처는 네 축이 섹터를 같은 순서로 세워
+    #    어떤 가중치로도 순위가 같다(`frame` 머리주석)
+    data_frame = _gics_frame({"sec_0": "Materials", "sec_1": "Industrials",
+                              "sec_2": "Utilities"}, diverging=True)
+    # 🔒 V 축만 쓰는 가중치 — 균형과 순위가 갈리도록 고른다
+    custom = weights.Weighting.of({"M": 0, "F": 0, "B": 0, "V": 100})
+    ranked = view.scored(data_frame, custom)
+    table = view.gics_distribution(ranked)
+    expected = view.ranking_table(ranked, days=5)
+
+    for sid, gics in (("sec_0", "Materials"), ("sec_1", "Industrials"),
+                      ("sec_2", "Utilities")):
+        assert (view.int_or_none(table.loc[gics, "최고순위"])
+                == view.int_or_none(expected.loc[sid, "순위"])), (sid, gics)
+
+    # 🔒 그리고 균형과 **실제로 다르다** — 다르지 않으면 이 테스트가 무력하다.
+    #    🔴 `list(table["최고순위"])` 로 비교하면 안 된다 — 표가 그 열로 정렬돼 있어
+    #    **언제나 `[1,2,3]`** 이다. 어느 대분류가 몇 위인가를 봐야 한다
+    balanced = view.gics_distribution(view.scored(data_frame, BALANCED))
+    assert table["최고순위"].to_dict() != balanced["최고순위"].to_dict(), (
+        "픽스처가 가중치를 안 가른다 — `diverging=True` 인지 확인한다")
+
+
+def test_대분류가_없는_섹터도_표에_남는다():
+    """🔴 pandas 기본 `dropna=True` 가 그 섹터를 **조용히 버렸다** — 3개 중 2개만
+    세어졌다. 값이 없는 것도 사실이므로 `미분류` 로 드러낸다 (ADR-SC-0007).
+
+    🔒 `""` 와 `None` 을 **한 줄로** 묶는다. 각각 그룹이 되면 색인이 중복돼
+       `table.loc["미분류"]` 가 Series 가 아니라 DataFrame 이 된다.
+    """
+    data_frame = frame(3)
+    data_frame["gics"] = ["Materials", "", None] * (len(data_frame) // 3)
+    table = view.gics_distribution(view.scored(data_frame, BALANCED))
+
+    assert int(table["테마수"].sum()) == 3, table
+    assert not table.index.duplicated().any(), list(table.index)
+    assert view.UNCLASSIFIED in table.index
+    assert int(table.loc[view.UNCLASSIFIED, "테마수"]) == 2
+
+
+def test_대분류_이름이_겹치면_검증기가_막는다():
+    """🔒 분포표는 **화면 이름으로** 묶어 색인을 만든다. 서로 다른 두 id 가 같은 한국어
+    이름을 가지면 두 대분류가 한 줄로 합쳐지고 사용자는 합쳐진 줄 알 수 없다 —
+    그래서 근원에서 막는다 (`sector_master._check_ids`).
+    """
+    from sector import sector_master
+
+    findings = [f for f in sector_master.validate(sector_master.load())
+                if f.rule == "name-unique"]
+    assert findings == [], findings
+    # 🔒 규칙이 **실제로 대분류를 본다** — 섹터만 보던 검사였다
+    source = (ROOT / "sector" / "sector_master.py").read_text(encoding="utf-8")
+    assert "gics_sectors" in source.split("def _check_ids", 1)[1].split("\ndef ", 1)[0]
+
+
+def test_대분류_분포는_빈_집합에서_죽지_않는다():
+    assert len(view.gics_distribution(scored(3), only=frozenset())) == 0

@@ -20,11 +20,11 @@ from typing import Any, Mapping
 from dashboard.weights import Weighting
 from sector.scoring import AXES, PRESETS, rank_scores, weighted_score_bp
 
-__all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "Names", "ViewError",
+__all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "UNCLASSIFIED", "Names", "ViewError",
            "latest_frame", "scored", "rank_stability", "stability_window",
            "sector_story", "podium", "score_bars", "arithmetic_table",
            "ranking_table", "axis_breakdown", "gics_options", "visible_ids",
-           "int_or_none"]
+           "gics_distribution", "int_or_none"]
 
 
 class ViewError(RuntimeError):
@@ -183,6 +183,80 @@ def visible_ids(frame: Any, *, gics: "frozenset[str] | None" = None,
     if hide_single_etf:
         keep -= {sid for sid in latest.index if int_or_none(latest.loc[sid, "etf_n"]) == 1}
     return frozenset(keep)
+
+
+#: 🔒 대분류가 비어 있는 섹터의 이름. **숨기지 않고 드러낸다** — 값이 없는 것도 사실이다
+UNCLASSIFIED = "미분류"
+
+
+def _gics_name(gics: Any, names: "Names") -> str:
+    """대분류 id → 화면 이름. 🔒 비었거나 결측이면 `미분류` 다."""
+    if not _notna(gics) or not str(gics).strip():
+        return UNCLASSIFIED
+    return names.gics_label(str(gics))
+
+
+def gics_distribution(frame: Any, *, names: "Names | None" = None,
+                      only: "frozenset[str] | None" = None) -> Any:
+    """GICS 대분류별 **테마 순위의 분포.** 🔒 입력은 `scored()` 를 지난 프레임이다.
+
+    ## 🔴 대분류 점수를 내지 않는다 — 요약 통계도 만들지 않는다
+
+    대분류 ETF 는 살 수 없어 **매매 단위가 아니다**(ADR-SC-0014 ⑤). 그래서 롤업 점수를
+    내지 않는다. 평균·중위도 두지 않는다 — 21개 테마가 9개 대분류에 7/3/2/2/2/2/1/1/1 로
+    흩어져 있어(20260910 실측) n≤7 에서 요약값은 정보를 늘리지 않으면서 **점수처럼
+    읽힌다.** 그것이 금지한 롤업으로 미끄러지는 길이다.
+
+    `소재 2개 — 1 · 2` 한 줄이 곧 결론이다. **목록이 분포다.**
+
+    🔒 정렬 정본은 정수 열 `최고순위`다. 목록 문자열(`순위`)은 **표시 전용**이다 —
+       화면에서 그 열로 다시 정렬하면 사전순이 되어 `"10 · …"` 이 `"2 · …"` 앞에 온다.
+
+    🔒 필터를 따른다(`only=`) — 표·등수·막대와 **같은 규칙**이다. 한 화면에서 칸마다
+       규칙이 다르면 캡션으로 설명될 차이가 아니다. 🔴 그래도 **순위 자체는 그날 21개
+       횡단면 값** 그대로다. 행을 숨길 뿐 다시 매기지 않는다.
+
+    🔒 에이전트는 이 표를 읽지 않는다 — 장부가 대조할 저장 열이 없다(ADR-SC-0013 ④-1).
+    """
+    import pandas as pd
+
+    names = names or Names.empty()
+    latest = latest_frame(frame).set_index("sector_id")
+    pool = latest if only is None else latest[latest.index.isin(only)]
+
+    rows = []
+    best: list[int | None] = []
+    # 🔴 **화면 이름으로 묶는다.** 원시 `gics` 로 묶으면 두 가지가 깨진다 —
+    #    ① pandas 기본 `dropna=True` 가 NaN 그룹을 버려 그 섹터가 화면에서 **조용히
+    #       사라지고** "테마수 합계 = 보이는 섹터 수" 가 깨진다(적대적 리뷰 실측: 3개 중 2개)
+    #    ② `""` 와 `None` 이 각각 그룹이 되어 `미분류` 가 **두 줄**로 나오고 색인이
+    #       중복돼 `table.loc["미분류"]` 가 Series 가 아니라 DataFrame 이 된다
+    #    🔒 이름으로 묶으면 색인이 **구조적으로** 유일하다. 서로 다른 id 가 같은
+    #       한국어 이름을 갖는 것은 `sector_master._check_ids` 가 막는다
+    #    🔴 **`Series` 로 넘긴다.** 리스트로 주면 pandas 가 "그루퍼 목록" 으로 읽어
+    #       그룹이 하나일 때 키가 `('Industrials',)` **튜플**로 나오고 색인이 그 꼴이 된다
+    #       (실측 — 필터로 한 대분류만 남긴 화면에서 그랬다)
+    labels = pd.Series([_gics_name(g, names) for g in pool["gics"]],
+                       index=pool.index, name="대분류")
+    for label, block in pool.groupby(labels, sort=False):
+        ranks = sorted(int_or_none(v) for v in block[RANK_COLUMN] if _notna(v))
+        # 🔒 순위가 없는 섹터를 **최악 순위로 취급하지 않는다**. 따로 센다 (ADR-SC-0007)
+        best.append(ranks[0] if ranks else None)
+        rows.append({
+            "대분류": str(label),
+            "테마수": len(block),
+            "순위": " · ".join(str(r) for r in ranks) if ranks else "",
+            "순위없음": len(block) - len(ranks),
+        })
+    # 🔴 **`최고순위` 를 프레임 밖에서 만든다.** `rows` 에 섞어 넣으면 `DataFrame` 이
+    #    `None` 을 `nan` 으로 눕혀 `float64` 열이 되고, 규약이 금지한 float 가 화면
+    #    계층에 들어온다(V26). 실제로 `int(nan)` 에서 `ValueError` 로 터졌다
+    table = pd.DataFrame(rows, columns=["대분류", "테마수", "순위", "순위없음"])
+    table.insert(2, "최고순위", pd.array(best, dtype="Int64"))
+    if len(table) == 0:
+        return table.set_index("대분류")
+    # 🔒 순위가 하나도 없는 대분류는 맨 뒤 — 0 이나 999 로 채우지 않는다
+    return table.sort_values("최고순위", na_position="last").set_index("대분류")
 
 
 def rank_stability(frame: Any, *, days: int = 20) -> Any:

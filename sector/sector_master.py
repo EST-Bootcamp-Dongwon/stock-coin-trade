@@ -498,6 +498,21 @@ def _check_ids(master: SectorMaster) -> list[Finding]:
                 "error", "id-unique", f"sectors.{sector_id}",
                 f"id 가 {count}번 나온다. 뒤에 나온 것이 앞을 덮어 한 섹터가 사라진다.",
             ))
+    # 🔴 **대분류 이름도 유일해야 한다** (2026-09-18 · M9c). 랭킹의 대분류 분포표는
+    #    화면 이름으로 묶어 색인을 만든다(`view.gics_distribution`) — 서로 다른 두 id 가
+    #    같은 한국어 이름을 가지면 두 대분류가 **한 줄로 합쳐지고** 사용자는 합쳐진 줄
+    #    알 수 없다. 이름으로 묶는 것을 그만두면 이번엔 색인이 중복돼 표가 깨진다.
+    #    🔒 그래서 근원에서 막는다 — 섹터 이름을 그렇게 막는 것과 같은 이유다
+    seen_gics_name: dict[str, str] = {}
+    for gics in master.gics_sectors:
+        if gics.name_ko in seen_gics_name:
+            out.append(Finding(
+                "error", "name-unique", f"gics_sectors.{gics.id}",
+                f"한글 이름 {gics.name_ko!r} 가 {seen_gics_name[gics.name_ko]!r} 와 겹친다. "
+                f"대분류 분포표가 두 대분류를 한 줄로 합친다.",
+            ))
+        else:
+            seen_gics_name[gics.name_ko] = gics.id
     return out
 
 
