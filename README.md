@@ -8,7 +8,7 @@
 > 점수와 순위는 공개 데이터를 정해진 수식으로 집계한 결과일 뿐, 미래 수익을 예측하지 않는다.
 
 > [!NOTE]
-> **정본은 GitLab 이다** — `gitlab.com/dev-dongwon05253/stock-coin-trade`.
+> **정본은 GitLab 이다** — `gitlab.com/mygithub05253/stock-coin-trade`.
 > GitHub 쪽은 **읽기 전용 미러**다. 미러는 force push 로 갱신되므로
 > **미러에 직접 커밋하면 다음 동기화 때 사라진다.**
 

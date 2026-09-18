@@ -1,7 +1,7 @@
 # Vercel 배포 메모 (v2.0)
 
 > ✅ **살아 있다 (2026-09-12 실측).** `https://stock-coin-trade.vercel.app` 가 200 이고
-> Git 연동은 **`gitlab.com/dev-dongwon05253/stock-coin-trade` · `main`**(정본)이다.
+> Git 연동은 **`gitlab.com/mygithub05253/stock-coin-trade` · `main`**(정본)이다.
 > Streamlit Community Cloud(v3.0 · 팀용 정본)와 **공존**한다.
 > → [ADR-SC-0010](docs/decisions/0010-두-배포-공존과-쓰기-상태-분리.md) ①③
 >

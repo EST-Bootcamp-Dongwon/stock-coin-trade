@@ -48,14 +48,14 @@ cd backend && .venv/bin/pytest          # 골든 23건 · DB 불필요 ← 항�
 
 | 원격 | 대상 | 용도 |
 |---|---|---|
-| `origin` | `gitlab.com/dev-dongwon05253/stock-coin-trade` | **정본.** 평소 push 대상. ⚠️ `est-` 접두사 없음 |
-| `github-est` | `github.com/EST-Bootcamp-Dongwon/stock-coin-trade` | 동시 push 유지 (⚠️ Flagged 계정) |
+| `origin` | `gitlab.com/mygithub05253/stock-coin-trade` | **정본.** 평소 push 대상. ⚠️ `est-` 접두사 없음 |
+| `github-est` | `github.com/EST-Bootcamp-Dongwon/stock-coin-trade` | 동시 push 유지 (개인 계정 `mygithub05253`) |
 | `upstream` | `github.com/edumgt/stock-coin-trade` | fetch 전용. push URL 차단됨 |
 | *(로컬 원격 없음)* | `github.com/devlee328288/stock-coin-trade` | 🔒 **GitLab push-mirror 로만 간다** |
 
 ```bash
 git push origin main        # GitLab — 미러가 devlee328288 GitHub 을 따라온다
-git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패해도 무방
+git push github-est main    # GitHub(EST) — gh 활성 계정 mygithub05253 토큰으로 나간다
 ```
 
 ### 🔒 지켜야 할 것
@@ -64,7 +64,9 @@ git push github-est main    # Flagged 계정이라 실패할 수 있다. 실패�
    GitLab 이 자기 서버에서 devlee328288 토큰으로 push 하므로 **오push 경로가 존재하지 않는다.**
    규칙으로 막으면 언젠가 어기지만, 없는 경로는 밟을 수 없다.
 2. 🔒 **모든 git·gh 작업 전에 `gh auth status` 로 활성 계정을 확인하고 보고한다.**
-   사용자는 `dev-dongwon05253`(개인 · Flagged)과 `devlee328288`(팀 · 공개)을 **오간다.**
+   사용자는 `mygithub05253`(개인)과 `devlee328288`(팀 · 공개)을 **오간다.**
+   (2026-09-18 — 개인 계정이 옛 `dev-dongwon05253`(Flagged)에서 복구된 `mygithub05253` 으로 바뀌었다.
+   GitLab 도 같은 날 사용자명이 `mygithub05253` 으로 바뀌었다. ADR-SC-0008 의 Flagged 서술은 옛 계정 이야기다.)
    세션 중간에도 바뀐다.
 3. 🔒 **세션 마무리 복붙 프롬프트 끝에 항상 현재 `gh` 활성 계정을 적는다.**
 4. ⚠️ **push mirror 는 force push 로 동작한다.** GitHub 미러에서 직접 커밋하면 사라진다.
