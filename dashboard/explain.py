@@ -29,6 +29,7 @@ __all__ = [
     "axis_raw_text", "axis_line", "score_text", "rank_stability_text",
     "josa", "sigma_words", "axis_plain", "narrative",
     "liquidity_text", "degraded_text", "lead_axis_text", "rank_badge",
+    "middle_text",
 ]
 
 #: 축이 **묻는 것**. 한 줄로 끝낸다 — 길면 안 읽힌다.
@@ -337,3 +338,24 @@ def lead_axis_text(axis: str | None) -> str:
 def rank_badge(rank: int | None) -> str:
     """`1위` — 🔒 메달 이모지를 쓰지 않는다. 등수는 상장이 아니라 좌표다."""
     return f"{rank}위" if rank else "—"
+
+
+def middle_text(graded_n: int) -> str:
+    """«가운데» 가 몇 위인가 — 🔒 **데이터가 정하는 수다. 문장에 박지 않는다.**
+
+    🔴 「가운데(11위)」라고 적고 싶어진다. 지금 파생본 266영업일이 **전부 21개**를
+       채점해서 그 말이 참이기 때문이다. 그러나 21 은 상수가 아니다 —
+
+    - 슬라이더로 **성긴 축 하나만** 남기면 그 축이 결측인 섹터는 점수를 못 낸다.
+      실측: `F` 단독 가중치는 **101일이 20개**다. 짝수이면 중앙값은 10위와 11위의
+      평균이라 **어느 섹터의 점수도 아니다** — 「11위」가 그 자리에서 거짓이 된다.
+    - `sectors.yaml` 에 섹터를 더하면 그날부터 22개다.
+
+    🔒 `ranking.py` 의 `_window()`(「요청한 20 을 그대로 쓰지 않는다」)와 같은 규율이다.
+       이슈 #14 가 고치려는 결함이 바로 «화면이 산수에 대해 거짓을 말한다» 이므로,
+       그것을 고치면서 같은 종류의 거짓을 새 자리에 심지 않는다.
+    """
+    if graded_n <= 0:
+        return "가운데"
+    half, odd = divmod(graded_n, 2)
+    return f"가운데({half + 1}위)" if odd else f"가운데({half}·{half + 1}위 사이)"

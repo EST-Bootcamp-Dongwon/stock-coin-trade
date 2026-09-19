@@ -24,7 +24,7 @@ from sector.scoring import AXES, PRESETS, rank_scores, scoring_axes, weighted_sc
 __all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "SCORE_AXES_COLUMN",
            "UNCLASSIFIED", "Names", "ViewError",
            "check_frame", "latest_frame", "scored", "rank_stability", "stability_window",
-           "sector_story", "podium", "score_bars", "arithmetic_table",
+           "sector_story", "podium", "Bars", "score_bars", "arithmetic_table",
            "ranking_table", "axis_breakdown", "gics_options", "visible_ids",
            "gics_distribution", "int_or_none"]
 
@@ -716,28 +716,83 @@ def podium(frame: Any, *, weighting: Weighting, top: int = 3,
     return out
 
 
+@dataclass(frozen=True)
+class Bars:
+    """막대 차트가 그리는 것 **전부** — 표 · 기준선 · 기준선을 낸 값의 개수.
+
+    ## 🔒 왜 셋을 하나로 묶는가 — 규칙을 구조로 바꾼다
+
+    기준선(중앙값)은 언제나 **거르지 않은** 그날 전체에서 나와야 하고(ADR-SC-0014 ⑤ —
+    필터는 행을 숨길 뿐 점수를 다시 매기지 않는다), 표는 **걸러진** 것이어야 한다.
+
+    🔴 이 둘을 **따로 내는 함수 둘**로 두면 호출부가 걸러진 프레임을 기준선 쪽에
+       넘기는 **두 번째 입구**가 남는다. `_render_bars` 는 바로 윗줄에서 `only=keep`
+       을 쓰고 있어 그 입구가 손에 닿는 거리에 있다. 여기서는 `only` 가 적용되기
+       **전에** 중앙값이 정해지므로 그 입구가 존재하지 않는다 (ADR-SC-0016 과 같은
+       논리 — 규칙으로 막지 않고 경로를 없앤다).
+    """
+
+    table: Any
+    """화면이 그대로 그리는 프레임 — 색인은 한국어 이름, 값은 σ. 🔒 **걸러진** 것이다."""
+
+    middle_sigma: float | None
+    """그날 **거르지 않은** 전체 섹터 점수의 중앙값 — σ. 낼 수 없으면 `None`."""
+
+    graded_n: int
+    """중앙값을 낸 값의 개수. 🔒 «가운데가 몇 위인가» 를 **이 수가** 정한다."""
+
+
 def score_bars(frame: Any, *, names: Names | None = None,
-               only: "frozenset[str] | None" = None) -> Any:
-    """막대 차트가 그대로 받는 프레임 — 색인은 한국어 이름, 값은 σ.
+               only: "frozenset[str] | None" = None) -> Bars:
+    """막대 차트가 그대로 받는 것 — 표 · 기준선 · 기준선을 낸 개수.
 
     🔴 **bp 가 아니라 σ 로 넘긴다.** 막대는 눈금을 읽히려고 두는 것이 아니라
        간격을 보이려고 두는 것이고, `12522` 는 사람이 즉시 못 읽는다. σ 는
        읽는법 화면이 이미 가르친 단위다.
 
-    🔒 순위 순서 그대로 돌려준다. 화면은 `sort=False` 로 그려 이 순서를 지킨다 —
+    🔒 순위 순서 그대로 돌려준다. 화면은 `sort=None` 으로 그려 이 순서를 지킨다 —
        알파벳순으로 다시 정렬되면 "위에서부터 1등" 이라는 유일한 읽는 법이 깨진다.
+
+    ## 🔴 0 은 가운데가 아니다 — 그래서 기준선을 함께 낸다 (이슈 #14)
+
+    `z` 는 **축마다** 중앙값을 빼므로 각 축의 중앙값은 0 이다. 그러나 **중앙값은
+    선형이 아니라**(`median(a+b) != median(a)+median(b)`) 가중합의 중앙값은 0 에서
+    비켜 있다 — 한 섹터가 네 축에서 동시에 가운데인 일이 드물기 때문이다.
+
+    실측(2026-09-19 · 파생본 266영업일) — 「막대가 왼쪽이면 가운데보다 낮다」가
+    균형 **159/266일**에서 거짓이었고(하루 평균 1.03개 · 최대 5개),
+    역발상은 **188/266일 · 최대 7개**였다. 일별 중앙값 `|평균|` 은 **0.110σ** 다.
+
+    🔒 중앙값을 `only` **적용 전에** 낸다. 걸러진 집합에서 내면 "21개 중 3위" 가
+       "5개 중 1위" 가 되는 것과 같은 종류의 거짓이 된다.
+    🔒 개수는 **중앙값을 실제로 낸 값들**로 센다(`score` 결측 제외). 순위로 세면
+       값과 라벨의 모집단이 갈릴 수 있다 — 지금은 `rank_scores` 가 점수 있는 것에만
+       순위를 주어 둘이 같고, 그 사실을 테스트가 지킨다.
+    🔴 `median()` 은 낼 수 없을 때 `None` 이 아니라 **`pd.NA` 를 준다**(열이 `Int64`).
+       `is not None` 으로 거르면 **참**이 되어 값이 `null` 인 점선이 그려지고, 축 제목은
+       있지도 않은 그 점선을 가리킨다 — 절대 제약 8 이 금지하는 화면이다. 실데이터
+       5985행 중 **399행**이 그 모양이고(창이 안 찬 19영업일), 섹터를 새로 넣으면
+       그날부터 또 그 모양이다.
     """
     import pandas as pd
 
     names = names or Names.empty()
     latest = latest_frame(frame).set_index("sector_id")
     column = SCORE_COLUMN
+    # 🔒 **`only` 보다 먼저.** 기준선은 거르지 않은 그날 전체에서 나온다
+    graded = latest[latest[column].notna()][column]
+    middle = graded.median()
     pool = latest if only is None else latest[latest.index.isin(only)]
     ordered = pool[pool[RANK_COLUMN].notna()].sort_values(RANK_COLUMN)
-    return pd.DataFrame(
-        {"점수(σ)": [_float_or_none(v) / 10000 if _float_or_none(v) is not None else None
-                     for v in ordered[column]]},
-        index=pd.Index([names.sector_label(s) for s in ordered.index], name="섹터"),
+    return Bars(
+        table=pd.DataFrame(
+            {"점수(σ)": [_float_or_none(v) / 10000 if _float_or_none(v) is not None else None
+                         for v in ordered[column]]},
+            index=pd.Index([names.sector_label(s) for s in ordered.index], name="섹터"),
+        ),
+        # 🔴 `pd.isna` 다 — `is not None` 은 `pd.NA` 를 통과시킨다 (머리주석)
+        middle_sigma=None if pd.isna(middle) else float(middle) / 10000,
+        graded_n=int(len(graded)),
     )
 
 

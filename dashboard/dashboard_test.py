@@ -245,12 +245,114 @@ def test_끌어올린_축은_기여가_가장_큰_축이다():
 
 
 def test_막대는_순위_순서와_σ_로_준다():
-    """🔒 화면이 `sort=False` 로 그리므로 이 순서가 곧 화면 순서다."""
+    """🔒 화면이 `sort=None` 으로 그리므로 이 순서가 곧 화면 순서다."""
     bars = view.score_bars(scored(), names=KOREAN)
-    assert list(bars.index) == ["철강", "나", "가"]          # 1위부터
-    assert bars["점수(σ)"].iloc[0] == pytest.approx(
+    assert list(bars.table.index) == ["철강", "나", "가"]          # 1위부터
+    assert bars.table["점수(σ)"].iloc[0] == pytest.approx(
         view.latest_frame(frame()).set_index("sector_id")
         .loc["sec_2", "score_balanced_bp"] / 10000)
+
+
+def _skewed(n_sectors: int = 5) -> pd.DataFrame:
+    """최신일 한쪽 꼬리만 늘린 프레임 — 🔒 **중앙값과 평균이 갈린다.**
+
+    🔴 `frame()` 은 `base = (s-1)*5000` 이라 **선형**이고, 선형이면 `median == mean` 이
+       **정확히** 같다(실측: 3섹터 `[-3955, 1045, 6045]` → 둘 다 1045). 그 위에서는
+       기준선을 평균으로 바꾸는 돌연변이가 **살아남는다.**
+
+    🔒 저장 열을 **배치가 쓰는 함수로** 다시 채운다 — 픽스처는 «있을 수 있는 게시본»
+       이어야 한다(`frame()` 머리주석과 같은 규율). 손으로 적으면 `check_frame` 이
+       정당하게 거절한다.
+    🔒 꼬리를 **`CLIP_Z` 안에서** 늘린다. `scoring` 이 ±3σ 에서 자르므로 그보다 큰 z 는
+       게시본에 존재할 수 없고, 그러면 바로 위 규율을 이 함수가 스스로 어긴다.
+       (`CLIP_Z` 는 **σ** 단위의 `Decimal(3)` 이다 — bp 로는 30000 이다.)
+    """
+    from sector.scoring import CLIP_Z
+
+    clip = int(CLIP_Z) * 10000
+    out = frame(n_sectors)
+    last = out["bas_dd"] == out["bas_dd"].max()
+    top = out["sector_id"] == f"sec_{n_sectors - 1}"
+    for axis in AXES:
+        out.loc[last & top, f"{axis.lower()}_z_bp"] = clip
+    z = {row.sector_id: {a: getattr(row, f"{a.lower()}_z_bp") for a in AXES}
+         for row in out.loc[last].itertuples()}
+    for name, weights_ in PRESETS.items():
+        scores = {sid: weighted_score_bp(zz, weights_) for sid, zz in z.items()}
+        ranks = rank_scores(scores)
+        for sid, score in scores.items():
+            row = last & (out["sector_id"] == sid)
+            out.loc[row, f"score_{name}_bp"] = score
+            out.loc[row, f"rank_{name}"] = ranks[sid]
+    return out
+
+
+def test_기준선은_걸러도_그날_전체의_가운데다():
+    """🔴 필터는 **행을 숨길 뿐** 점수를 다시 매기지 않는다 (ADR-SC-0014 ⑤).
+       걸러진 집합에서 가운데를 내면 "21개 중 3위" 가 "5개 중 1위" 가 되는 것과
+       같은 종류의 거짓이 된다.
+
+    🔒 그래서 `Bars` 가 셋을 함께 낸다 — 기준선을 **따로 내는 함수**를 두면
+       호출부가 걸러진 프레임을 그쪽에 넘기는 두 번째 입구가 남는다.
+    """
+    data = view.scored(frame(5), BALANCED)
+    whole = view.score_bars(data, names=KOREAN)
+    part = view.score_bars(data, names=KOREAN, only=frozenset({"sec_0", "sec_1"}))
+
+    assert len(part.table) == 2 and len(whole.table) == 5
+    assert part.middle_sigma == whole.middle_sigma
+    assert part.graded_n == whole.graded_n == 5
+    # 🔒 **이 줄이 돌연변이를 죽인다** — 걸러진 표의 가운데와 달라야 의미가 있다
+    assert part.middle_sigma != pytest.approx(part.table["점수(σ)"].median())
+
+
+def test_기준선은_평균이_아니라_중앙값이다():
+    """🔴 선형 픽스처 위에서는 둘이 정확히 같아 **평균으로 바꿔도 초록이다.**"""
+    data = view.scored(_skewed(5), BALANCED)
+    bars = view.score_bars(data, names=KOREAN)
+    values = bars.table["점수(σ)"]
+
+    assert bars.middle_sigma == pytest.approx(values.median())
+    assert bars.middle_sigma != pytest.approx(values.mean())
+
+
+def test_점수가_없으면_기준선이_없다():
+    """🔴 `median()` 은 낼 수 없을 때 `None` 이 아니라 **`pd.NA`** 를 준다(열이 `Int64`).
+
+    `is not None` 으로 거르면 **참**이 되어 값이 `null` 인 점선이 그려지고, 축 제목은
+    있지도 않은 그 점선을 가리킨다 — 절대 제약 8 이 금지하는 화면이다.
+    """
+    bars = view.score_bars(view.scored(blank_latest(3), BALANCED), names=KOREAN)
+
+    assert bars.middle_sigma is None, f"{bars.middle_sigma!r} — `pd.NA` 가 새어 나왔다"
+    assert bars.graded_n == 0
+    assert len(bars.table) == 0
+
+
+def test_기준선을_낸_개수는_순위_있는_섹터_수와_같다():
+    """🔒 값은 `score` 로 세고 라벨(«몇 위»)은 순위로 읽는다. 둘이 갈리면 «가운데(11위)»
+       가 어느 모집단의 11위인지 알 수 없어진다.
+
+    구조적으로는 `rank_scores` 가 점수 있는 것에만 순위를 주어 같다. 실데이터
+    5985행 × 프리셋 3종에서 어긋난 행이 0건인 것을 확인했다 — 그 사실을 여기서 건다.
+    """
+    for source in (frame(5), blank_latest(5, blanks=2), _skewed(5)):
+        data = view.scored(source, BALANCED)
+        latest = view.latest_frame(data)
+        bars = view.score_bars(data, names=KOREAN)
+        assert bars.graded_n == int(latest[view.RANK_COLUMN].notna().sum())
+
+
+@pytest.mark.parametrize(("graded_n", "expected"), [
+    (21, "가운데(11위)"),         # 지금 파생본 — 266일 전부 21개
+    (20, "가운데(10·11위 사이)"),  # 🔴 `F` 단독 커스텀 가중치에서 **101일**이 이 모양이다
+    (22, "가운데(11·12위 사이)"),  # `sectors.yaml` 에 섹터를 더하면
+    (1, "가운데(1위)"),
+    (0, "가운데"),
+])
+def test_가운데가_몇_위인지는_개수가_정한다(graded_n, expected):
+    """🔴 «11위» 를 문장에 박지 않는다 — 이슈 #14 가 고치려는 결함과 **같은 종류**다."""
+    assert explain.middle_text(graded_n) == expected
 
 
 def test_서술_재료는_없는_섹터에_빈_것을_준다():
@@ -1058,6 +1160,30 @@ def test_읽는법이_예시를_지어내지_않는다():
     assert at.subheader or at.markdown, "render() 가 돌지 않았다 — 빈 화면을 검사하고 있다"
 
 
+def test_읽는_법이_0σ_를_가운데라_가르치지_않는다():
+    """🔴 랭킹만 고치면 **같은 앱의 두 화면이 같은 단위에 대해 반대로 말한다.**
+
+    이 페이지는 「σ 가 무엇인가」 바로 다음에 **총점을 σ 로** 보여주고(«예시 하나를
+    끝까지»), 팀원 7명은 읽는 법을 **먼저** 읽는다.
+
+    실측 — 축 z 의 일별 중앙값이 0 이 아닌 날은 **4축 전부 0일**(정확히 참)이지만,
+    총점은 균형 **262/266일** · 모멘텀 261일 · 역발상 263일이 0 이 아니다.
+    그래서 «축 하나» 와 «총점» 을 가른다 (ADR-SC-0017 ⑦-1).
+    """
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_function(_howto_page, default_timeout=180)
+    at.run()
+    assert not at.exception, [str(e)[:200] for e in at.exception]
+    body = " ".join(m.value for m in at.markdown)
+    assert body, "render() 가 돌지 않았다 — 빈 화면을 검사하고 있다"
+
+    assert "`0σ` 는 '가운데'" not in body, "총점에서는 262/266일 거짓인 문장이다"
+    assert "축 하나만 볼 때는 `0σ` 가 정확히 가운데지만, 총점은 다르다" in body
+    assert "중앙값은 선형이 아니라서" in body
+    assert "점선을 따로 긋는다" in body, "랭킹의 점선을 가리키지 않는다"
+
+
 def test_등수_카드와_막대가_랭킹에_있다(app):
     """#3 — 표만으로는 21행에서 1등을 눈으로 찾아야 한다."""
     heads = [h.value for h in app.subheader]
@@ -1651,8 +1777,9 @@ def test_필터를_걸어도_등수와_축순위가_전체_기준이다():
 def test_막대도_걸러도_순위_순서를_지킨다():
     data = view.scored(frame(), BALANCED)
     bars = view.score_bars(data, names=KOREAN, only=frozenset({"sec_0", "sec_2"}))
-    assert len(bars) == 2
-    assert list(bars.index) == [KOREAN.sector_label("sec_2"), KOREAN.sector_label("sec_0")]
+    assert len(bars.table) == 2
+    assert list(bars.table.index) == [KOREAN.sector_label("sec_2"),
+                                      KOREAN.sector_label("sec_0")]
 
 
 # ── 성능 — 팀 7명이 매일 쓴다 (이슈 #1 · #2) ────────────────────────────────
@@ -2134,6 +2261,174 @@ def test_최신일이_전부_결측이어도_랭킹이_그려진다(monkeypatch)
     assert all(o.startswith("— · ") for o in options), options
     # 🔒 등수를 지어내지 않는다 — 없으면 없다고 한다
     assert any("순위를 낼 수 있는 섹터가 없다" in m.value for m in at.markdown)
+
+
+def _bar_chart_of(at):
+    """랭킹 화면의 막대 차트 — **스펙과 원본 proto 를 함께** 준다.
+
+    🔒 `AppTest` 에는 차트 접근자가 없다(`at.altair_chart` 도 `at.bar_chart` 도 없고
+       `arrow_vega_lite_chart` 는 0건이다). `st.bar_chart` 와 `st.altair_chart` 는
+       **둘 다** `vega_lite_chart` 로 내려오므로 이 이름 하나로 잡는다.
+    🔒 이 페이지의 유일한 Vega 차트다 — 표·분포는 `st.dataframe` 이다.
+    """
+    import json
+
+    charts = at.get("vega_lite_chart")
+    assert charts, "막대 차트가 그려지지 않았다"
+    # 🔒 **하나여야 한다.** 위쪽에 차트가 하나 생기면 이 헬퍼가 조용히 엉뚱한 것을 검사한다
+    assert len(charts) == 1, f"Vega 차트가 {len(charts)}개다 — 어느 것을 볼지 모른다"
+    return json.loads(charts[0].proto.spec), charts[0].proto
+
+
+def _dataset_of(proto, name: str):
+    """층이 참조하는 데이터셋을 **실제 값으로** 읽는다 (pyarrow IPC)."""
+    import pyarrow as pa
+
+    for dataset in proto.datasets:
+        if dataset.name == name:
+            return pa.ipc.open_stream(dataset.data.data).read_all().to_pandas()
+    raise AssertionError(f"데이터셋 {name} 이 없다")
+
+
+def test_막대가_가운데에_점선을_긋는다(monkeypatch):
+    """🔴 **0 은 가운데가 아니다** (이슈 #14). `z` 는 축마다 중앙값을 빼지만 중앙값은
+       선형이 아니라 가중합의 중앙값은 0 에서 비켜 있다.
+
+    실측 — 「막대가 왼쪽이면 가운데보다 낮았다」가 균형 **159/266일**에서 거짓이었고
+    (하루 평균 1.03개 · 최대 5개), 역발상은 **188/266일 · 최대 7개**였다.
+
+    🔒 기댓값을 **화면과 따로** 낸다 — 같은 함수를 두 번 부르면 대조가 대조이기를
+       그친다(에이전트 guard 와 같은 규율 · ADR-SC-0013 ④-1).
+    🔒 `sort` 도 함께 본다. 순수 테스트는 **색인 순서**를 볼 뿐이라 스펙에서 `sort` 가
+       사라져도 초록이고, 그러면 화면만 조용히 알파벳순으로 돌아간다.
+    """
+    source = _skewed(5)
+    at = _app_with_frame(monkeypatch, source)
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    spec, proto = _bar_chart_of(at)
+    layers = spec["layer"]
+    assert len(layers) == 2, f"점선 층이 없다 — 층 {len(layers)}개"
+
+    bar = next(layer for layer in layers if layer["mark"]["type"] == "bar")
+    rule = next(layer for layer in layers if layer["mark"]["type"] == "rule")
+
+    expected = view.score_bars(view.scored(source, BALANCED)).middle_sigma
+    drawn = _dataset_of(proto, rule["data"]["name"])
+    assert float(drawn.iloc[0, 0]) == pytest.approx(expected)
+    # 🔒 0 과 **다른 자리**여야 이 변경에 뜻이 있다
+    assert abs(expected) > 0.01, "픽스처의 가운데가 0 이라 점선이 아무것도 말하지 않는다"
+
+    y = bar["encoding"]["y"]
+    assert "sort" in y and y["sort"] is None, "순위 순서가 풀렸다 — 알파벳순으로 돌아간다"
+    # 🔒 줌·팬은 `st.bar_chart` 가 주던 것이다. 빠뜨리면 조용히 사라진다
+    assert any(param.get("bind") == "scales" for param in spec.get("params", [])), \
+        "`.interactive()` 가 빠졌다 — 스크롤 확대·드래그 이동이 사라진다"
+    # 🔒 **캡션이 «점선» 이라고 글자로 가리킨다.** 실선이 되면 그 문장이 거짓이 된다
+    assert rule["mark"].get("strokeDash"), "점선이 실선이 됐다 — 캡션이 «점선» 이라고 적는다"
+    # 🔒 아래 셋도 `st.bar_chart` 가 주던 것이다 (ADR-SC-0017 ⑤ «빠짐없이 옮긴다»)
+    assert len(bar["encoding"].get("tooltip", [])) == 2, "툴팁 2열이 사라졌다"
+    assert spec.get("height") == 460, spec.get("height")
+    assert bar["encoding"]["x"]["axis"]["grid"] is True, "가로 격자가 꺼졌다"
+    # 🔴 **설정만 보면 색을 바꿔도 초록이다.** 실제로 그린 색을 본다
+    import streamlit as st
+
+    assert rule["mark"]["color"] == st.get_option("theme.grayColor"), rule["mark"]
+    assert rule["mark"]["color"] not in (st.get_option("theme.greenColor"),
+                                         st.get_option("theme.redColor")), \
+        "가운데를 가리키는 선에 **뜻을 가진 색**을 썼다 — 이 선은 판단이 아니다"
+
+
+def test_점선_색은_설정의_토큰에서_온다():
+    """🔒 팔레트의 정본은 `.streamlit/config.toml` 이다 (`theme.py` 머리주석).
+
+    🔴 코드에 폴백 색을 두지 않으므로 **이 키가 있다는 것이 계약**이다. 없으면 점선이
+       색 없이 그려지는데, 닿지 않는 가지를 코드에 두는 대신 여기서 건다
+       (`test_점수를_읽는_동안_화면이_말을_한다` 와 같은 «설정으로 거는» 방식).
+    🔒 **의미색을 쓰지 않는다** — `greenColor`·`redColor` 는 뜻을 가진 색이고
+       (`config.toml`), 가운데를 가리키는 선은 판단이 아니다.
+    """
+    import streamlit as st
+
+    gray = st.get_option("theme.grayColor")
+    assert gray, "`config.toml` 에 `theme.grayColor` 가 없다 — 점선이 색을 잃는다"
+    assert gray not in (st.get_option("theme.greenColor"), st.get_option("theme.redColor"))
+
+
+def test_막대와_점선은_필터를_따로_따른다(monkeypatch):
+    """🔴 **순수 함수 테스트로는 렌더러가 무엇을 넘기는지 볼 수 없다.**
+       실측으로, `_render_bars` 에서 `only=keep` 을 통째로 지워도 대시보드 전체가
+       초록이었다 — 필터가 막대에 아무 영향을 주지 않는 상태가 **눈에 띄지 않는다.**
+       (`test_화면의_대분류_분포가_필터를_따른다` 와 같은 자리다.)
+
+    이 화면의 규칙은 둘이 **다르다**는 것이다 —
+    - **막대**는 걸러진 것만 그린다
+    - **점선**은 거르지 않은 그날 전체의 가운데다 (ADR-SC-0014 ⑤ · ADR-SC-0017 ②)
+    """
+    from dashboard import data as _data
+
+    # 🔒 걸러낸 둘이 **아래쪽 둘**이라 걸러진 가운데가 전체 가운데보다 위로 옮겨간다
+    source = _skewed(5)
+    source["gics"] = ["Materials" if sid in ("sec_0", "sec_1") else "Industrials"
+                      for sid in source["sector_id"]]
+    at = _app_with_frame(monkeypatch, source, rank_gics=["Industrials"])
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    spec, proto = _bar_chart_of(at)
+    bar = next(layer for layer in spec["layer"] if layer["mark"]["type"] == "bar")
+    rule = next(layer for layer in spec["layer"] if layer["mark"]["type"] == "rule")
+
+    hidden = _data.sector_names().sector_label("sec_0")
+    drawn = _dataset_of(proto, bar["data"]["name"])
+    assert len(drawn) == 3, f"필터가 막대에 먹지 않았다 — {len(drawn)}행"
+    assert hidden not in set(drawn["섹터"]), "걸러낸 섹터가 막대에 남았다"
+
+    # 🔒 점선은 **거르지 않은** 전체의 가운데다. 기댓값을 화면과 따로 낸다
+    whole = view.score_bars(view.scored(source, BALANCED)).middle_sigma
+    middle = float(_dataset_of(proto, rule["data"]["name"]).iloc[0, 0])
+    assert middle == pytest.approx(whole)
+    # 🔒 **걸러진 집합의 가운데와 달라야** 이 단언에 뜻이 있다
+    assert middle != pytest.approx(drawn["점수(σ)"].median())
+
+    # 🔒 필터 안내의 «N개 전체» 도 **데이터에서** 나온다 — «21» 을 박으면 픽스처가 5개다
+    tail = next(m.value for m in at.markdown if "가로축은 지금 보이는" in m.value)
+    assert "5개 전체에서 나온 값" in tail, tail
+    assert "21개" not in tail, "섹터 수를 문장에 박았다 — `middle_text` 와 같은 결함이다"
+
+
+def test_막대_문구가_0_을_가운데라_말하지_않는다(monkeypatch):
+    """🔒 문구 골든. 🔴 옛 문장의 **부재**까지 단언한다 — 새 문장만 보면 옛 문장을
+       덧붙여 되돌려도 초록이다.
+
+    🔴 옛 축 제목은 `x_label` 로 넘어갔는데, `st.bar_chart(horizontal=True)` 는 그것을
+       **섹터(세로)축** 제목으로 쓴다(실측). 즉 그 문장은 틀린 축에 붙어 있었고
+       점수축에는 제목이 아예 없었다. 그래서 축 제목도 함께 건다.
+    """
+    at = _app_with_frame(monkeypatch, _skewed(5))
+    spec, _ = _bar_chart_of(at)
+    bar = next(layer for layer in spec["layer"] if layer["mark"]["type"] == "bar")
+    title = bar["encoding"]["x"]["title"]
+    page = " ".join([title] + [m.value for m in at.markdown])
+
+    assert title == "점수(σ) — 점선이 그날 섹터들의 가운데(3위)다", title
+    assert "0 이 21개 섹터의 가운데다" not in page, "옛 거짓 문장이 남아 있다"
+    assert "막대가 왼쪽이면" not in page, "옛 방향 문장이 남아 있다"
+    assert "점선보다 왼쪽이면 그날 섹터들의 가운데보다 낮았다" in page
+    assert "축마다 가운데였다면 받았을 값" in page
+    assert "앞으로 오른다·내린다는 뜻이 아니다" in page
+
+
+def test_점수가_없으면_점선도_차트도_그리지_않는다(monkeypatch):
+    """🔴 막대가 없는데 점선만 그리면 «무엇의 가운데인가» 를 말할 수 없다.
+
+    🔒 그리고 `median()` 이 `pd.NA` 를 주는 자리다 — `is not None` 으로 걸렀다면
+       값이 `null` 인 점선이 그려지고 축 제목이 그것을 가리킨다.
+    """
+    at = _app_with_frame(monkeypatch, blank_latest(3))
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert not at.get("vega_lite_chart"), "그릴 막대가 없는데 차트를 그렸다"
+    assert sum("순위를 낼 수 있는 섹터가 없다" in m.value for m in at.markdown) >= 2, \
+        "등수 카드와 막대가 **둘 다** 말해야 한다"
 
 
 def test_깨진_파생본이_트레이스백_대신_설명을_보여준다(monkeypatch):

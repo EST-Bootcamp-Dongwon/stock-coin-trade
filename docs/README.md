@@ -28,7 +28,7 @@ flowchart TB
     direction TB
     A["AGENTS.md<br/>절대 제약 12개"]
     S["세션-시작-프롬프트.md<br/>마일스톤 · 확정 사실"]
-    D["docs/decisions/0005~0016<br/>ADR 12건"]
+    D["docs/decisions/0005~0017<br/>ADR 12건 · 0009 결번"]
     B["docs/backlog/<br/>아직 안 한 것"]
     A --> S --> D
   end
@@ -53,7 +53,7 @@ flowchart TB
 
 | 폴더 | 상태 | 무엇 | 커밋 |
 |---|---|---|---|
-| [`decisions/`](decisions/) | 🟢 **현재** | ADR 15건. 참조 키는 `ADR-SC-NNNN` | ✅ |
+| [`decisions/`](decisions/) | 🟢 **현재** | ADR 16건(0001~0017 · 0009 결번). 참조 키는 `ADR-SC-NNNN` | ✅ |
 | [`backlog/`](backlog/) | 🟢 **현재** | 아직 하지 않은 것 · 판정된 아이디어 | ✅ |
 | [`v2-design/`](v2-design/) | 🧊 **동결** | v2.0 설계 55개 — [입구](v2-design/README.md)를 먼저 읽어라 | ✅ |
 | [`how-to/`](how-to/) | ⚠️ 일부 | `quant-core` 이식 계획은 **폐기**. 체결 가정 명세(§3)만 유효 | ✅ |

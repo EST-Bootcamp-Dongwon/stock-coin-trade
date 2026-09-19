@@ -58,7 +58,8 @@ from __future__ import annotations
 import streamlit as st
 
 from dashboard import data, evidence, share, team_actions, theme, view, weights
-from dashboard.explain import AXIS_NOT, lead_axis_text, preset_label, rank_badge, weighting_label
+from dashboard.explain import (AXIS_NOT, lead_axis_text, middle_text, preset_label,
+                               rank_badge, weighting_label)
 from sector.scoring import AXES, AXIS_NAMES, PRESETS
 
 _STABILITY_DAYS = 20
@@ -152,7 +153,7 @@ def render() -> None:
         _render_table(table, keep)
 
         st.subheader("점수를 한눈에")
-        _render_bars(ranked, names, keep, partial=len(keep) != total)
+        _render_bars(ranked, names, keep, total=total)
 
         st.subheader("셋 다 상위인 섹터")
         _render_consensus(frame, names)
@@ -468,8 +469,7 @@ def _render_podium(frame, weighting, names, keep: frozenset[str]) -> None:
     """
     entries = view.podium(frame, weighting=weighting, names=names, only=keep)
     if not entries:
-        st.markdown("<div class='sc-muted'>순위를 낼 수 있는 섹터가 없다.</div>",
-                    unsafe_allow_html=True)
+        st.markdown(f"<div class='sc-muted'>{NO_RANKED}</div>", unsafe_allow_html=True)
         return
     for column, entry in zip(st.columns(len(entries)), entries, strict=True):
         with column, theme.panel():
@@ -493,20 +493,97 @@ def _render_podium(frame, weighting, names, keep: frozenset[str]) -> None:
                             unsafe_allow_html=True)
 
 
-def _render_bars(frame, names, keep: frozenset[str], *, partial: bool) -> None:
-    """섹터 점수를 가로 막대로. 🔒 순위 순서를 지킨다(`sort=False`).
+#: 기준선을 낼 수 없을 때의 축 제목. 🔒 **없는 점선을 가리키지 않는다.**
+_AXIS_PLAIN = "점수(σ)"
 
-    🔴 0 을 기준으로 좌우로 갈린다 — 음수 섹터가 왼쪽으로 뻗는 그림이 "평균보다
-       아래" 를 표보다 빨리 말한다.
+#: 순위를 낼 수 있는 섹터가 하나도 없을 때. 🔒 **등수 카드와 막대가 같은 말을 한다** —
+#:    문장을 각자 들고 있으면 한쪽만 고쳐져도 눈에 띄지 않는다 (`theme.BROKEN_SCORES` 와 같은 규율).
+NO_RANKED = "순위를 낼 수 있는 섹터가 없다."
+
+
+def _bar_chart(bars: view.Bars):
+    """막대 + **가운데 점선**. 🔒 `st.bar_chart` 를 버린 이유는 그 점선 하나다.
+
+    🔒 `st.bar_chart` 가 해 주던 것을 빠짐없이 옮긴다 — x 격자 · y 무격자 · 툴팁 2열 ·
+       높이 · **줌/팬**. 🔴 `.interactive()` 를 빠뜨리면 팀원 7명이 매일 쓰는 화면에서
+       스크롤 확대와 드래그 이동이 **조용히 사라진다**
+       (`built_in_chart_utils.py:274` 가 그것을 붙인다).
+    🔒 **색 인코딩을 주지 않는다.** 그래야 프런트엔드의 `theme="streamlit"` 이
+       `chartCategoricalColors` 를 먹인다 — `st.bar_chart` 와 똑같은 경로다
+       (양쪽 스펙에 색이 없는 것을 실측으로 확인했다).
+    🔒 `import altair` 를 **함수 안에서** 한다. streamlit 은 altair 를 미리 로드하지
+       않고(실측 1.5s), 이 모듈은 부팅 때 다른 페이지와 함께 import 된다 —
+       최상단에 두면 막대를 안 보는 페이지까지 그 비용을 문다.
     """
-    bars = view.score_bars(frame, names=names, only=keep)
-    st.bar_chart(bars, horizontal=True, sort=False, height=460,
-                 x_label="점수(σ) — 0 이 21개 섹터의 가운데다", y_label="")
-    tail = (" 필터를 걸었으므로 **가로축은 지금 보이는 섹터들에 맞춰 다시 잡힌다** — "
-            "점수 자체는 21개 전체에서 나온 값 그대로다." if partial else "")
+    import altair as alt
+    import pandas as pd
+
+    column = "점수(σ)"
+    title = _AXIS_PLAIN if bars.middle_sigma is None else (
+        f"{_AXIS_PLAIN} — 점선이 그날 섹터들의 {middle_text(bars.graded_n)}다")
+    chart = alt.Chart(bars.table.reset_index()).mark_bar().encode(
+        x=alt.X(f"{column}:Q", title=title, axis=alt.Axis(grid=True)),
+        y=alt.Y("섹터:N", sort=None, title="", axis=alt.Axis(grid=False)),
+        tooltip=["섹터", column],
+    )
+    if bars.middle_sigma is not None:
+        # 🔒 같은 필드 이름을 써서 두 층이 **한 척도**를 공유한다. 축 제목은 막대 층이
+        #    정한다 — 여기에 **다른** 문자열을 주면 둘이 `"A, B"` 로 합쳐진다(실측).
+        # 🔒 색은 `config.toml` 의 토큰을 그대로 읽는다 — 팔레트를 코드에 복제하지 않는다.
+        #    그 키가 비면 색 없이 그려지는데, **폴백을 두지 않는다**: 닿지 않는 가지는
+        #    테스트가 지킬 수 없다(`_render_consensus` 의 같은 규율). 대신 그 키가 있다는
+        #    것을 `test_점선_색은_설정의_토큰에서_온다` 가 **설정 계약**으로 건다
+        middle = alt.Chart(pd.DataFrame({column: [bars.middle_sigma]})).mark_rule(
+            strokeDash=[6, 4], strokeWidth=2, color=st.get_option("theme.grayColor"),
+        ).encode(x=alt.X(f"{column}:Q"))
+        chart = chart + middle
+    return chart.properties(height=460).interactive()
+
+
+def _render_bars(ranked, names, keep: frozenset[str], *, total: int) -> None:
+    """섹터 점수를 가로 막대로. 🔒 순위 순서를 지킨다(`sort=None`).
+
+    ## 🔴 0 은 가운데가 아니다 — 그래서 가운데에 점선을 긋는다 (이슈 #14)
+
+    한때 축 제목이 「0 이 21개 섹터의 가운데다」라고 적었고 캡션이 「막대가 왼쪽이면
+    가운데보다 낮았다」고 말했다. **둘 다 거짓이다.** `z` 는 축마다 중앙값을 빼지만
+    중앙값은 선형이 아니라 가중합의 중앙값은 0 에서 비켜 있다.
+
+    실측 — 균형 **159/266일**(59.8%)에 어긋나는 섹터가 1개 이상이었고, 역발상은
+    **188/266일 · 최대 7개**였다. 앱은 언제나 **최신일 하루치**만 그리므로
+    (`as_of = data.latest_day(frame)`) 그 날이 오늘이면 오늘 거짓말을 한다.
+
+    🔒 고치는 길로 «중앙값을 빼서 그린다» 를 **기각했다** — 화면 숫자가 표·근거·
+       에이전트의 `score_bp` 와 갈린다(ADR-SC-0014 가 막은 바로 그 상태).
+       막대 값은 그대로 두고 **가운데를 그림으로 말한다.**
+    🔒 기준선은 `view.Bars` 가 `only` **적용 전에** 낸다 — 걸러진 집합의 가운데를
+       그리면 "21개 중 3위" 가 "5개 중 1위" 가 되는 것과 같은 거짓이 된다.
+
+    🔴 옛 코드는 `x_label` 에 그 문장을 넣었는데, `st.bar_chart(horizontal=True)` 는
+       `x_label` 을 **섹터(세로)축** 제목으로 쓰고 `y_label` 을 점수축 제목으로 쓴다
+       (실측). 즉 그 문장은 **틀린 축**에 붙어 있었고 점수축에는 제목이 아예 없었다.
+    """
+    bars = view.score_bars(ranked, names=names, only=keep)
+    if len(bars.table) == 0:
+        # 🔒 `_render_podium` 과 같은 말을 한다. 점선만 남은 차트를 그리지 않는다 —
+        #    막대가 없는데 「점선이 가운데다」라고 말하면 무엇의 가운데인지 알 수 없다
+        st.markdown(f"<div class='sc-muted'>{NO_RANKED}</div>", unsafe_allow_html=True)
+        return
+    st.altair_chart(_bar_chart(bars), width="stretch")
+    # 🔒 층 차트의 가로축은 막대와 **점선을 함께** 담는다 — 걸렀을 때 "보이는 섹터들에
+    #    맞춰" 라고만 적으면 그것이 거짓이 된다(점선이 범위를 넓히는 날이 있다)
+    # 🔒 «21» 을 박지 않는다 — `middle_text` 를 만든 이유가 그대로 여기 적용된다
+    tail = (" 필터를 걸었으므로 **가로축은 지금 보이는 막대와 점선에 맞춰 다시 잡힌다** — "
+            f"점수 자체는 {total}개 전체에서 나온 값 그대로다."
+            if len(keep) != total else "")
+    middle = ("점선보다 왼쪽이면 그날 섹터들의 가운데보다 낮았다는 뜻이고"
+              if bars.middle_sigma is not None else
+              "막대가 길수록 점수가 높다는 뜻이고")
     st.markdown(
-        "<div class='sc-muted'>위에서부터 순위가 높다. 막대가 왼쪽이면 그날 섹터들의 "
-        f"가운데보다 낮았다는 뜻이고, 앞으로 오른다·내린다는 뜻이 아니다.{tail}</div>",
+        f"<div class='sc-muted'>위에서부터 순위가 높다. {middle}, 앞으로 오른다·"
+        "내린다는 뜻이 아니다. 0 은 «축마다 가운데였다면 받았을 값» 이고, "
+        "**중앙값은 선형이 아니라서** 그것을 가중합한 가운데는 대개 0 에서 비켜 있다."
+        f"{tail}</div>",
         unsafe_allow_html=True)
 
 

@@ -87,3 +87,21 @@ PyYAML==6.0.3
 #    만 받는다. `HF_TOKEN_WRITE` 는 로컬 `.env` 에만 두고 Streamlit Secrets 에
 #    넣지 않는다 (→ `sector/datastore/hub.py` 머리주석).
 huggingface_hub==1.31.0
+
+# ── 이슈 #14 (막대 기준선) ──────────────────────────────────────────────
+# `dashboard/pages/ranking.py::_bar_chart` 가 **직접 import 한다.**
+#
+# ★ **설치 용량이 늘지 않는다** — streamlit 1.63.0 이 이미 필수 의존으로 끌고 온다
+#   (`altair!=5.4.0,!=5.4.1,<7,>=5.0.0` · extra 마커 없음). 그래도 명시로 적는 이유는
+#   위 `requests` 블록과 같다: 직접 import 하는 패키지를 남의 전이 의존에 맡기면,
+#   streamlit 이 의존을 정리하는 순간 배포가 깨진다.
+# 🔴 **핀이 없으면 «언제 돌려도 같은 답» 이 깨진다**(`AGENTS.md` 5장). streamlit 의
+#    제약은 5.x 도 허용하는데 5.x 는 Vega-Lite **v5** 를 내고 6.x 는 **v6** 를 낸다 —
+#    Cloud 가 5.x 를 깔면 `$schema` 부터 다른 스펙이 배포되고, 스펙을 단언하는
+#    테스트(`test_막대는_가운데에_점선을_긋는다`)가 로컬에서만 초록이 된다.
+# 🔒 이 핀은 루트 `.venv`(Python 3.12.3)에 실제로 설치돼 층 차트를 렌더하고
+#    Vega 로 컴파일해 확인한 버전과 같다.
+#
+# ★ 🔒 `plotly` 를 넣지 않는다 — streamlit 의 `extra=="charts"` 라 **설치가 늘어나고**,
+#   Altair 로 되는 일이다 (이슈 #16 M10 워터폴도 Altair 로 간다).
+altair==6.2.2
