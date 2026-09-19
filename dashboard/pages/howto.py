@@ -87,6 +87,11 @@ def _render_worked_example() -> None:
             "<div class='sc-muted'>지금은 점수를 읽을 수 없어 예시를 그리지 않는다. "
             "숫자를 지어내지 않기 때문이다.</div>", unsafe_allow_html=True)
         return
+    except view.ViewError as exc:
+        # 🔴 이제 **로드가** 던진다 (이슈 #12). 잡지 않으면 이 페이지에는 바깥 try 가
+        #    없어 팀원이 파이썬 트레이스백을 본다 — 랭킹과 같은 규율이다
+        theme.failure(theme.BROKEN_SCORES, exc)
+        return
 
     names = data.sector_names()
     # 🔒 읽는 법 화면은 **언제나 균형 프리셋**이다. 랭킹의 슬라이더를 따라가면
@@ -101,7 +106,9 @@ def _render_worked_example() -> None:
         story = view.sector_story(frame, sector_id, names=names)
     except view.ViewError as exc:
         # 🔴 랭킹과 같은 규율이다 — 깨진 파생본으로 **예시를 지어내지 않는다**
-        theme.failure("점수 표가 화면이 읽을 수 있는 모양이 아니다 — 파생본을 다시 만들어야 한다.", exc)
+        #    🔒 경계(`load_scores`)가 이미 걸렀어도 여기를 지우지 않는다 — `scored()` 는
+        #       경계가 못 보는 것(호출자가 거른 프레임)을 본다
+        theme.failure(theme.BROKEN_SCORES, exc)
         return
     label = story["label"]
 

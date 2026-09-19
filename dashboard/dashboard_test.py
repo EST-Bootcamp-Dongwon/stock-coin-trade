@@ -107,6 +107,11 @@ def blank_latest(n_sectors: int = 3, *, blanks: int | None = None) -> pd.DataFra
 
     🔒 dtype 을 `Int64`·`boolean` 으로 맞춘다. `float64` 로 눕히면 결측이 `nan` 이 되어
        **재현하려는 `pd.NA` 경로를 안 밟는다.** 실제 파생본은 정수 열이 전부 nullable 이다.
+
+    🔴 **꼴찌부터 비운다** (`ids` 가 정렬돼 있고 `sec_0` 이 꼴찌다). 이것이 우연이 아니라
+       조건이다 — 1위를 비우면 남은 저장 순위가 `1..k` 로 이어지지 않아 게시 계약을
+       어기고, `view.check_frame` 이 **정당하게** 거절한다(실측: "1..2 로 이어지지
+       않는다(최대 3)"). 픽스처는 «있을 수 있는 게시본»이어야 한다.
     """
     out = frame(n_sectors)
     for column in _BLANK_COLUMNS + ["n_axes_used", "etf_n"]:
@@ -415,6 +420,16 @@ def _ranking_page() -> None:
     from dashboard.pages import ranking
 
     ranking.render()
+
+
+def _howto_page() -> None:
+    """🔴 `AppTest.from_file(pages/howto.py)` 로는 **`render()` 가 돌지 않는다** —
+       모듈 본문만 실행되어 subheader·markdown·caption 이 전부 0개다(실측).
+       그 위에 세운 단언은 무엇도 보증하지 못한다 (이슈 #12 리뷰).
+    """
+    from dashboard.pages import howto
+
+    howto.render()
 
 
 @pytest.fixture
@@ -1035,10 +1050,12 @@ def test_읽는법이_예시를_지어내지_않는다():
     """
     from streamlit.testing.v1 import AppTest
 
-    at = AppTest.from_file(str(ROOT / "dashboard" / "pages" / "howto.py"),
-                           default_timeout=180)
+    # 🔴 `from_file` 은 모듈 본문만 돌린다 — `render()` 를 부르지 않으면 이 단언은
+    #    **빈 화면을 검사한다**(`_howto_page` 주석 · 이슈 #12 리뷰에서 실측)
+    at = AppTest.from_function(_howto_page, default_timeout=180)
     at.run()
     assert not at.exception, [str(e)[:200] for e in at.exception]
+    assert at.subheader or at.markdown, "render() 가 돌지 않았다 — 빈 화면을 검사하고 있다"
 
 
 def test_등수_카드와_막대가_랭킹에_있다(app):
@@ -1737,8 +1754,9 @@ def test_점수_캐시의_수명이_고정돼_있다():
     from dashboard import data as _data
 
     assert 0 < _data.SCORES_TTL_SECONDS <= 600, "게시 주기(하루 1회)에 비해 너무 길다"
-    info = getattr(_data.load_scores, "_info", None)
-    assert info is not None, "`load_scores` 가 캐시되지 않았다"
+    # 🔒 캐시는 `_read_scores` 에 있다 — `load_scores` 는 그 위의 **검사 래퍼**다 (이슈 #12)
+    info = getattr(_data._read_scores, "_info", None)
+    assert info is not None, "`_read_scores` 가 캐시되지 않았다"
     assert info.ttl == _data.SCORES_TTL_SECONDS
 
 
@@ -1753,12 +1771,12 @@ def test_점수를_읽는_동안_화면이_말을_한다():
        테스트보다, 볼 수 있는 곳에서 정확히 거는 편이 낫다.
 
     🔒 `True` 를 거른다. `show_spinner=True` 도 "말을 하긴" 하지만 Streamlit 이
-       ``Running `load_scores()`.`` 라는 영어 함수 이름을 그린다.
+       ``Running `_read_scores()`.`` 라는 영어 함수 이름을 그린다.
     """
     from dashboard import data as _data
 
-    info = getattr(_data.load_scores, "_info", None)
-    assert info is not None, "`load_scores` 가 캐시되지 않았다"
+    info = getattr(_data._read_scores, "_info", None)
+    assert info is not None, "`_read_scores` 가 캐시되지 않았다"
     assert isinstance(info.show_spinner, str), (
         "읽는 동안 화면이 아무 말도 하지 않는다 — `show_spinner` 에 **문구**를 준다")
     assert info.show_spinner.strip(), "문구가 비어 있다"
@@ -1793,7 +1811,9 @@ def test_캐시가_빌_때만_스피너가_돈다(monkeypatch):
     monkeypatch.setattr(_data, "_from_local",
                         lambda: (frame(), _data.Source(kind="local", label="테스트용")))
 
-    clear = getattr(_data.load_scores, "clear", lambda: None)
+    # 🔒 부르는 것은 **공개 경로**다 — 앱이 밟는 길에서 스피너가 정확히 한 번 열려야 한다.
+    #    비우는 것은 캐시가 실제로 있는 `_read_scores` 다 (이슈 #12)
+    clear = _data._read_scores.clear
     clear()
     try:
         _data.load_scores()
@@ -1805,18 +1825,20 @@ def test_캐시가_빌_때만_스피너가_돈다(monkeypatch):
 
 
 def test_점수를_매_rerun_마다_다시_읽지_않는다(monkeypatch):
-    """🔴 `load_scores` 는 HF ETag 왕복 + 745KB + `read_parquet` 이라 220ms 다.
+    """🔴 `_read_scores` 는 HF ETag 왕복 + 745KB + `read_parquet` 이라 220ms 다.
     위젯을 하나 만질 때마다 그것이 돌면 슬라이더 한 칸에 네트워크 왕복이 붙는다.
+
+    🔒 **캐시 함수를 직접 부른다** — 재는 것이 캐시이지 그 위의 검사 래퍼가 아니다.
 
     🔒 **뒤끝을 남기지 않는다** — 가짜를 캐시에 남기면 뒤따르는 AppTest 가 그것을 읽는다.
        그래서 앞뒤로 비운다(`pytest-randomly` 로 순서가 섞여도 안전하게).
     """
     from dashboard import data as _data
 
-    # 🔒 캐시가 **없을 때도** 의도한 단언이 울려야 한다. `clear()` 를 그냥 부르면
-    #    데코레이터가 사라진 순간 `AttributeError` 로 먼저 죽어, 실패 메시지가
-    #    "캐시가 없다" 가 아니라 엉뚱한 것이 된다
-    clear = getattr(_data.load_scores, "clear", lambda: None)
+    # 🔴 `getattr(..., lambda: None)` 로 받지 않는다 — 조용한 기본값이 `conftest` 에서
+    #    실제로 비우기를 통째로 삼킨 적이 있다 (그 픽스처 주석 · 이슈 #12).
+    #    데코레이터가 사라지면 `AttributeError` 로 **시끄럽게** 터지는 편이 낫다
+    clear = _data._read_scores.clear
     reads: list[int] = []
 
     def fake_local():
@@ -1827,13 +1849,13 @@ def test_점수를_매_rerun_마다_다시_읽지_않는다(monkeypatch):
     monkeypatch.setattr(_data, "_from_local", fake_local)
     clear()
     try:
-        first, _ = _data.load_scores()
-        second, _ = _data.load_scores()
+        first, _ = _data._read_scores()
+        second, _ = _data._read_scores()
         assert reads == [1], f"원천을 {len(reads)}번 읽었다 — 캐시가 없다"
         assert first.equals(second)
         # 🔒 사본을 준다 — 화면이 고쳐도 캐시가 더러워지지 않는다
         first.loc[0, "score_balanced_bp"] = 999_999
-        third, _ = _data.load_scores()
+        third, _ = _data._read_scores()
         assert int(third.loc[0, "score_balanced_bp"]) != 999_999
     finally:
         clear()
@@ -1846,14 +1868,14 @@ def test_읽지_못한_것은_캐시하지_않는다(monkeypatch):
 
     monkeypatch.setattr(_data, "_from_hf", lambda: None)
     monkeypatch.setattr(_data, "_from_local", lambda: None)
-    clear = getattr(_data.load_scores, "clear", lambda: None)
+    clear = _data._read_scores.clear
     clear()
     try:
         with pytest.raises(_data.DataUnavailable):
-            _data.load_scores()
+            _data._read_scores()
         monkeypatch.setattr(_data, "_from_local",
                             lambda: (frame(), _data.Source(kind="local", label="테스트용")))
-        recovered, _ = _data.load_scores()
+        recovered, _ = _data._read_scores()
         assert len(recovered) > 0, "예외가 캐시돼 복구되지 않았다"
     finally:
         clear()
@@ -1870,6 +1892,27 @@ def _app_with(**state):
         at.session_state[key] = value
     at.run()
     return at
+
+
+def broken_frame() -> pd.DataFrame:
+    """화면이 읽을 수 없는 프레임 — **섹터로 거른 부분 프레임**이다 (이슈 #7).
+
+    저장 순위를 전역 그대로 들고 있어 `1..k` 가 깨진다. 실제로 일어나는 사고는
+    파생본 손상 쪽이지만, 계약을 어기는 가장 값싼 입력이 이것이다.
+    """
+    whole = frame(3)
+    return whole[whole["sector_id"] == "sec_0"]
+
+
+def _from_broken(monkeypatch) -> None:
+    """원천이 깨진 프레임을 준다. 🔒 `_from_hf` 도 막는다 — 안 막으면 실데이터가 이긴다."""
+    from dashboard import data as _data
+
+    monkeypatch.setattr(_data, "_from_hf", lambda: None)
+    monkeypatch.setattr(
+        _data, "_from_local",
+        lambda: (broken_frame(), _data.Source(kind="local", label="테스트용",
+                                              detail="data/derived/score_daily.parquet")))
 
 
 def _app_with_frame(monkeypatch, data_frame, **state):
@@ -2113,6 +2156,115 @@ def test_깨진_파생본이_트레이스백_대신_설명을_보여준다(monke
     # 🔒 출처는 `finally` 덕에 남는다 — 이 줄이 깨지면 약관 위반이다
     assert any("한국거래소 통계정보" in c.value for c in at.caption), \
         [c.value[:80] for c in at.caption]
+    # 🔴 **어느 파생본을 다시 만들어야 하나** — 출처가 곧 그 답이다 (이슈 #12).
+    #    빼면 화면은 "다시 만들어라" 고만 말하고 HF 인지 로컬인지 말하지 않는다
+    assert any("테스트용" in m.value for m in at.markdown), \
+        [m.value[:120] for m in at.markdown]
+
+
+def test_깨진_파생본에서_캡션이_섹터_수를_단언하지_않는다(monkeypatch):
+    """🔴 **이슈 #12 그 자체.** 읽을 수 없다고 선언한 프레임으로 캡션이 숫자를 단언했다.
+
+    `scored()` 안에만 검사가 있던 동안, 랭킹은 그보다 **먼저** 그려진 캡션에서
+    `기준일 20260909 · 섹터 1개 중 1개 표시` 라고 말했다 — 하필 부분 프레임에서
+    정확히 오해를 낳는 문장이다(이슈 #7 이 닫은 "21개 중 3위" → "5개 중 1위" 사고).
+    절대 제약 8 의 경계다.
+
+    🔒 이 테스트가 **돌연변이 검출기**다 — `data.load_scores` 의 `check_frame` 한 줄을
+       지우면 다른 536건은 전부 초록인 채 이것만 빨개진다(리뷰 실험 C 로 확인).
+    """
+    at = _app_with_frame(monkeypatch, broken_frame())
+
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    numeric = [c.value for c in at.caption if "기준일" in c.value or "섹터" in c.value]
+    assert not numeric, f"읽을 수 없다고 한 프레임으로 숫자를 단언했다: {numeric}"
+    # 🔒 그래도 출처는 남는다 — 절대 제약 12
+    assert any("한국거래소 통계정보" in c.value for c in at.caption)
+
+
+def test_점수는_검사를_지나야만_손에_들어온다(monkeypatch):
+    """🔒 **규칙으로 막지 않고 경로를 없앤다.** 검사를 안 지난 프레임을 얻는 공개 함수가
+       존재하지 않아야, 다음에 페이지가 하나 늘어도 보호 수준이 갈리지 않는다
+       (AGENTS.md 2장이 `devlee328288` 원격에 쓴 것과 같은 논리).
+
+    🔴 `origin` 없이 부르면 팀원이 **개발자 문장**("거르지 않은 전체 프레임을 넘겨야
+       한다")을 보게 된다 — 팀원은 아무것도 넘기지 않았다. 그래서 호출 여부만이 아니라
+       `origin` 이 채워졌는지까지 본다.
+    """
+    from dashboard import data as _data
+    from dashboard import view as _view
+
+    seen: list[str] = []
+    real = _view.check_frame
+
+    def spy(frame_, *, origin: str = "") -> None:
+        seen.append(origin)
+        real(frame_, origin=origin)
+
+    monkeypatch.setattr(_view, "check_frame", spy)
+    monkeypatch.setattr(_data, "_from_hf", lambda: None)
+    monkeypatch.setattr(_data, "_from_local",
+                        lambda: (frame(), _data.Source(kind="local", label="테스트용")))
+    _data._read_scores.clear()
+    _data.load_scores()
+
+    assert seen, "`load_scores` 가 검사를 지나지 않고 프레임을 내줬다"
+    assert seen[0], "`origin` 없이 불렀다 — 실패 메시지가 팀원에게 맞지 않는 말을 한다"
+
+
+def test_경계는_전체_프레임을_넘기라고_말하지_않는다():
+    """🔴 같은 진단의 **꼬리가 읽는 사람에 따라 달라야 한다.** `scored()` 에 거른
+       프레임을 넘긴 것은 개발자이지만, 데이터 경계에서 걸린 것은 팀원이 본다.
+    """
+    broken = broken_frame()
+
+    with pytest.raises(view.ViewError) as caller:
+        view.check_frame(broken)
+    assert "전체 프레임을 넘겨야 한다" in str(caller.value)
+
+    with pytest.raises(view.ViewError) as store:
+        view.check_frame(broken, origin="로컬에서 계산한 값 (data/derived/x.parquet)")
+    message = str(store.value)
+    assert "전체 프레임을 넘겨야 한다" not in message, message
+    assert "파생본을 다시 만들어야 한다" in message
+    assert "data/derived/x.parquet" in message, "읽은 곳을 말하지 않는다"
+
+
+def test_깨진_파생본에서도_조_화면이_산다(ledger, monkeypatch):
+    """🔴 `_scores()` 는 `ViewError` 를 잡지 않았다 — 깨진 파생본 하나가 조 페이지를
+       통째로 트레이스백으로 바꿨다. 그 피해는 근거 칸에 그치지 않는다:
+       `_scores()` 는 확정 여부를 보기 **전에** 불리므로 참가·보관·기록까지 사라진다.
+
+    🔒 그리고 **조용히 빼지 않는다** (ADR-SC-0007) — 왜 칸이 없는지 말해야 한다.
+    """
+    _from_broken(monkeypatch)
+    at = _as_member(_teams_page, ledger)
+
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert "leave" in _keys(at.button), "조 화면이 살아남지 못했다"
+    assert any("읽을 수 있는 모양이 아니" in e.value for e in at.error), \
+        [e.value[:120] for e in at.error]
+
+
+def test_깨진_파생본에서_읽는법이_트레이스백을_내지_않는다(monkeypatch):
+    """🔒 읽는 법도 같은 규율이다 — 이 페이지에는 바깥 `try` 가 없어서, 로드가 던지면
+       잡는 곳이 한 군데도 없었다 (이슈 #12 ③).
+
+    🔴 **어디서 걸렸는지까지 본다.** 이 페이지는 뒤에서 `scored()` 로도 같은 예외를
+       잡으므로, 화면만 보면 경계를 지워도 똑같아 보인다(돌연변이 생존). 경계만이
+       메시지에 **읽은 곳**을 붙이므로 그것으로 가른다.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    _from_broken(monkeypatch)
+    at = AppTest.from_function(_howto_page, default_timeout=180)
+    at.run()
+
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    assert any("읽을 수 있는 모양이 아니" in e.value for e in at.error), \
+        [e.value[:120] for e in at.error]
+    assert any("읽은 곳" in m.value and "테스트용" in m.value for m in at.markdown), \
+        "경계가 아니라 뒤쪽 `scored()` 에서 걸렸다 — 로드가 검사를 지나지 않았다"
 
 
 def test_막대_눈금이_결측만_있어도_무너지지_않는다():

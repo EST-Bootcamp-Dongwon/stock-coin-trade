@@ -10,11 +10,28 @@
 그래서 `load_scores()` 는 `(프레임, Source)` 를 돌려주고 화면이 `Source.label` 을
 그대로 보여준다. 🔒 **조용한 폴백이 아니다** — 어디서 읽었는지 화면에 남는다.
 
+## 🔴 `load_scores()` 는 **화면이 읽을 수 있는** 프레임만 돌려준다 (이슈 #12)
+
+계약이 "(프레임, 출처)" 가 아니라 "**화면이 읽을 수 있는** (프레임, 출처)" 다.
+검증이 `view.scored()` **안에만** 있던 동안 페이지마다 보호 수준이 달랐다 —
+랭킹은 읽을 수 없다고 선언한 프레임으로 **이미 캡션에 섹터 수를 단언한 뒤**였고,
+조 페이지는 `ViewError` 를 잡지 않아 팀원이 트레이스백을 봤다.
+
+🔒 **규칙으로 막지 않고 경로를 없앤다.** 검사를 지나지 않은 프레임을 얻는 공개
+   함수가 이제 존재하지 않는다 (AGENTS.md 2장이 `devlee328288` 원격에 쓴 것과 같은 논리).
+
+🔒 **검사는 캐시 밖이다.** 안에서 던지면 예외가 캐시되지 않아 깨진 파생본에서
+   rerun 마다 HF 를 다시 읽는다(캐시가 더워진 뒤 실측 260.6ms · 이슈 #8 주석).
+   밖이면 rerun 당 **1.43ms**(5985행 실측)만 붙고, 무엇보다 **캐시가 돌려준 바로
+   그 사본**을 검사한다 — 판정을 캐시하면 사본이 아니라 원본을 보증하게 된다.
+
 ## 🔒 이 모듈은 **streamlit 을 요구한다**
 
-`load_scores` 가 `st.cache_data` 를 쓴다 (이슈 #2). `dashboard/view.py`·`weights.py` 와 달리
+`_read_scores` 가 `st.cache_data` 를 쓴다 (이슈 #2). `dashboard/view.py`·`weights.py` 와 달리
 화면 없이는 import 되지 않는다 — `sector/`·`batch/`·`dashboard/agent/` 는 이 모듈을
 **쓰지 않으므로** "`sector` 는 Streamlit 에 의존하지 않는다" 는 규율은 그대로다.
+🔒 `view` 를 최상단에서 import 한다 — `view` 는 `dashboard.weights`·`sector.*` 만 알아서
+   순환이 없고, `sector/` 가 `dashboard` 를 모르는 것은 정적 검사가 지킨다.
 
 ## 🔒 시크릿은 `secret_access` 하나로만
 
@@ -34,6 +51,7 @@ from typing import Any
 
 import streamlit as st
 
+from dashboard import view
 from sector.datastore import hub
 from sector.sources.krx_common import repo_root
 
@@ -59,7 +77,7 @@ SCORES_TTL_SECONDS = 300
 #: 🔒 캐시가 **맞으면 아예 지나가지 않는다** — 스피너는 미스 경로에만 있다
 #:    (`cache_utils._get_or_create_cached_value`). 평소 rerun 에는 비용이 0 이다.
 #: 🔒 `True` 가 아니라 **문구**를 준다. `True` 면 Streamlit 이 ``Running
-#:    `load_scores()`.`` 라는 영어 함수 이름을 그린다 — 팀원에게 할 말이 아니다.
+#:    `_read_scores()`.`` 라는 영어 함수 이름을 그린다 — 팀원에게 할 말이 아니다.
 #: 🔒 이것은 **우리가 쓴 글**이라 마크다운으로 나가도 된다. 사람이 입력한 글에
 #:    적용되는 HTML 블록 규율(ADR-SC-0012 ④)의 대상이 아니다.
 SCORES_SPINNER = "점수 표를 읽는 중…"
@@ -129,8 +147,10 @@ def _from_local() -> tuple[Any, Source] | None:
 
 
 @st.cache_data(ttl=SCORES_TTL_SECONDS, show_spinner=SCORES_SPINNER)
-def load_scores() -> tuple[Any, Source]:
-    """점수 표와 그 출처. 🔒 순서가 의도다 — **게시된 것이 먼저다.**
+def _read_scores() -> tuple[Any, Source]:
+    """원천에서 **읽기만** 한다 — 검사는 `load_scores()` 가 캐시 밖에서 한다.
+
+    🔒 순서가 의도다 — **게시된 것이 먼저다.**
 
     로컬이 먼저면 배포 앱에서도 개발용 파일을 보게 되고, 팀원과 내가 다른 숫자를
     보면서 같은 것을 본다고 믿게 된다.
@@ -153,6 +173,26 @@ def load_scores() -> tuple[Any, Source]:
         "  · 배포 환경이라면 — App settings → Secrets 에 `HF_TOKEN_READ` 를 넣는다\n"
         "  · 로컬이라면 — `python -m batch.build_scores` 를 먼저 돌린다"
     )
+
+
+def load_scores() -> tuple[Any, Source]:
+    """점수 표와 그 출처 — **화면이 읽을 수 있음이 보증된다** (이슈 #12).
+
+    🔴 못 읽는 것과 **읽었는데 깨진 것**은 다른 예외다. 앞은 `DataUnavailable`
+       ("아직 만들지 않았다" → `build_scores` 를 돌려라), 뒤는 `view.ViewError`
+       ("만들었는데 모양이 틀렸다" → 다시 만들어라). 두 행동이 다르므로 한 예외로
+       뭉치지 않는다 — AGENTS.md 의 "못 붙는 것과 잘못 붙는 것은 다르게 다뤄야
+       한다" 와 같은 모양이다.
+
+    🔒 `origin` 으로 **어디서 읽었는지**를 함께 던진다. 그것이 곧 "무엇을 다시
+       만들어야 하나" 다 — HF 게시본이면 다시 게시해야 하고 로컬이면 배치를
+       다시 돌려야 한다. 출처를 빼면 화면은 "다시 만들어라" 고만 말한다.
+    """
+    frame, source = _read_scores()
+    # 🔒 `detail` 은 기본값이 빈 문자열이다 — 없으면 빈 괄호를 남기지 않는다
+    origin = f"{source.label} ({source.detail})" if source.detail else source.label
+    view.check_frame(frame, origin=origin)
+    return frame, source
 
 
 def load_sectors() -> Any:

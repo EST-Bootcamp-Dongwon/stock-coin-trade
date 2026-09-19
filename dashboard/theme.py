@@ -40,13 +40,20 @@ import streamlit as st
 
 from sector.workspace.links import display_link
 
-__all__ = ["DATA_SOURCE", "DISCLAIMER", "setup", "header", "footer", "panel", "missing",
-           "esc", "html_line", "user_block", "links_block", "failure"]
+__all__ = ["BROKEN_SCORES", "DATA_SOURCE", "DISCLAIMER", "setup", "header", "footer",
+           "panel", "missing", "esc", "html_line", "user_block", "links_block", "failure"]
 
 #: 🔒 약관이 정한 **의무 문자열**이다. 글자를 바꾸지 않는다.
 #:    ("KRX 통계정보" · "출처: 한국거래소" 는 저장소 문서와 어긋난다)
 DATA_SOURCE = "한국거래소 통계정보"
 DISCLAIMER = "🔴 **과거 데이터의 요약이다. 투자 권유가 아니다.**"
+
+#: 깨진 파생본을 만난 **모든 화면이 같은 말을 한다** (이슈 #12).
+#: 🔒 **코드가 쓴 글**이다 — 사람이 입력한 글이 아니므로 `st.error` 로 나가도 된다.
+#:    예외 내용은 `failure()` 가 escape 한 HTML 블록으로 따로 그린다 (ADR-SC-0012 ④).
+#: 🔴 페이지마다 따로 적지 않는다. 검증이 `scored()` 안에만 있던 동안 페이지마다
+#:    **보호 수준이 달랐고**, 문장을 각자 들고 있으면 그 상태가 눈에 띄지 않는다.
+BROKEN_SCORES = "점수 표가 화면이 읽을 수 있는 모양이 아니다 — 파생본을 다시 만들어야 한다."
 
 MISSING = "—"
 

@@ -183,14 +183,9 @@ def render() -> None:
         # 🔴 **던지기만 하고 잡지 않으면 팀원 7명이 파이썬 트레이스백을 본다.**
         #    `client.showErrorDetails` 가 기본 `full` 이라 스택까지 그려진다(실측).
         #    🔒 여기서 가짜 표를 그리지 않는다 — 무엇이 잘못됐는지 말하고 끝낸다
-        theme.failure(_BROKEN_FRAME, exc)
+        theme.failure(theme.BROKEN_SCORES, exc)
     finally:
         theme.footer(source_label)
-
-
-#: 🔒 **코드가 쓴 글**이다 — 사람이 입력한 글이 아니므로 `st.error` 로 나가도 된다.
-#:    예외 내용은 `theme.failure` 가 escape 한 HTML 블록으로 따로 그린다 (ADR-SC-0012 ④)
-_BROKEN_FRAME = "점수 표가 화면이 읽을 수 있는 모양이 아니다 — 파생본을 다시 만들어야 한다."
 
 
 # ── 공유 링크 ───────────────────────────────────────────────────────────────

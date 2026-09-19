@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from dashboard import data, session, team_actions, theme
+from dashboard import data, session, team_actions, theme, view
 from sector.workspace import auth, events, fold
 
 
@@ -140,11 +140,28 @@ def _render_current(store, workspace: fold.Workspace) -> None:
 
 
 def _scores():
-    """점수 표. 🔒 못 읽어도 조 화면은 산다 — 근거 칸만 빠진다."""
+    """점수 표. 🔒 못 읽어도 조 화면은 산다 — 근거 칸만 빠진다.
+
+    🔴 **왜 여기서 그리는가** — 못 읽으면 `render_team_core` 가 «이 섹터의 근거» 를
+       통째로 건너뛴다. 조용히 빼면 팀원은 칸이 사라진 이유를 알 수 없다
+       (ADR-SC-0007 — 조용한 폴백을 하지 않는다). 그래서 이 함수는 값을 돌려주는
+       김에 **이유를 한 줄 그린다.** 인자로 평가되므로 그 자리에 바로 나온다.
+
+    🔴 `ViewError` 를 잡는 것이 이 함수의 **원래 빠진 조각**이었다 (이슈 #12).
+       `load_scores` 가 경계에서 검사하게 되면서 깨진 파생본이 여기로 올라오는데,
+       잡지 않으면 조 페이지가 통째로 트레이스백이 된다. 그 피해는 근거 칸에
+       그치지 않는다 — `_scores()` 는 확정 여부를 보기 **전에** 불리므로 참가·보관·
+       기록까지 함께 사라진다.
+    """
     try:
         frame, _ = data.load_scores()
         return frame
     except data.DataUnavailable:
+        st.markdown("<div class='sc-muted'>점수 표를 아직 읽을 수 없어 «이 섹터의 근거» 칸은 "
+                    "빠진다. 조 기록은 그대로 쓸 수 있다.</div>", unsafe_allow_html=True)
+        return None
+    except view.ViewError as exc:
+        theme.failure(theme.BROKEN_SCORES, exc)
         return None
 
 

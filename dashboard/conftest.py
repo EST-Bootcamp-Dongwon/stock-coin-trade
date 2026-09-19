@@ -29,10 +29,16 @@ def _clear_score_cache():
     만든 합성 프레임(27행) 대신 앞 테스트의 실데이터(5985행)를 받았다(적대적 리뷰).
 
     🔒 규율을 **테스트마다 기억하는 것**에서 **장치가 지키는 것**으로 옮긴다.
+
+    🔴 **캐시 함수를 이름으로 직접 잡는다.** 예전에는 `getattr(..., lambda: None)` 로
+       받았는데, `load_scores` 가 검사 래퍼가 되자(이슈 #12) 그 기본값이 조용히
+       이겨서 **비우는 일이 아예 일어나지 않았다.** 그러고도 대부분 통과했고 6건만
+       앞 테스트의 실데이터(5985행)를 받아 엉뚱하게 실패했다 — 이 픽스처가 막으려던
+       바로 그 실패다. 없는 속성은 **시끄럽게** 터지는 편이 낫다.
     """
     from dashboard import data
 
-    clear = getattr(data.load_scores, "clear", lambda: None)
+    clear = data._read_scores.clear
     clear()
     yield
     clear()

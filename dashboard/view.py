@@ -23,7 +23,7 @@ from sector.scoring import AXES, PRESETS, rank_scores, scoring_axes, weighted_sc
 
 __all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "SCORE_AXES_COLUMN",
            "UNCLASSIFIED", "Names", "ViewError",
-           "latest_frame", "scored", "rank_stability", "stability_window",
+           "check_frame", "latest_frame", "scored", "rank_stability", "stability_window",
            "sector_story", "podium", "score_bars", "arithmetic_table",
            "ranking_table", "axis_breakdown", "gics_options", "visible_ids",
            "gics_distribution", "int_or_none"]
@@ -121,7 +121,40 @@ _RANK_COLUMNS = ("rank_balanced", "rank_momentum", "rank_contrarian")
 _KEY_COLUMNS = ("bas_dd", "sector_id")
 
 
-def _check_frame(frame: Any) -> None:
+#: 부분 프레임 진단의 **꼬리는 읽는 사람에 따라 다르다** (이슈 #12).
+#: 🔴 `scored()` 에 거른 프레임을 넘긴 것은 **개발자**이지만, 데이터 경계에서 걸린 것은
+#:    **팀원 7명이 본다** — 그들은 아무 프레임도 "넘기지" 않았다. 같은 문장을 두 곳에
+#:    쓰면 한쪽에서 반드시 거짓말이 된다.
+_CALLER_HINT = " — 거르지 않은 전체 프레임을 넘겨야 한다"
+_STORE_HINT = " — 파생본을 다시 만들어야 한다"
+
+
+def check_frame(frame: Any, *, origin: str = "") -> None:
+    """화면이 읽을 수 있는 프레임인가 — **계약을 지키는 유일한 문.**
+
+    `scored()` 가 부르고, `dashboard/data.py` 가 **데이터 경계**에서도 부른다
+    (이슈 #12). 두 자리의 차이는 `origin` 하나다.
+
+    ## 🔒 `origin` — 프레임을 **읽어 온 곳**(사람이 읽을 한 줄)
+
+    주면 두 가지가 바뀐다 — ① 부분 프레임 진단의 꼬리가 개발자용에서 운영용으로
+    바뀌고(`_CALLER_HINT` 머리주석) ② 실패 메시지에 **읽은 곳이 붙는다.**
+
+    🔴 ②가 없으면 화면은 "파생본을 다시 만들어야 한다" 고만 말하고 **어느 파생본인지
+       말하지 않는다.** HF 게시본이면 다시 게시해야 하고 로컬이면 `build_scores` 를
+       다시 돌려야 하는데, 그 둘은 다른 행동이다. `data.py` 머리주석이 값과 출처를
+       함께 돌려주는 이유가 그대로 실패 경로에도 적용된다.
+    """
+    try:
+        _check_frame(frame, hint=_STORE_HINT if origin else _CALLER_HINT)
+    except ViewError as exc:
+        if not origin:
+            raise
+        # 🔒 `theme.failure` 가 escape 한 HTML 블록으로 그린다 (ADR-SC-0012 ④)
+        raise ViewError(f"{exc}\n읽은 곳 — {origin}") from exc
+
+
+def _check_frame(frame: Any, *, hint: str = _CALLER_HINT) -> None:
     """`scored()` 의 입력 계약을 **입구 한 곳에서** 지킨다 (이슈 #7 · #9).
 
     ## 🔒 순서가 계약의 일부다
@@ -196,10 +229,10 @@ def _check_frame(frame: Any) -> None:
                         f"{', '.join(absent[:5])}")
 
     # ⑥ 완전성 — 부분 프레임을 거절한다 (이슈 #7)
-    _check_whole(frame)
+    _check_whole(frame, hint=hint)
 
 
-def _check_whole(frame: Any) -> None:
+def _check_whole(frame: Any, *, hint: str = _CALLER_HINT) -> None:
     """날짜별 저장 순위가 **조밀한 1..k** 인가 — 부분 프레임이면 깨진다.
 
     🔴 이것은 휴리스틱이 아니라 **게시 계약의 재확인**이다. `rank_scores` 가 점수 있는
@@ -250,8 +283,8 @@ def _check_whole(frame: Any) -> None:
             #    백틱·별표가 **글자 그대로** 팀원 화면에 나온다(ADR-SC-0012 ④ 경로)
             raise ViewError(
                 f"{day} 의 {column} 이 1..{count[broken[0]]} 로 이어지지 않는다"
-                f"(최대 {top[broken[0]]}). 섹터로 거른 부분 프레임이거나 순위가 손상됐다 "
-                f"— 거르지 않은 전체 프레임을 넘겨야 한다")
+                f"(최대 {top[broken[0]]}). 섹터로 거른 부분 프레임이거나 순위가 손상됐다"
+                f"{hint}")
 
         # ③ 유일성 — 🔒 ② 만으로는 `{4,4,1,1}` 이 1..4 를 흉내 낸다(개수 4 · 최댓값 4).
         #    🔒 `np.unique` 로 정렬하지 않는다 — (날짜, 순위)를 정수 하나로 접어 **세면**
@@ -295,7 +328,8 @@ def scored(frame: Any, weighting: Weighting) -> Any:
     import pandas as pd
 
     # 🔒 **두 경로 공통이다.** 계약이 하나이므로 검사도 한 곳이다 (이슈 #7 · #9)
-    _check_frame(frame)
+    # 🔒 `origin` 을 주지 않는다 — 여기 걸리는 프레임은 **호출자가 넘긴 것**이다
+    check_frame(frame)
 
     out = frame.copy()
     axes_n = pd.array(_axes_used_n(frame, weighting.weights), dtype="Int64")
