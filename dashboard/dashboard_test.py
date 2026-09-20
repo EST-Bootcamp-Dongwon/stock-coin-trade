@@ -30,9 +30,15 @@ DAYS = [f"2026090{i}" for i in range(1, 10)]
 #:    나와, "프리셋은 저장 열을 읽는다"(ADR-SC-0014 ③) 같은 계약이 픽스처 위에서 **참으로
 #:    고정되지 않는다.** 적대적 리뷰가 돌연변이로 그것을 보였다 — `scored()` 의 프리셋
 #:    분기를 통째로 지워도 테스트가 한 건도 안 깨졌다.
-#: 🔒 100 의 배수로 둔다. `w·z/100` 이 정수로 떨어져 기여의 합이 총점과 **정확히** 같아진다
-#:    (`test_기여도_합이_점수와_같다` 가 그것을 고정한다).
-_AXIS_OFFSET = {"m": 0, "f": 1200, "b": -800, "v": 300}
+#: 🔴 **100 의 배수로 두지 않는다.** 옛 주석은 정반대를 말했다 — 「100 의 배수로 둔다.
+#:    `w·z/100` 이 정수로 떨어져 기여의 합이 총점과 **정확히** 같아진다」. 그래서 잔차가
+#:    **구조적으로 0** 이었고, 그 위에서 「합계 = 총점」을 고정했다. 실데이터에서는
+#:    16,758 (행×프리셋) 중 5,276건(31.5%)이 어긋난다 — 픽스처가 성질을 참으로 만들어
+#:    놓고 그 위에 계약을 세운 것이다 (이슈 #13 §4.1).
+#: 🔒 실측 — 이 값으로 바꾸면 `pytest dashboard` 556건 중 **1건만** 깨진다(그 1건이
+#:    고쳐 쓴 `test_산수표의_…` 다). 순위는 세 프리셋 모두 그대로이고 점수만
+#:    +15/+9/+23 bp 상수로 옮겨간다.
+_AXIS_OFFSET = {"m": 0, "f": 1237, "b": -813, "v": 341}
 
 
 def frame(n_sectors: int = 3, *, diverging: bool = False) -> pd.DataFrame:
@@ -90,6 +96,61 @@ def scored(n_sectors: int = 3, weighting: weights.Weighting = BALANCED) -> pd.Da
     return view.scored(frame(n_sectors), weighting)
 
 
+def frame_with_z(z_of: dict[str, dict[str, int | None]]) -> pd.DataFrame:
+    """최신일의 z 를 지정하고 저장 열을 **배치 함수로 다시 채운** 프레임.
+
+    🔒 여전히 «게시 게이트를 통과하는 유효한 게시본» 이다 — `score_*_bp`·`rank_*` 를
+       손으로 적으면 픽스처가 스스로 모순되고, 그 위에서 고정한 계약은 아무것도
+       보장하지 않는다 (`frame` 머리주석과 같은 규율).
+
+    🔴 이것이 필요한 이유 — `_AXIS_OFFSET` 만 바꿔서는 잔차가 **±1 에서 멈추고 세
+       섹터가 전부 같은 값**이다(축 오프셋이 가중평균되어 섹터마다 상수로 들어간다).
+       그래서 `bound` 공식을 한 번도 건드리지 못한다. 축 수가 1·2·3 인 행과 `|r|=2`
+       인 행을 **명시적으로** 만들어야 검사가 공허해지지 않는다.
+    """
+    out = frame(len(z_of))
+    # 🔒 **모르는 섹터 id 를 조용히 흘려보내지 않는다.** 마스크가 전부 False 면 아무것도
+    #    안 쓰이고 예외도 안 나서, 「`|r|=2` 인 행을 만들었다」고 믿는 테스트가 옛 프레임
+    #    위에서 돈다 — `or 1` 을 지운 것과 같은 종류다 (적대적 구현 리뷰 ⑦)
+    assert set(z_of) == set(out["sector_id"].unique()), sorted(z_of)
+
+    z_columns = [f"{a.lower()}_z_bp" for a in AXES]
+    raw_columns = [f"{a.lower()}_raw_bp" for a in AXES]
+    for column in z_columns + raw_columns + [f"score_{name}_bp" for name in PRESETS] \
+            + [f"rank_{name}" for name in PRESETS] + ["n_axes_used"]:
+        out[column] = out[column].astype("Int64")
+
+    last = out["bas_dd"] == out["bas_dd"].max()
+    for sector_id, z in z_of.items():
+        where = last & (out["sector_id"] == sector_id)
+        for axis in AXES:
+            out.loc[where, f"{axis.lower()}_z_bp"] = pd.NA if z[axis] is None else z[axis]
+            # 🔒 **원시값도 함께 비운다.** z 만 비우면 ①원시값과 ②σ 가 서로 다른 세계의
+            #    수가 되고, 읽는 법 화면은 그 두 패널을 나란히 그린다
+            if z[axis] is None:
+                out.loc[where, f"{axis.lower()}_raw_bp"] = pd.NA
+        out.loc[where, "n_axes_used"] = sum(1 for a in AXES if z[a] is not None)
+        # 🔒 **구분자가 없다.** 게시 계약은 `"".join` 이고 실데이터도 `'MFV'` 다
+        #    (`gate._check_score_axes_consistent`). `","` 로 쓰면 픽스처가 게시 계약을
+        #    어긴 채 새 계약을 고정하게 된다 (적대적 구현 리뷰 ②)
+        out.loc[where, "axes_missing"] = "".join(a for a in AXES if z[a] is None)
+        out.loc[where, "is_partial"] = any(z[a] is None for a in AXES)
+
+    for name, weighting in PRESETS.items():
+        scores = {sid: weighted_score_bp(z, weighting) for sid, z in z_of.items()}
+        ranks = rank_scores(scores)
+        for sector_id in z_of:
+            where = last & (out["sector_id"] == sector_id)
+            out.loc[where, f"score_{name}_bp"] = scores[sector_id]
+            out.loc[where, f"rank_{name}"] = ranks[sector_id]
+    return out
+
+
+#: 🔒 `|잔차| = 2` 가 실제로 나는 z 한 벌 (균형 프리셋). 합성 값이다 — 실제 KRX
+#:    데이터를 픽스처로 쓰지 않는다 (AGENTS.md 5장). 무작위 탐색으로 찾았다.
+_RESIDUAL_2 = {"M": -21853, "F": -9245, "B": 7127, "V": -9924}
+
+
 #: 결측으로 만들 열. 🔒 **z 와 원시값까지** 비운다 — 점수만 비우면 축 분해가 값을 갖고
 #:    있어 "점수는 없는데 근거는 있다" 는, 실제로는 나올 수 없는 모양이 된다
 _BLANK_COLUMNS = (["m_z_bp", "f_z_bp", "b_z_bp", "v_z_bp",
@@ -124,7 +185,9 @@ def blank_latest(n_sectors: int = 3, *, blanks: int | None = None) -> pd.DataFra
     for column in _BLANK_COLUMNS:
         out.loc[mask, column] = pd.NA
     out.loc[mask, "n_axes_used"] = 0
-    out.loc[mask, "axes_missing"] = ",".join(AXES)
+    # 🔒 게시 계약은 구분자 없는 `"".join` 이다 — 실데이터도 `'MFV'` 다. 옛 `","` 는
+    #    `gate._check_score_axes_consistent` 가 거절한다 (적대적 구현 리뷰 ②)
+    out.loc[mask, "axes_missing"] = "".join(AXES)
     out.loc[mask, "is_partial"] = True
     # 🔒 유동성도 **판정 불가**다 — 창이 안 찼으면 거래대금 평균도 못 낸다
     out.loc[mask, "liquidity_ok"] = pd.NA
@@ -158,21 +221,221 @@ def test_이력이_짧은_섹터는_평균을_내지_않는다():
     assert stability.loc["sec_1", "rank_mean"] == stability.loc["sec_1", "rank_mean"]
 
 
-def test_기여도_합이_점수와_같다():
-    """🔴 축 분해가 게시된 점수와 맞물린다 — '왜 1위인가' 의 근거가 흔들리지 않는다.
+def test_기여합과_총점의_차이가_반올림_한도_안이다():
+    """🔴 **「같다」가 아니다.** 총점은 한 번, 기여는 축마다 반올림하므로 세로 합은
+    총점과 최대 `⌊(n+1)/2⌋` bp 어긋난다 (이슈 #13 · `view._residual_bound`).
 
     🔒 **`or 0` 으로 접지 않는다.** `None`(점수에 안 들어간 축)과 `0`(들어갔는데 0 을
        보탠 축)을 한 칸으로 눙치면, 기여를 `0 → None` 으로 바꾸는 변경이 이 테스트를
-       **한 글자도 못 깨뜨린다**(이슈 #15 적대적 리뷰). 몇 개가 `None` 이었는지도 센다.
+       **한 글자도 못 깨뜨린다**(이슈 #15 적대적 리뷰).
     """
     data = frame()
+    latest = view.latest_frame(data).set_index("sector_id")
     for sector_id in data["sector_id"].unique():
         parts = view.axis_breakdown(data, sector_id, weights=PRESETS["balanced"])
         live = [p["contribution_bp"] for p in parts if p["contribution_bp"] is not None]
         assert len(live) == len(AXES), (sector_id, "균형 프리셋은 네 축이 다 산다")
-        score = int(view.latest_frame(data).set_index("sector_id")
-                    .loc[sector_id, "score_balanced_bp"])
-        assert abs(sum(live) - score) <= 1, sector_id    # bp 반올림 1 까지 허용
+        score = int(latest.loc[sector_id, "score_balanced_bp"])
+        assert abs(score - sum(live)) <= view._residual_bound(len(live)), sector_id
+
+
+def test_근거_패널이_잔차를_말한다(ledger, monkeypatch):
+    """🔴 **팀이 매일 쓰는 화면은 랭킹이다.** 읽는 법에만 잔차를 적으면, 축별 기여를
+    나란히 보여주면서 그 합이 총점과 다르다는 것을 말하지 않는 화면이 남는다 —
+    실데이터 최신일만 봐도 균형 6/21 섹터가 어긋난다 (적대적 구현 리뷰 ③).
+    """
+    from dashboard import data as _data
+
+    monkeypatch.setattr(_data, "_from_hf", lambda: None)
+    monkeypatch.setattr(_data, "_from_local",
+                        lambda: (frame(), _data.Source(kind="local", label="테스트용")))
+    _data._read_scores.clear()
+
+    at = _run(_ranking_page, ledger)
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    body = _markdown(at)
+    assert "축마다 bp 로 반올림하므로 최대" in body, body[-600:]
+
+
+def test_픽스처가_게시_게이트를_지난다():
+    """🔒 픽스처는 «있을 수 있는 게시본» 이어야 한다 — 주석으로 적어 두면 지켜지지 않는다.
+
+    🔴 실증: `frame_with_z` 머리주석이 「유효한 게시본이다」라고 단언하면서 `axes_missing`
+       을 `","` 로 이어 붙였다. 게시 계약은 **구분자 없는 `"".join`** 이고(실데이터도
+       `'MFV'`), 그 위반을 **아무 테스트도 못 잡았다.** 기존 `blank_latest` 도 같은
+       위반을 갖고 있었다 (적대적 구현 리뷰 ②). 계약을 글이 아니라 **장치**로 만든다.
+    """
+    from sector.datastore import gate
+
+    single = {"M": 12000, "F": None, "B": None, "V": None}
+    cases = {
+        "frame": frame(),
+        "blank_latest": blank_latest(),
+        "frame_with_z(|r|=2)": frame_with_z({
+            "sec_0": dict(_RESIDUAL_2),
+            "sec_1": {a: v + 1 for a, v in _RESIDUAL_2.items()},
+            "sec_2": {a: v - 1 for a, v in _RESIDUAL_2.items()}}),
+        "frame_with_z(n=1)": frame_with_z({
+            "sec_0": dict(single),
+            "sec_1": {a: (None if v is None else v - 3000) for a, v in single.items()},
+            "sec_2": {a: (None if v is None else v + 3000) for a, v in single.items()}}),
+    }
+    for label, data in cases.items():
+        as_of = str(data["bas_dd"].max())
+        for check in (gate._check_score_axes_consistent,
+                      gate._check_score_rank_consistent,
+                      gate._check_score_reproducible):
+            assert check(None, None, data, as_of) == [], (label, check.__name__)
+
+
+def test_축이_하나인_행은_반올림으로_어긋날_자리가_없다():
+    """🔒 `n=1` 을 **프레임에서** 밟는다 — `_arithmetic` 에 손으로 만든 dict 를 넘기면
+    `axis_breakdown` → `sector_story` 경로가 한 번도 검사되지 않는다.
+    """
+    single = {"M": 12000, "F": None, "B": None, "V": None}
+    data = frame_with_z({
+        "sec_0": dict(single),
+        "sec_1": {a: (None if v is None else v - 3000) for a, v in single.items()},
+        "sec_2": {a: (None if v is None else v + 3000) for a, v in single.items()}})
+    story = view.sector_story(data, "sec_0")
+
+    assert story["arithmetic"].bound_bp == 0
+    assert story["arithmetic"].residual_bp == 0 and story["arithmetic"].explained
+    assert "축이 하나뿐이라 반올림으로 어긋날 자리가 없다." in \
+        explain.arithmetic_text(story["arithmetic"])
+
+
+def test_반올림_한도는_축_수가_정한다():
+    """🔒 `|Σc − total| ≤ (n+1)/2` — 축마다 ½, 총점에서 ½ (`ROUND_HALF_EVEN`).
+
+    🔴 **`n ≤ 1` 은 0 이다.** 축이 하나면 분모 `W = w` 라 기여 `= z` 이고 총점도 `z` 라
+       두 반올림이 같은 자리에서 일어난다(실측 60,004 사례 전수 잔차 0).
+       `⌊(n+1)/2⌋` 을 그대로 쓰면 단일 축에서 **±1 오염을 «설명됨» 으로 통과시킨다.**
+    """
+    assert [view._residual_bound(n) for n in range(5)] == [0, 0, 1, 2, 2]
+
+
+def test_축이_하나면_잔차_1은_설명되지_않는다():
+    """🔴 이 경로는 실재한다 — 실데이터에 `n=1` 인 행이 53행(`axes_missing='MFV'`)
+    있고, `F` 단독 커스텀 가중치에서는 5,464행이 그렇다.
+    """
+    single = view._arithmetic([{"axis": "M", "contribution_bp": 500},
+                               {"axis": "F", "contribution_bp": None},
+                               {"axis": "B", "contribution_bp": None},
+                               {"axis": "V", "contribution_bp": None}], 501)
+    assert single.bound_bp == 0 and single.residual_bp == 1
+    assert single.explained is False
+    assert "한도(±0 bp)를 넘는다" in explain.arithmetic_text(single)
+
+
+def test_잔차가_2인_행도_설명된다():
+    """🔒 `bound(4) = 2` 를 실제로 건드린다 — 오프셋만 바꾼 픽스처는 `|r| = 1` 에서
+    멈춰서 `bound` 를 2 에서 1 로 바꾸는 돌연변이를 잡지 못한다.
+    """
+    ids = ["sec_0", "sec_1", "sec_2"]
+    z_of = {sid: dict(_RESIDUAL_2) for sid in ids}
+    z_of["sec_1"] = {a: v + 1 for a, v in _RESIDUAL_2.items()}
+    z_of["sec_2"] = {a: v - 1 for a, v in _RESIDUAL_2.items()}
+    story = view.sector_story(frame_with_z(z_of), "sec_0")
+
+    assert story["arithmetic"].residual_bp == 2, story["arithmetic"]
+    assert story["arithmetic"].bound_bp == 2
+    assert story["arithmetic"].explained is True
+
+
+def test_축이_하나도_안_들어갔는데_총점이_있으면_말한다():
+    """🔒 0 으로 눙치지 않는다 — 총점 **전체**가 설명되지 않는 상태다."""
+    empty = view._arithmetic([{"axis": a, "contribution_bp": None} for a in AXES], 500)
+    assert empty.parts_sum_bp is None and empty.residual_bp == 500
+    assert empty.explained is False
+    assert "점수에 들어간 축이 하나도 없는데" in explain.arithmetic_text(empty)
+
+
+def test_합계_문장이_같은_단위로_나란히_적는다():
+    """🔴 옛 문장은 `합계 +12522 bp = 총점 +1.25σ` 였다 — 왼쪽은 bp, 오른쪽은 σ 라
+    **눈으로 검산할 수 있는 등식이 아니었다.** 그리고 등호 자체가 31.5% 에서 거짓이다.
+
+    🔒 골든이다 — 문구가 바뀌면 `git diff` 로 보여야 한다 (`explain` 머리주석).
+    """
+    zero = view._arithmetic([{"axis": a, "contribution_bp": c}
+                             for a, c in zip(AXES, (5000, 3000, 2000, 2522))], 12522)
+    assert explain.arithmetic_text(zero) == (
+        "합계 **+12522 bp** · 총점 **+12522 bp** (**+1.25σ**) — 차이 **없다**. "
+        "축마다 bp 로 반올림하므로 최대 **±2 bp** 까지 어긋난다."
+    )
+    off = view._arithmetic([{"axis": a, "contribution_bp": c}
+                            for a, c in zip(AXES, (5000, 3000, 2000, 2522))], 12523)
+    assert explain.arithmetic_text(off) == (
+        "합계 **+12522 bp** · 총점 **+12523 bp** (**+1.25σ**) — 차이 **+1 bp**. "
+        "축마다 bp 로 반올림하므로 최대 **±2 bp** 까지 어긋난다."
+    )
+    broken = view._arithmetic([{"axis": a, "contribution_bp": c}
+                               for a, c in zip(AXES, (5000, 3000, 2000, 2522))], 12526)
+    assert explain.arithmetic_text(broken) == (
+        "합계 **+12522 bp** · 총점 **+12526 bp** (**+1.25σ**) — 차이 **+4 bp** 는 "
+        "반올림으로 설명되는 한도(±2 bp)를 넘는다. 게시된 총점이 게시된 σ 로 "
+        "재현되지 않는다 — 파생본을 다시 만들어야 한다."
+    )
+    # 🔒 **같은 단위로 두 번** 적는다 — 이 한 줄이 옛 회귀(bp = σ)를 막는다
+    for text in (explain.arithmetic_text(zero), explain.arithmetic_text(off)):
+        assert text.count("bp**") >= 2, text
+
+    # 🔴 나머지 두 갈래도 골든이다 — 없으면 문구를 지우는 돌연변이가 산다
+    #    (적대적 구현 리뷰 ④ — 골든 3경우가 전부 n=4·총점 있음이었다)
+    single = view._arithmetic([{"axis": "M", "contribution_bp": 500}]
+                              + [{"axis": a, "contribution_bp": None} for a in "FBV"], 500)
+    assert explain.arithmetic_text(single) == (
+        "합계 **+500 bp** · 총점 **+500 bp** (**+0.05σ**) — 차이 **없다**. "
+        "축이 하나뿐이라 반올림으로 어긋날 자리가 없다."
+    )
+    nothing = view._arithmetic([{"axis": a, "contribution_bp": 1} for a in AXES], None)
+    assert explain.arithmetic_text(nothing) == "총점이 없어 ④ 열의 합을 맞춰 볼 수 없다."
+    assert nothing.explained is True, "총점이 없는 것은 «설명 안 됨» 이 아니다"
+
+
+def test_더한_것이_없는데_총점이_있으면_깃발과_문장이_같은_말을_한다():
+    """🔴 옛 구현은 `abs(residual) <= bound` 에 맡겨서, 총점이 마침 **0** 인 날
+    깃발은 «설명됨», 문장은 «재현되지 않는다» 로 **갈렸다** (적대적 구현 리뷰 ⑥).
+    `narrative` 가 바로 이 깃발로 문장을 여닫으므로 경계가 두 벌이면 화면이 모순된다.
+    """
+    for total in (0, 500, -500):
+        nothing = view._arithmetic(
+            [{"axis": a, "contribution_bp": None} for a in AXES], total)
+        assert nothing.explained is False, total
+        assert "점수에 들어간 축이 하나도 없는데" in explain.arithmetic_text(nothing)
+
+
+def test_총점이_설명되지_않으면_끌어올린_축을_말하지_않는다():
+    """🔴 「이 축 하나가 총점에 +N 만큼 보탰다」는 기여를 **총점에 빗대어** 말한다.
+    총점이 기여의 합으로 설명되지 않는 상태에서는 근거가 없다 — 열어 두면 같은
+    화면이 스스로 모순된다 (이슈 #13 적대적 설계 리뷰).
+    """
+    data = frame()
+    story = view.sector_story(data, "sec_2", names=KOREAN)
+    assert story["arithmetic"].explained is True
+    assert any("보탰다" in line for line in explain.narrative(**story))
+
+    broken = dict(story, arithmetic=view.Arithmetic(
+        parts_sum_bp=story["arithmetic"].parts_sum_bp, total_bp=story["score_bp"],
+        residual_bp=99, bound_bp=2, explained=False))
+    lines = explain.narrative(**broken)
+    assert not any("보탰다" in line or "깎았다" in line for line in lines), lines
+    assert any("총점을 설명하지 못한다" in line for line in lines), lines
+
+
+def test_픽스처가_잔차를_실제로_낸다():
+    """🔴 **이 테스트가 없으면 위 단언이 공허해진다.** 옛 픽스처는 z 가 100 의 배수라
+    잔차가 구조적으로 0 이었고, 그 위에서 「합계 = 총점」을 고정했다 (이슈 #13 §4.1).
+    """
+    data = frame()
+    latest = view.latest_frame(data).set_index("sector_id")
+    off = 0
+    for name, weighting in PRESETS.items():
+        for sector_id in data["sector_id"].unique():
+            parts = view.axis_breakdown(data, sector_id, weights=weighting)
+            live = [p["contribution_bp"] for p in parts if p["contribution_bp"] is not None]
+            off += int(latest.loc[sector_id, f"score_{name}_bp"]) != sum(live)
+    assert off >= 1, "픽스처에 잔차≠0 인 (섹터×프리셋) 조합이 하나도 없다"
 
 
 def test_결측축은_기여가_0이_아니라_없음이다():
@@ -277,28 +540,41 @@ def test_기여축은_scoring_axes_와_한_글자도_다르지_않다():
             assert got == expected, (sector_id, weighting.weights)
 
 
-def test_guard_의_기여_판정이_scoring_axes_와_같다():
+def test_guard_의_기여_판정이_scoring_axes_와_같다(monkeypatch):
     """🔒 `guard._derived("contrib")` 는 **원천에서 칸을 따로 읽는다**(입력의 독립).
     그러나 「어느 축이 점수에 들어갔나」는 규칙이라 정본이 하나여야 한다.
 
-    🔴 이 경로는 프리셋 전용이라 **행동으로는 잡을 수 없다** — 네 프리셋에 0 인 축이
-       없기 때문이다. 그래서 행동이 아니라 **규칙 동치**를 건다. 행동 테스트를 만들 수
-       있는 척하지 않는다.
+    🔴 **옛 판단이 틀렸다.** 처음에는 "프리셋 전용이라 행동으로는 잡을 수 없다" 며
+       `inspect.getsource` 문자열을 봤는데, 그러면 `scoring_axes` 를 부르고 **결과를
+       버리는** 돌연변이가 그대로 통과한다(적대적 구현 리뷰 ①). `PRESETS` 는 guard 의
+       모듈 이름공간에 있으므로 **0 가중치 프리셋을 넣으면 행동을 직접 밟는다.**
     """
-    import inspect
+    from fractions import Fraction
+
     from dashboard.agent import guard
 
-    source = inspect.getsource(guard._derived)
-    assert "scoring_axes(zs, weights)" in source, "guard 가 규칙을 손으로 다시 적고 있다"
-    assert "or 1" not in source, "조용한 기본값이 분모를 눙친다"
+    only_m = {"M": 100, "F": 0, "B": 0, "V": 0}
+    monkeypatch.setitem(guard.PRESETS, "onlym", only_m)
 
-    for w in ({"M": 100, "F": 0, "B": 0, "V": 0}, {"M": 35, "F": 30, "B": 20, "V": 15},
-              {"M": 0, "F": 0, "B": 0, "V": 7}):
-        for zs in ({"M": 100, "F": 200, "B": None, "V": 300},
-                   {"M": None, "F": None, "B": None, "V": None},
-                   {"M": 0, "F": 0, "B": 0, "V": 0}):
-            live = scoring_axes(zs, w)
-            assert all((a in live) == (zs[a] is not None and w[a] > 0) for a in AXES)
+    data = frame()
+    latest = view.latest_frame(data).set_index("sector_id")
+    as_of = str(data["bas_dd"].max())
+    brief = type("B", (), {"sector_id": "sec_2", "as_of": as_of})()
+    source = guard._Source(data, brief, None, None, None)
+    item = type("E", (), {"as_of": as_of})()
+
+    z = {a: int(latest.loc["sec_2", f"{a.lower()}_z_bp"]) for a in AXES}
+    assert guard._derived(item, ["contrib", "onlym", "M"], source) == \
+        round(Fraction(z["M"] * 100, 100))
+    for axis in ("F", "B", "V"):
+        assert guard._derived(item, ["contrib", "onlym", axis], source) is None, axis
+
+    # 🔒 프리셋에서는 `view.axis_breakdown` 과 **글자 그대로** 같은 답이어야 한다
+    parts = {p["axis"]: p for p in
+             view.axis_breakdown(data, "sec_2", weights=PRESETS["balanced"])}
+    for axis in AXES:
+        assert guard._derived(item, ["contrib", "balanced", axis], source) == \
+            parts[axis]["contribution_bp"], axis
 
 
 @pytest.mark.parametrize("profile", list(PRESETS))
@@ -478,12 +754,24 @@ def test_서술_재료가_서술_함수에_그대로_들어간다():
     assert "앞으로 오른다는 뜻이 아니" in lines[-1]     # 🔒 마지막 줄은 언제나 이것이다
 
 
-def test_산수표의_기여합이_총점과_같다():
-    """🔴 읽는법 예시의 요점이 '덧셈이 맞아떨어진다' 는 것이다."""
+def test_산수표는_parts_를_받아_그대로_편다():
+    """🔴 옛 이름은 `test_산수표의_기여합이_총점과_같다` 였고 `.sum()` 으로 검산했다.
+    **둘 다 틀렸다** — 합은 총점과 같지 않고(이슈 #13), `None` 이 섞이면 열이
+    `float64` 로 올라가 `.sum()` 이 결측을 조용히 건너뛴다.
+
+    🔒 이제 표는 `parts` 를 받는다 — 표와 아래 문장이 **같은 목록**을 읽는다.
+    """
     data = frame()
-    table = view.arithmetic_table(data, "sec_2")
-    latest = view.latest_frame(data).set_index("sector_id")
-    assert table["④ 기여(bp)"].sum() == latest.loc["sec_2", "score_balanced_bp"]
+    story = view.sector_story(data, "sec_2")
+    table = view.arithmetic_table(story["parts"])
+
+    assert list(table.index) == [f"{AXIS_NAMES[a]} ({a})" for a in AXES]
+    assert list(table["④ 기여(bp)"]) == [p["contribution_bp"] for p in story["parts"]]
+    # 🔒 합계는 표가 아니라 `Arithmetic` 이 정수로 낸다
+    arithmetic = story["arithmetic"]
+    assert arithmetic.parts_sum_bp == sum(p["contribution_bp"] for p in story["parts"])
+    assert arithmetic.total_bp == story["score_bp"]
+    assert arithmetic.residual_bp == arithmetic.total_bp - arithmetic.parts_sum_bp
 
 
 def test_조사가_붙는다():
@@ -1268,6 +1556,40 @@ def test_읽는법이_예시를_지어내지_않는다():
     at.run()
     assert not at.exception, [str(e)[:200] for e in at.exception]
     assert at.subheader or at.markdown, "render() 가 돌지 않았다 — 빈 화면을 검사하고 있다"
+
+
+def test_읽는법이_덧셈이_정확하다고_가르치지_않는다(monkeypatch):
+    """🔴 이 페이지는 **그날 1위 하나**만 예시로 쓴다. 그 섹터가 마침 어긋나지 않는
+    날이 있고(실데이터 최신일 `steel` 은 잔차 0), 그때 등호만 보여주면 팀원은
+    「세로로 더하면 총점」이라는 **규칙**을 배운다. 그 규칙은 같은 날 같은 화면의
+    다른 6개 섹터에서 거짓이다 — 1위 섹터 자체도 균형 74/266일은 어긋난다.
+
+    🔒 그래서 **경우와 무관하게** 한도 문장이 나와야 한다. 여기서는 잔차가 0 인
+       섹터가 1위가 되도록 픽스처를 잡아 «마침 맞는 날» 을 재현한다.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    from dashboard import data as _data
+
+    even = {"M": 4000, "F": 4000, "B": 4000, "V": 4000}          # 잔차 0 — 균형 프리셋
+    z_of = {"sec_0": {a: v - 2000 for a, v in even.items()},
+            "sec_1": {a: v - 1000 for a, v in even.items()},
+            "sec_2": dict(even)}
+    monkeypatch.setattr(_data, "_from_hf", lambda: None)
+    monkeypatch.setattr(_data, "_from_local",
+                        lambda: (frame_with_z(z_of), _data.Source(kind="local", label="테스트용")))
+    _data._read_scores.clear()
+
+    at = AppTest.from_function(_howto_page, default_timeout=180)
+    at.run()
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+    body = " ".join(m.value for m in at.markdown)
+    assert body, "render() 가 돌지 않았다 — 빈 화면을 검사하고 있다"
+
+    assert "세로로 더하면 총점이 정확히 나온다" not in body
+    assert "총점과 조금 다를 수 있다" in body, "규칙을 바로잡는 문장이 없다"
+    assert "차이 **없다**" in body, "예시가 마침 맞는 날인데 차이 칸이 사라졌다"
+    assert "최대 **±2 bp** 까지 어긋난다" in body, "한도를 말하지 않는다"
 
 
 def test_읽는_법이_0σ_를_가운데라_가르치지_않는다():

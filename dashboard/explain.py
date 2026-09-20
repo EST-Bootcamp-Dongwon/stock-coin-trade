@@ -20,8 +20,12 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from sector.scoring import AXIS_NAMES, PRESETS
+
+if TYPE_CHECKING:                      # 🔒 순환 임포트를 만들지 않는다 — `view` 는
+    from dashboard.view import Arithmetic   # `explain` 을 함수 안에서 늦게 임포트한다
 
 __all__ = [
     "weighting_label",
@@ -29,7 +33,7 @@ __all__ = [
     "axis_raw_text", "axis_line", "score_text", "rank_stability_text",
     "josa", "sigma_words", "axis_plain", "narrative",
     "liquidity_text", "degraded_text", "lead_axis_text", "rank_badge",
-    "middle_text",
+    "middle_text", "arithmetic_text",
 ]
 
 #: 축이 **묻는 것**. 한 줄로 끝낸다 — 길면 안 읽힌다.
@@ -250,8 +254,16 @@ def narrative(
     etf_n: int | None = None,
     missing: str | None = None,
     degraded: str | None = None,
+    arithmetic: "Arithmetic | None" = None,
 ) -> list[str]:
-    """이 섹터가 왜 이 자리인지를 **문단으로** 설명한다. 문장 목록을 돌려준다."""
+    """이 섹터가 왜 이 자리인지를 **문단으로** 설명한다. 문장 목록을 돌려준다.
+
+    🔒 `arithmetic`(`view.Arithmetic`)이 «총점이 축들로 설명되지 않는다» 고 하면
+       ②③(무엇이 밀어올렸나 · 깎았나)을 **닫는다.** 그 두 문장은 기여를 **총점에
+       빗대어** 말하는데("이 축 하나가 총점에 +N 만큼 보탰다"), 총점이 기여의 합으로
+       설명되지 않는 상태에서는 근거가 없다. 열어 두면 같은 화면이 스스로 모순된다
+       (이슈 #13 적대적 설계 리뷰).
+    """
     lines: list[str] = []
 
     # ① 어디에 있나
@@ -266,7 +278,15 @@ def narrative(
     )
 
     scored = [p for p in parts if p["contribution_bp"] is not None]
-    if scored:
+    # 🔒 `getattr(..., True)` 로 받지 않는다 — `Arithmetic` 이 아닌 것이 오면 ②③ 이
+    #    **조용히 열린다.** 없는 속성은 시끄럽게 터지는 편이 낫다 (ADR-SC-0016)
+    explained = arithmetic is None or arithmetic.explained
+    if scored and not explained:
+        lines.append(
+            "축별 기여가 총점을 설명하지 못한다 — 어느 축이 끌어올렸는지 여기서는 "
+            "말하지 않는다. 파생본을 다시 만들어야 한다."
+        )
+    if scored and explained:
         # ② 무엇이 밀어올렸나
         best = max(scored, key=lambda p: p["contribution_bp"])
         if best["contribution_bp"] > 0:
@@ -338,6 +358,47 @@ def lead_axis_text(axis: str | None) -> str:
 def rank_badge(rank: int | None) -> str:
     """`1위` — 🔒 메달 이모지를 쓰지 않는다. 등수는 상장이 아니라 좌표다."""
     return f"{rank}위" if rank else "—"
+
+
+def arithmetic_text(arithmetic: "Arithmetic") -> str:
+    """④ 열의 세로 합과 총점을 **같은 단위로 나란히** 적는다 (`view.Arithmetic`).
+
+    🔴 옛 문장은 `**합계 +12522 bp = 총점 +1.25σ**` 였다. 두 가지가 한꺼번에 거짓이다 —
+       ① 왼쪽은 bp, 오른쪽은 σ 라 **팀원이 눈으로 검산할 수 있는 등식이 아니었다**
+       ② 등호 자체가 16,758 (행×프리셋) 중 **5,276건(31.5%)** 에서 거짓이었다 (이슈 #13).
+
+    🔒 **경우를 가르지 않고 언제나 차이와 한도를 적는다.** 읽는 법 화면은 그날 1위
+       하나만 예시로 쓰는데 그 섹터가 마침 어긋나지 않는 날이 있다(최신일 `steel` 은
+       잔차 0 이었다). 그때 등호만 보여주면 팀원은 「세로로 더하면 총점」이라는
+       **규칙**을 배우고, 그 규칙은 같은 날 같은 화면의 다른 6개 섹터에서 거짓이다.
+       ⚠️ 1위 섹터 자체도 균형 **74/266일**은 어긋난다 — 나흘 중 하루꼴이다.
+
+    🔒 **원인을 단정하지 않는다.** 가운데 문장은 «이 잔차가 반올림 탓이다» 가 아니라
+       «이 방법은 최대 ±N bp 까지 어긋난다» 는 **방법의 성질**이다 (ADR-SC-0007).
+    """
+    total = arithmetic.total_bp          # 🔒 `getattr` 기본값을 두지 않는다 (위와 같은 이유)
+    if total is None:
+        return "총점이 없어 ④ 열의 합을 맞춰 볼 수 없다."
+
+    sigma = f"**{total / 10000:+.2f}σ**"
+    parts_sum = arithmetic.parts_sum_bp
+    if parts_sum is None:
+        # 🔒 점수에 들어간 축이 없는데 총점이 있다 — 「반올림」으로 설명할 수 없다
+        return (f"점수에 들어간 축이 하나도 없는데 총점 **{total:+d} bp** ({sigma}) 가 "
+                f"있다 — 게시된 총점이 게시된 σ 로 재현되지 않는다. "
+                f"파생본을 다시 만들어야 한다.")
+
+    head = f"합계 **{parts_sum:+d} bp** · 총점 **{total:+d} bp** ({sigma})"
+    residual, bound = arithmetic.residual_bp, arithmetic.bound_bp
+    if not arithmetic.explained:
+        return (f"{head} — 차이 **{residual:+d} bp** 는 반올림으로 설명되는 "
+                f"한도(±{bound} bp)를 넘는다. 게시된 총점이 게시된 σ 로 재현되지 않는다 "
+                f"— 파생본을 다시 만들어야 한다.")
+    gap = "차이 **없다**" if residual == 0 else f"차이 **{residual:+d} bp**"
+    why = ("축이 하나뿐이라 반올림으로 어긋날 자리가 없다."
+           if bound == 0
+           else f"축마다 bp 로 반올림하므로 최대 **±{bound} bp** 까지 어긋난다.")
+    return f"{head} — {gap}. {why}"
 
 
 def middle_text(graded_n: int) -> str:

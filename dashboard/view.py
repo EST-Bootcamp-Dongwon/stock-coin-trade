@@ -25,6 +25,7 @@ __all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "SCORE_AXES_COLUMN",
            "UNCLASSIFIED", "Names", "ViewError",
            "check_frame", "latest_frame", "scored", "rank_stability", "stability_window",
            "sector_story", "podium", "Bars", "score_bars", "arithmetic_table",
+           "Arithmetic",
            "ranking_table", "axis_breakdown", "gics_options", "visible_ids",
            "gics_distribution", "int_or_none"]
 
@@ -635,6 +636,91 @@ def axis_breakdown(frame: Any, sector_id: str, *,
     return out
 
 
+@dataclass(frozen=True)
+class Arithmetic:
+    """④ 열의 세로 합과 총점이 **얼마나, 왜** 다른가.
+
+    🔴 화면은 오랫동안 「합계 = 총점」을 **등호로** 적었다. 실데이터 16,758
+       (행×프리셋) 중 **5,276건(31.5%)** 에서 거짓이었고, 그날 1위만 봐도 균형
+       **74/266일** · 역발상 87/266일이다. 원인은 반올림 **횟수**다 — 총점은 한 번,
+       기여는 축마다 반올림한다. `round(a)+round(b)+…` 와 `round(a+b+…)` 는 같지 않다.
+
+    ## 🔒 원인을 단정하지 않는다
+
+    잔차에는 두 가지가 섞일 수 있다 —
+
+    - **(a) 축마다 bp 로 반올림한 것** — 상한이 `_residual_bound(n)` 으로 **구조적**이다
+    - **(b) 게시된 총점이 게시된 z 와 갈린 것** — 상한이 없다
+
+    (b) 를 "반올림" 이라 부르면 **원인을 지어내는 것**이다(ADR-SC-0007). `explained`
+    가 그 경계이고, 넘으면 화면은 "반올림" 대신 "파생본을 다시 만들어야 한다" 고 말한다.
+
+    ⚠️ **(b) 는 저장 열을 읽는 프리셋에서만 생긴다.** 커스텀 가중치는 총점도 기여도
+       같은 행의 같은 z 에서 나오므로 `|잔차| ≤ bound` 가 **항상** 성립한다
+       (실측 6벌 41,895 계산에서 한도 위반 0건). 지금 이 판정을 내는 곳은
+       `sector_story` 하나이고 그것은 프리셋 전용이다.
+    """
+
+    parts_sum_bp: int | None
+    total_bp: int | None
+    residual_bp: int | None
+    bound_bp: int
+    explained: bool
+
+
+def _residual_bound(n: int) -> int:
+    """반올림만으로 생길 수 있는 `|총점 − Σ기여|` 의 상한 (bp). `n` 은 **점수에 들어간 축 수**다.
+
+    축마다 `|round(e_a) − e_a| ≤ ½` 이고 총점도 `|round(E) − E| ≤ ½` 이므로
+    `|Σc − total| ≤ (n+1)/2` 이고, 정수라 `⌊(n+1)/2⌋` 다. 양쪽 반올림이 모두
+    `ROUND_HALF_EVEN` 이라(`sector/scoring.py` 의 `_CONTEXT`) 이 전제가 성립한다.
+
+    🔴 **`n ≤ 1` 은 0 이다.** 축이 하나면 분모 `W = w` 라 기여 `= round(z·w/w) = z` 이고
+       총점도 `z` 다 — 두 반올림이 같은 자리에서 일어나 잔차가 **구조적으로 0** 이다
+       (가중치 7벌 × `|z| ≤ 30000` 전 구간 60,004 사례 전수 0). `⌊(n+1)/2⌋` 을 그대로
+       쓰면 단일 축에서 **±1 오염을 «설명됨» 으로 통과시킨다** — ADR-SC-0014 가
+       "그 1bp 가 최근 20영업일 창의 첫날에서 순위를 뒤집었다" 고 기록한 크기다.
+       프리셋에도 `n=1` 인 행이 53행 있고(`axes_missing='MFV'`), `F` 단독 커스텀은
+       5,464행이 그렇다.
+
+    🔒 **`n` 의 정의가 한 가지여야 한다** — `scoring_axes` 가 센 축 수다. 옛
+       `axis_breakdown` 처럼 가중치 0 축까지 세면 `n` 이 부풀어 **bound 가 실재 오염을
+       흡수한다**(예: 단일 축 커스텀에서 n=4 → 한도 2). 그래서 이슈 #15 가 먼저다.
+
+    실측 — 실데이터 16,758 (행×프리셋) 에서 상한 위반 **0건**
+    (n=1 최대 0 · n=2 최대 1 · n=3 최대 1 · n=4 최대 2).
+    """
+    return 0 if n <= 1 else (n + 1) // 2
+
+
+def _arithmetic(parts: list[dict[str, Any]], total_bp: int | None) -> Arithmetic:
+    """합계·잔차 판정. 🔒 **공개 자유 함수로 두지 않는다.**
+
+    `parts` 와 `total_bp` 를 호출자가 **짝지어** 넘기는 모양이면 ① 둘이 같은 가중치·
+    같은 날에서 나왔는지 함수가 알 수 없고 ② 부르지 않고 직접 더해 등호를 말하는
+    경로가 그대로 남는다. 실제로 `pages/howto.py` 가 손으로 더하고 있었다(이슈 #13).
+    판정은 `sector_story` 의 **반환값에 실려** 나간다 — ADR-SC-0016 의 규율과 같다
+    (규칙으로 막지 않고 경로를 없앤다).
+    """
+    live = [p["contribution_bp"] for p in parts if p["contribution_bp"] is not None]
+    parts_sum = sum(live) if live else None
+    bound = _residual_bound(len(live))
+    if total_bp is None:
+        # 🔒 총점이 없으면 맞춰 볼 것이 없다 — «설명 안 됨» 이 아니다
+        return Arithmetic(parts_sum_bp=parts_sum, total_bp=None, residual_bp=None,
+                          bound_bp=bound, explained=True)
+    if parts_sum is None:
+        # 🔴 더한 것이 하나도 없는데 총점이 있다 — **크기와 무관하게** 설명되지 않는다.
+        #    `abs(residual) <= bound` 에 맡기면 총점이 마침 0 인 날 깃발은 «설명됨»,
+        #    문장은 «재현되지 않는다» 로 **갈린다**(적대적 구현 리뷰 ⑥). `narrative` 가
+        #    바로 이 깃발로 문장을 여닫으므로 경계가 두 벌이면 화면이 스스로 모순된다
+        return Arithmetic(parts_sum_bp=None, total_bp=total_bp, residual_bp=total_bp,
+                          bound_bp=bound, explained=False)
+    residual = total_bp - parts_sum
+    return Arithmetic(parts_sum_bp=parts_sum, total_bp=total_bp, residual_bp=residual,
+                      bound_bp=bound, explained=abs(residual) <= bound)
+
+
 def _int_list(column: Any) -> list[int | None]:
     """열 하나를 `int | None` 리스트로. 🔒 결측은 **`None`** 이지 0 이 아니다.
 
@@ -683,12 +769,18 @@ def sector_story(frame: Any, sector_id: str, *, profile: str = "balanced",
     stability = rank_stability(scored(frame, Weighting.preset(profile)), days=days)
     stat = stability.loc[sector_id] if sector_id in stability.index else None
 
+    # 🔒 `parts` 와 `score_bp` 의 **짝이 정해지는 유일한 자리**다. 잔차 판정도 여기서
+    #    함께 내어 반환값에 실어 보낸다 — 화면이 직접 더해 등호를 말할 길을 없앤다
+    #    (이슈 #13 · `_arithmetic` 머리주석)
+    parts = axis_breakdown(frame, sector_id, weights=PRESETS[profile])
+    score_bp = int_or_none(row.get(f"score_{profile}_bp"))
     return {
         "label": names.sector_label(sector_id),
         "rank": int_or_none(row.get(f"rank_{profile}")),
         "total": len(latest),
-        "score_bp": int_or_none(row.get(f"score_{profile}_bp")),
-        "parts": axis_breakdown(frame, sector_id, weights=PRESETS[profile]),
+        "score_bp": score_bp,
+        "parts": parts,
+        "arithmetic": _arithmetic(parts, score_bp),
         "mean_rank": _float_or_none(stat["rank_mean"]) if stat is not None else None,
         "spread": _float_or_none(stat["rank_spread"]) if stat is not None else None,
         "window": stability_window(frame, days=days),
@@ -838,24 +930,28 @@ def _bool_or_none(value: Any) -> bool | None:
     return bool(value) if _notna(value) else None
 
 
-def arithmetic_table(frame: Any, sector_id: str, *,
-                     weights: Mapping[str, int] = PRESETS["balanced"]) -> Any:
+def arithmetic_table(parts: list[dict[str, Any]]) -> Any:
     """한 섹터의 **산수를 그대로 편 표** — 원시값 → σ → 가중치 → 기여.
 
-    🔴 읽는법 화면의 예시가 이것을 쓴다. 팀원이 가장 자주 묻는 것은 "이 숫자가
-       어디서 나왔나" 이고, 그 답은 설명이 아니라 **덧셈이 맞아떨어지는 것을
-       보여주는 일**이다 — 기여의 합이 총점과 정확히 같다
-       (`test_기여도_합이_점수와_같다` 가 그것을 고정한다).
+    🔒 **`parts` 를 받는다**(프레임·가중치가 아니다). 표와 그 아래 합계 문장이 서로
+       다른 가중치·다른 날의 값을 그리는 경로를 **없앤다** — 둘 다 `sector_story` 가
+       만든 같은 목록에서 나온다.
 
-    🔒 결측 축은 기여가 `None` 이라 합에서 빠진다. 0 으로 적으면 덧셈은 맞아 보이지만
-       "재지 못한 축" 과 "0 인 축" 이 화면에서 같아진다.
+    🔴 ④ 열의 세로 합은 총점과 **정확히 같지 않다.** 축마다 bp 로 반올림하기 때문이고,
+       얼마나 다를 수 있는지는 `_residual_bound` 가 말한다. 화면 문장은
+       `explain.arithmetic_text` 하나가 쓴다 (이슈 #13).
+
+    🔒 결측 축과 **가중치 0 축**은 기여가 `None` 이라 합에서 빠진다. 0 으로 적으면
+       덧셈은 맞아 보이지만 "점수에 안 들어간 축" 과 "0 을 보탠 축" 이 같아진다.
+    🔴 **`.sum()` 으로 검산하지 마라** — `None` 이 하나 섞이면 열 dtype 이 `float64` 로
+       올라가 `.sum()` 이 결측을 **건너뛴다**(실측: `[2900, nan, 1425, 1316]` 의 합이
+       5641 인데 같은 행의 총점은 6060). 합계는 `Arithmetic` 이 정수로 낸다.
     """
     import pandas as pd
 
     from dashboard.explain import axis_raw_text
     from sector.scoring import AXIS_NAMES
 
-    parts = axis_breakdown(frame, sector_id, weights=weights)
     return pd.DataFrame(
         [{
             "축": f"{AXIS_NAMES[p['axis']]} ({p['axis']})",

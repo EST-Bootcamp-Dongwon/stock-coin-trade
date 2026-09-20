@@ -34,7 +34,7 @@ from dashboard.agent.intent import EXAMPLE_QUESTIONS, INTENT_LABELS, INTENTS, MA
 from dashboard.agent.inventory import SEARCH_NOTICE
 from dashboard.agent.redteam import STATUS_PLAIN
 from dashboard.explain import (
-    axis_line, degraded_text, liquidity_text, rank_stability_text, score_text,
+    arithmetic_text, axis_line, degraded_text, liquidity_text, rank_stability_text, score_text,
 )
 
 __all__ = ["render_evidence", "GUARD_FAILED", "ASK_NOTICE"]
@@ -103,6 +103,10 @@ def render_evidence(frame, sector_id: str, *, profile: str = "balanced", names=N
             share = (f" → 기여 **{item['contribution_bp']:+d}**"
                      if item["contribution_bp"] is not None else "")
             st.markdown(f"- {line} · 가중치 {item['weight']}{share}")
+        # 🔴 **팀이 매일 쓰는 화면은 여기다.** 읽는 법에만 잔차를 적으면, 축별 기여를
+        #    나란히 보여주면서 그 합이 총점과 다르다는 것을 말하지 않는 화면이 남는다 —
+        #    최신일만 봐도 균형 6/21 섹터가 어긋난다 (이슈 #13 · ADR-SC-0018 ③)
+        st.markdown(arithmetic_text(story["arithmetic"]))
         st.markdown(f"<div class='sc-muted'>{liquidity_text(story['liquidity_ok'])}</div>",
                     unsafe_allow_html=True)
         warning = degraded_text(story["missing"], story["degraded"])

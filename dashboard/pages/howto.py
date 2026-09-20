@@ -10,7 +10,8 @@ import streamlit as st
 
 from dashboard import data, theme, view, weights
 from dashboard.explain import (
-    AXIS_MEANING, AXIS_NOT, AXIS_UNIT, axis_plain, narrative, preset_label,
+    AXIS_MEANING, AXIS_NOT, AXIS_UNIT, arithmetic_text, axis_plain, narrative,
+    preset_label,
 )
 from sector.scoring import AXES, AXIS_NAMES
 
@@ -143,12 +144,21 @@ def _render_worked_example() -> None:
         )
 
     with theme.panel("③ 가중치를 곱해 더한다"):
+        # 🔴 **「정확히 나온다」고 가르치지 않는다** (이슈 #13). 세로 합이 총점과 1~2bp
+        #    다를 수 있다 — 실데이터 16,758 (행×프리셋) 중 5,276건(31.5%)이 그렇다.
+        #    예시 섹터가 마침 맞는 날에도 **규칙**은 여기서 바로잡는다.
+        # 🔒 **원인을 단정하지 않는다** — 이 문단은 데이터를 보기 전에 무조건 그려지므로
+        #    「반올림 때문이다」로 못박으면, 파생본이 갈린 날 아래 `arithmetic_text` 가
+        #    「재현되지 않는다」를 말하면서 **같은 패널이 스스로 모순된다.** 원인 단정은
+        #    데이터로 갈리는 그 한 곳에만 둔다 (ADR-SC-0018 ②)
         st.markdown(
             "축마다 중요도가 다르다. σ 에 가중치를 곱해 더한 것이 총점이다. "
-            "**아래 ④ 열을 세로로 더하면 총점이 정확히 나온다.**"
+            "**아래 ④ 열을 세로로 더한 값은 총점과 조금 다를 수 있다** — 총점은 한 번, "
+            "기여는 축마다 반올림하므로 **몇 bp 까지 어긋날 수 있다.**"
         )
+        # 🔒 표와 아래 문장이 **같은 `parts`** 를 읽는다 (`view.arithmetic_table` 머리주석)
         st.dataframe(
-            view.arithmetic_table(frame, sector_id),
+            view.arithmetic_table(story["parts"]),
             width="stretch",
             column_config={
                 "② σ": st.column_config.NumberColumn("② σ", format="%.2f"),
@@ -156,11 +166,7 @@ def _render_worked_example() -> None:
                 "④ 기여(bp)": st.column_config.NumberColumn("④ 기여(bp)", format="%d"),
             },
         )
-        total = story["score_bp"]
-        if total is not None:
-            parts_sum = sum(p["contribution_bp"] for p in story["parts"]
-                            if p["contribution_bp"] is not None)
-            st.markdown(f"**합계 {parts_sum:+d} bp = 총점 {total / 10000:+.2f}σ**")
+        st.markdown(arithmetic_text(story["arithmetic"]))
 
     with theme.panel("④ 21개를 줄 세우면 순위"):
         st.markdown(f"같은 계산을 21개 섹터에 하고 총점 순으로 줄 세운 것이 "
