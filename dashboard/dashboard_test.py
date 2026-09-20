@@ -159,14 +159,20 @@ def test_이력이_짧은_섹터는_평균을_내지_않는다():
 
 
 def test_기여도_합이_점수와_같다():
-    """🔴 축 분해가 게시된 점수와 맞물린다 — '왜 1위인가' 의 근거가 흔들리지 않는다."""
+    """🔴 축 분해가 게시된 점수와 맞물린다 — '왜 1위인가' 의 근거가 흔들리지 않는다.
+
+    🔒 **`or 0` 으로 접지 않는다.** `None`(점수에 안 들어간 축)과 `0`(들어갔는데 0 을
+       보탠 축)을 한 칸으로 눙치면, 기여를 `0 → None` 으로 바꾸는 변경이 이 테스트를
+       **한 글자도 못 깨뜨린다**(이슈 #15 적대적 리뷰). 몇 개가 `None` 이었는지도 센다.
+    """
     data = frame()
     for sector_id in data["sector_id"].unique():
         parts = view.axis_breakdown(data, sector_id, weights=PRESETS["balanced"])
-        total = sum(p["contribution_bp"] or 0 for p in parts)
+        live = [p["contribution_bp"] for p in parts if p["contribution_bp"] is not None]
+        assert len(live) == len(AXES), (sector_id, "균형 프리셋은 네 축이 다 산다")
         score = int(view.latest_frame(data).set_index("sector_id")
                     .loc[sector_id, "score_balanced_bp"])
-        assert abs(total - score) <= 1, sector_id        # bp 반올림 1 까지 허용
+        assert abs(sum(live) - score) <= 1, sector_id    # bp 반올림 1 까지 허용
 
 
 def test_결측축은_기여가_0이_아니라_없음이다():
@@ -189,6 +195,110 @@ def test_결측축이_있으면_나머지_가중치가_다시_나뉜다():
 
 def test_없는_섹터는_빈_목록이다():
     assert view.axis_breakdown(frame(), "없는섹터", weights=PRESETS["balanced"]) == []
+
+
+def test_가중치가_0인_축은_기여가_0이_아니라_없음이다():
+    """🔴 «기여 0» 은 "들어갔는데 0 만큼 보탰다" 는 뜻이다. 가중치 0 인 축은 그것이
+    아니라 **애초에 더해지지 않았다** (ADR-SC-0007 · 이슈 #15).
+
+    🔒 **z 와 축 순위는 남긴다** — 재기만 하면 사실이기 때문이다. 실제로 이 자리에서
+       가장 높은 z 를 가진 축이 «기여 0» 으로 그려져 "높은데 왜 0 이지" 를 설명할
+       방법이 없었다.
+    """
+    data = frame()
+    only_m = {"M": 100, "F": 0, "B": 0, "V": 0}
+    parts = {p["axis"]: p for p in view.axis_breakdown(data, "sec_2", weights=only_m)}
+
+    assert parts["M"]["contribution_bp"] is not None
+    for axis in ("F", "B", "V"):
+        assert parts[axis]["contribution_bp"] is None, axis
+        assert parts[axis]["z_bp"] is not None, (axis, "z 는 사실이므로 남는다")
+        assert parts[axis]["rank"] is not None, (axis, "축 순위도 사실이다")
+
+
+def test_가중치_0인_축을_빼도_살아있는_축의_기여가_안_바뀐다():
+    """🔒 **같은 가중치**에서 옛 규칙(z 만 본다)과 새 규칙(z·가중치를 함께 본다)의
+    분모가 같다 — 빠지는 축은 가중치가 0 이라 `Σw` 에 **0 을 보태고 있었다.**
+
+    🔴 이슈 #15 본문의 "`live` 가 줄면 분모가 줄고 기여가 커진다" 는 **거짓**이다.
+       실데이터 29,925 (행×가중치) 전수에서 분모가 한 번도 변하지 않았고, 최신일
+       1,344 (섹터×가중치)에서 살아 있는 축의 기여가 바뀐 칸이 **0** 이었다.
+
+    ⚠️ 가중치를 **다른 벌로 바꾸는 것**과 헷갈리지 않는다 — `V:15 → V:0` 은 분모를
+       100 에서 85 로 **정당하게** 바꾼다. 여기서 고정하는 것은 그것이 아니라
+       «같은 가중치 한 벌 안에서 규칙만 바꿨을 때» 다.
+    """
+    from fractions import Fraction
+
+    data = frame()
+    latest = view.latest_frame(data).set_index("sector_id")
+    for w in ({"M": 100, "F": 0, "B": 0, "V": 0},
+              {"M": 70, "F": 30, "B": 0, "V": 0},
+              {"M": 35, "F": 30, "B": 20, "V": 15}):
+        for sector_id in data["sector_id"].unique():
+            row = latest.loc[sector_id]
+            z = {a: view.int_or_none(row[f"{a.lower()}_z_bp"]) for a in AXES}
+            old_live = [a for a in AXES if z[a] is not None]          # 옛 규칙
+            new_live = list(scoring_axes(z, w))                        # 새 규칙
+            assert sum(w[a] for a in old_live) == sum(w[a] for a in new_live), (w, sector_id)
+
+            parts = {p["axis"]: p for p in view.axis_breakdown(data, sector_id, weights=w)}
+            denominator = sum(w[a] for a in new_live)
+            for axis in new_live:
+                assert parts[axis]["contribution_bp"] == \
+                    round(Fraction(z[axis] * w[axis], denominator)), (w, sector_id, axis)
+            for axis in set(AXES) - set(new_live):
+                assert parts[axis]["contribution_bp"] is None, (w, sector_id, axis)
+
+
+def test_기여축은_scoring_axes_와_한_글자도_다르지_않다():
+    """🔒 규칙의 정본은 `sector.scoring.scoring_axes` **하나**다 (ADR-SC-0014 ③).
+
+    🔴 프리셋으로만 단언하면 **공허하다** — 프리셋 셋은 네 축이 전부 0 보다 커서
+       잘못된 구현도 통과한다. 이슈 #4 때 `scored()` 의 프리셋 분기를 통째로 지워도
+       아무것도 안 깨졌던 것과 같은 모양이다. 그래서 **커스텀 가중치**로 단언하고
+       축도 골고루 비운다 (`test_축수는_scoring_axes_와_한_글자도_다르지_않다` 선례).
+    """
+    data = frame(4)
+    for axis in AXES:
+        data[f"{axis.lower()}_z_bp"] = data[f"{axis.lower()}_z_bp"].astype("Int64")
+    for i, axis in enumerate(AXES):
+        data.loc[data["sector_id"] == f"sec_{i}", f"{axis.lower()}_z_bp"] = pd.NA
+
+    for weighting in (BALANCED,
+                      weights.Weighting.of({"M": 100, "F": 0, "B": 0, "V": 0}),
+                      weights.Weighting.of({"M": 0, "F": 1, "B": 0, "V": 2}),
+                      weights.Weighting.of({"M": 0, "F": 0, "B": 0, "V": 7})):
+        for sector_id in data["sector_id"].unique():
+            parts = view.axis_breakdown(data, sector_id, weights=weighting.weights)
+            z_bp = {p["axis"]: p["z_bp"] for p in parts}
+            expected = scoring_axes(z_bp, weighting.weights)
+            got = "".join(p["axis"] for p in parts if p["contribution_bp"] is not None)
+            assert got == expected, (sector_id, weighting.weights)
+
+
+def test_guard_의_기여_판정이_scoring_axes_와_같다():
+    """🔒 `guard._derived("contrib")` 는 **원천에서 칸을 따로 읽는다**(입력의 독립).
+    그러나 「어느 축이 점수에 들어갔나」는 규칙이라 정본이 하나여야 한다.
+
+    🔴 이 경로는 프리셋 전용이라 **행동으로는 잡을 수 없다** — 네 프리셋에 0 인 축이
+       없기 때문이다. 그래서 행동이 아니라 **규칙 동치**를 건다. 행동 테스트를 만들 수
+       있는 척하지 않는다.
+    """
+    import inspect
+    from dashboard.agent import guard
+
+    source = inspect.getsource(guard._derived)
+    assert "scoring_axes(zs, weights)" in source, "guard 가 규칙을 손으로 다시 적고 있다"
+    assert "or 1" not in source, "조용한 기본값이 분모를 눙친다"
+
+    for w in ({"M": 100, "F": 0, "B": 0, "V": 0}, {"M": 35, "F": 30, "B": 20, "V": 15},
+              {"M": 0, "F": 0, "B": 0, "V": 7}):
+        for zs in ({"M": 100, "F": 200, "B": None, "V": 300},
+                   {"M": None, "F": None, "B": None, "V": None},
+                   {"M": 0, "F": 0, "B": 0, "V": 0}):
+            live = scoring_axes(zs, w)
+            assert all((a in live) == (zs[a] is not None and w[a] > 0) for a in AXES)
 
 
 @pytest.mark.parametrize("profile", list(PRESETS))

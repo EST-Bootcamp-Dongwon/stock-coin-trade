@@ -59,6 +59,7 @@ from sector.scoring import (
     LOOKBACK_SHORT,
     PRESETS,
     VALUE_WINDOW,
+    scoring_axes,
 )
 
 __all__ = ["BANNED", "verify"]
@@ -267,13 +268,21 @@ def _derived(item: Evidence, rest: list[Any], src: _Source) -> Any:
     if name == "total":
         return len(src.day(item.as_of))
     if name == "contrib":
+        # 🔒 **뷰를 거치지 않는다.** 그러나 「어느 축이 점수에 들어갔나」의 정본은
+        #    `sector.scoring.scoring_axes` 하나다 — 여기서 조건을 손으로 다시 적으면
+        #    이슈 #4·#15 를 또 만든다. guard 가 지키는 독립성은 **입력의 독립**이지
+        #    (원천에서 칸을 따로 읽는다) 규칙을 따로 적는 것이 아니다.
+        # ⚠️ 이 경로는 **프리셋 전용**이다(아래 `PRESETS[profile]`). 커스텀 가중치로
+        #    에이전트를 여는 날 `guard._lead_axis` · `redteam` · `compose` 의 「산 축」
+        #    판정도 함께 따라와야 한다 — 셋 다 `EV-{axis}-CONTRIB is not None` 을 본다.
         profile, axis = rest[1], rest[2]
         weights = PRESETS[profile]
         zs = {a: src.cell(item.as_of, f"{a.lower()}_z_bp") for a in AXES}
-        if zs[axis] is None:
+        live = scoring_axes(zs, weights)
+        if axis not in live:
             return None
-        live = sum(weights[a] for a in AXES if zs[a] is not None) or 1
-        return round(Fraction(zs[axis] * weights[axis], live))
+        return round(Fraction(zs[axis] * weights[axis],
+                              sum(weights[a] for a in live)))
     if name == "axis_rank":
         column = f"{rest[1].lower()}_z_bp"
         mine = src.cell(item.as_of, column)

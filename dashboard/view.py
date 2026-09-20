@@ -583,31 +583,54 @@ def axis_breakdown(frame: Any, sector_id: str, *,
     """한 섹터의 4축 분해 — 원시값 · z · 가중치 · 기여.
 
     🔴 **기여도가 이 표의 요점이다.** "왜 1위인가" 는 어느 축이 점수를 끌어올렸나로
-       답해진다. 결측 축은 가중치를 다시 나누므로 기여 합이 점수와 맞는다.
+       답해진다.
+
+    ## 🔒 「점수에 들어간 축」은 `scoring_axes` 가 정한다 — 여기서 다시 적지 않는다
+
+    🔴 옛 구현은 **`z` 가 있는지만** 봤다. 그래서 가중치를 0 으로 내린 축에도
+       «기여 0» 을 적었는데, 그 축은 점수에 **더해지지도 않았다** — 「0 만큼 보탰다」와
+       「애초에 안 들어갔다」가 화면에서 같아진다(ADR-SC-0007 · 이슈 #15).
+       이슈 #4 가 '축수' 칸에서 고친 것과 **같은 결함**이 '기여' 칸에 남아 있었다.
+
+    🔒 **분모는 변하지 않는다.** 빠지는 축은 가중치가 0 이라 `Σw` 에 0 을 보태고 있었다
+       (실측 29,925 (행×가중치) 전수 불변 · 최신일 1,344 (섹터×가중치)에서 살아 있는
+       축의 기여가 바뀐 칸 **0**). 즉 이 규칙은 **w=0 축의 기여만 `None` 으로** 바꾸고
+       살아 있는 축의 값은 한 칸도 건드리지 않는다.
+
+    🔒 기여는 **`Fraction`** 으로 낸다 — `guard._derived` 와 같은 산술이어야 한다
+       (AGENTS.md 4장 · `float` 금지). 실측으로는 57,657 축-칸에서 float·Fraction·
+       Decimal 이 전부 같았지만, `_residual_bound` 의 증명이 **정확 반올림**을 전제한다.
     """
+    from fractions import Fraction
+
     latest = latest_frame(frame)
     rows = latest[latest["sector_id"] == sector_id]
     if len(rows) == 0:
         return []
     row = rows.iloc[0]
 
-    live = [a for a in AXES if _notna(row.get(f"{_AXIS_PREFIX[a]}_z_bp"))]
-    total_weight = sum(weights[a] for a in live) or 1
+    z_bp = {a: int_or_none(row.get(f"{_AXIS_PREFIX[a]}_z_bp")) for a in AXES}
+    live = scoring_axes(z_bp, weights)
+    # 🔒 `or 1` 을 두지 않는다 — live 의 축은 전부 `w > 0` 이라 합이 0 일 수 없고,
+    #    live 가 비면 아래에서 분모를 **쓰지 않는다.** 조용한 기본값은 조건이 바뀐 날
+    #    0 으로 나눌 자리를 1 로 눙친다 (ADR-SC-0016 이 조용한 기본값을 지운 이유)
+    total_weight = sum(weights[a] for a in live)
 
     out = []
     for axis in AXES:
-        z_raw = row.get(f"{_AXIS_PREFIX[axis]}_z_bp")
         raw = row.get(f"{_AXIS_PREFIX[axis]}_raw_bp")
-        has = _notna(z_raw)
-        z = int(z_raw) if has else None
+        z = z_bp[axis]
         out.append({
             "axis": axis,
             "raw_bp": int(raw) if _notna(raw) else None,
             "z_bp": z,
             "weight": weights[axis],
-            # 결측 축은 분모에서 빠졌으므로 기여도 0 이 아니라 **없음**이다
-            "contribution_bp": int(round(z * weights[axis] / total_weight)) if has else None,
-            "rank": _axis_rank(latest, axis, z) if has else None,
+            # 🔒 점수에 안 들어간 축은 기여가 0 이 아니라 **없음**이다 — 결측 축이든
+            #    가중치 0 축이든 같다
+            "contribution_bp": (round(Fraction(z * weights[axis], total_weight))
+                                if axis in live else None),
+            # 🔒 축 순위는 **재기만 하면 사실**이다 — 가중치가 0 이어도 z 가 있으면 남긴다
+            "rank": _axis_rank(latest, axis, z) if z is not None else None,
         })
     return out
 
