@@ -49,7 +49,7 @@ __all__ = [
 SOURCES: tuple[str, ...] = ("거래소 파생", "규칙", "사람 판단", "조 원장", "이 답")
 CONFIDENCE: tuple[str, ...] = ("상", "중", "하")
 #: 값을 글자로 옮기는 방식 — 표에 그릴 때 쓴다(`Evidence.shown`). 문장은 `slots` 의 자리 모양을 따른다.
-UNITS: tuple[str, ...] = ("date", "text", "int", "sigma", "sigma_const", "decimal1", "bool", "axis")
+UNITS: tuple[str, ...] = ("date", "text", "int", "sigma", "decimal1", "bool", "axis")
 GAP_KINDS: tuple[str, ...] = ("미확보", "구조적 비공시", "출처 충돌")
 GAP_STATES: tuple[str, ...] = ("신규", "유지", "닫힘")
 
@@ -106,8 +106,6 @@ class Evidence:
             return "예" if value else "아니오"
         if self.unit == "sigma" and isinstance(value, int):
             return f"{value / 10000:+.2f}σ"
-        if self.unit == "sigma_const":
-            return f"{value}σ"
         if self.unit == "axis" and isinstance(value, int) and self.axis:
             return axis_raw_text(self.axis, value)
         if self.unit == "date" and isinstance(value, str) and len(value) == 8:
@@ -298,9 +296,6 @@ def collect(frame: Any, sector_id: str, *, profile: str, days: int, names: Any,
                  ("rule", "long")))
     add(Evidence("EV-RULE-VALUE", "밸류 창(영업일)", VALUE_WINDOW, "int", "규칙", "상",
                  ("rule", "value")))
-    add(Evidence("EV-RULE-SIGMA2", "가장 높은 σ 구간", 2, "sigma_const", "규칙", "상",
-                 ("rule", "sigma2")))
-
     sector = _find_sector(master, sector_id)
     if sector is not None:
         checked = "원천 유니버스와 대조했다(M4)"

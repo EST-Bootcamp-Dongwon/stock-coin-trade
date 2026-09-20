@@ -395,16 +395,29 @@ def test_고정_ID_대장이_접두사를_지키고_은퇴한_ID_를_되살리�
     assert not any(k.startswith(("IP-", "CT-", "CD-")) for k in ids.CATALOG)
 
 
-def test_가장_높은_σ_구간은_숫자로_말한다():
-    """🔴 "압도적으로" 는 무엇 대비 얼마나인지 말하지 않는다 (2026-09-14 사용자 결정)."""
-    assert explain.sigma_words(25000) == "다른 섹터들보다 2σ 이상 높다"
-    assert explain.sigma_words(-20000) == "다른 섹터들보다 2σ 이상 낮다"
-
-
 @pytest.mark.parametrize("z", [-25000, -20000, -19999, -10000, -9999, -4000, -3999, 0, 3999, 4000,
                                9999, 10000, 19999, 20000, 25000])
-def test_에이전트의_σ_구간은_설명_화면과_같은_말이다(z):
-    assert slots.fill(templates.sigma_band(z), {"EV-RULE-SIGMA2": 2}) == explain.sigma_words(z)
+def test_에이전트와_설명화면의_총점_문장이_글자까지_같다(z):
+    """🔒 옛 테스트는 두 쪽의 **구간 낱말**을 대조했다. 그 낱말은 사라졌지만
+    (이슈 #17 ① · ADR-SC-0020) **대조 자체가 요점이었다** — 렌더러 둘이 같은 문장을
+    말해야 guard 가 «문장이 다르다» 를 결함으로 읽을 수 있다. 그래서 대조 대상을
+    문장 전체로 옮긴다.
+    """
+    assert slots.fill(templates.SIGMA, {"EV-SCORE": z}) == f"점수는 {z / 10000:+.2f}σ 다."
+
+
+def test_총점_문장에는_검사할_방향_낱말이_없다():
+    """🔴 방향 낱말을 문장에서 지웠으면 **guard 의 표에서도** 지워야 한다.
+
+    남겨 두면 «어느 문장도 쓰지 않는 낱말» 이 허용 목록에 남고, 다음 사람이 총점에
+    구간 낱말을 다시 붙여도 guard 가 통과시킨다 — ADR-SC-0013 이 «새 방향 낱말을
+    더하면 표도 함께 더한다» 고 적은 것의 **반대 방향**이다.
+    """
+    assert "sigma" not in guard._ROLE_WORDS
+    assert templates.ROLE_OF["sigma"] == "plain"
+    for banned in ("높다", "낮다", "비슷하다", "뚜렷이", "다소"):
+        assert banned not in templates.SIGMA
+    assert not hasattr(templates, "sigma_band")
 
 
 def test_자리는_빈_값을_글자로_만들지_않는다():
@@ -415,7 +428,7 @@ def test_자리는_빈_값을_글자로_만들지_않는다():
 
 
 def test_모든_문장_열쇠에_역할이_있다():
-    assert set(templates.ROLE_OF.values()) >= {"plain", "fixed", "disclaimer", "axis_plain", "sigma"}
+    assert set(templates.ROLE_OF.values()) >= {"plain", "fixed", "disclaimer", "axis_plain"}
 
 
 # ── 4. guard — 전부 통과하고, 망가뜨리면 잡는다 ────────────────────────────
@@ -526,16 +539,28 @@ def test_해석과_방향이_따로_놀면_잡는다():
     assert _has(_verify(broken), "방향 낱말")
 
 
-def test_기여와_σ_구간을_거꾸로_적으면_잡는다():
+def test_기여를_거꾸로_적으면_잡는다():
     brief = _brief("why_rank", "alpha").brief
     contrib = next(s for c in brief.cards for s in c.observed if s.role == "contrib")
     word = "보탰다" if "보탰다" in contrib.template else "깎았다"
     assert _has(_verify(_swap(brief, word, "깎았다" if word == "보탰다" else "보탰다")), "반대")
-    sigma = brief.headline[1].template
-    band = next(w for w in ("이상 높다", "뚜렷이 높다", "다소 높다", "비슷하다", "다소 낮다",
-                            "뚜렷이 낮다", "이상 낮다") if w in sigma)
-    other = "비슷하다" if band != "비슷하다" else "뚜렷이 높다"
-    assert _has(_verify(_swap(brief, band, other)), "방향 낱말")
+
+
+def test_총점_문장에_구간_낱말을_다시_붙이면_잡는다():
+    """🔒 ADR-SC-0020 ① 을 **guard 가 강제한다.** 밴드를 되살린 문장은 원천으로 다시
+    정한 틀과 다르므로 거부된다 — 결정이 글로만 남지 않는다.
+
+    🔴 더 싸 보이는 길(«어디에도 못 쓰는 낱말» 목록 `_ALL_WORDS` 의 여분에 «높다·낮다·
+       비슷하다» 를 넣기)은 **실측으로 기각했다** — `explain.AXIS_MEANING["B"]`
+       ("고르게 오르면 높다. 한 종목만 급등하면 오히려 낮다")와 `ids` 의 `RK-HEAT`
+       ("이미 많이 올라 밸류가 낮다")가 그 낱말을 **정당하게** 쓰고 있어서, 낱말로 막으면
+       멀쩡한 문장이 함께 죽는다. 🔒 옛 밴드 검사(`_SIGMA_PATTERNS`)가 사라진 자리를
+       이 검사가 메운다 — 지우고 비워 두지 않는다.
+    """
+    brief = _brief("why_rank", "alpha").brief
+    sigma = brief.headline[1]
+    revived = sigma.template + " '다른 섹터들보다 뚜렷이 높다' 는 뜻이다."
+    assert _has(_verify(_retemplate(brief, sigma, revived)), "다시 정한 문장")
 
 
 def test_순위와_섹터_수의_자리를_맞바꾸면_잡는다():

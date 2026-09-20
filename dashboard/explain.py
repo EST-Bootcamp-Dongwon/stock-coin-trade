@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from sector.scoring import AXIS_NAMES, PRESETS
+from sector.scoring import AXIS_NAMES, PRESETS, lead_axis, trail_axis
 
 if TYPE_CHECKING:                      # 🔒 순환 임포트를 만들지 않는다 — `view` 는
     from dashboard.view import Arithmetic   # `explain` 을 함수 안에서 늦게 임포트한다
@@ -31,7 +31,7 @@ __all__ = [
     "weighting_label",
     "AXIS_MEANING", "AXIS_NOT", "AXIS_UNIT",
     "axis_raw_text", "axis_line", "score_text", "rank_stability_text",
-    "josa", "sigma_words", "axis_plain", "narrative",
+    "josa", "axis_plain", "narrative",
     "liquidity_text", "degraded_text", "lead_axis_text", "rank_badge",
     "middle_text", "arithmetic_text",
     "WATERFALL_ABSENT", "WATERFALL_READING",
@@ -206,24 +206,12 @@ def _ida(word: str) -> str:
     return "이다" if josa(word, "은는") == "은" else "다"
 
 
-def sigma_words(z_bp: int | None) -> str:
-    """z 를 사람 말로. 🔒 '좋다/나쁘다' 가 아니라 **높다/낮다** 로만 말한다.
-
-    🔴 "압도적으로" 를 쓰지 않는다(2026-09-14 · ADR-SC-0013) — 무엇 대비 얼마나인지 말하지 않는
-       낱말이다. 가장 높은 구간은 **숫자로** 말한다. 에이전트의 guard 가 그 낱말을 거부한다.
-    """
-    if z_bp is None:
-        return "잴 수 없다"
-    sigma = abs(z_bp) / 10000
-    side = "높다" if z_bp > 0 else "낮다"
-    if sigma >= 2.0:
-        return f"다른 섹터들보다 2σ 이상 {side}"
-    if sigma >= 1.0:
-        return f"다른 섹터들보다 뚜렷이 {side}"
-    if sigma >= 0.4:
-        return f"다른 섹터들보다 다소 {side}"
-    return "다른 섹터들과 비슷하다"
-
+#: 🔴 **총점에는 구간 낱말을 쓰지 않는다** (2026-09-20 · 이슈 #17 ① · ADR-SC-0020).
+#:    `0.4 / 1.0 / 2.0` 은 **축 z 단위의 문턱**이고, 총점은 그 z 들의 가중평균이라
+#:    같은 단위가 아니다 — 축들이 완전 상관이 아니면 평균은 덜 퍼진다.
+#:    실측(2026-09-20 · 291영업일): 축 0.967~1.274σ vs 총점 balanced 0.654 ·
+#:    momentum 0.779 · contrarian 0.538. 그래서 20260918 contrarian 1위가
+#:    «다소 높다»(실제 2.30 표준편차)로 읽혔다. 순위는 정확하니 순위로 말한다.
 
 def axis_plain(axis: str, raw_bp: int | None) -> str:
     """원시값이 **실제로 무슨 일인지** 한 문장으로.
@@ -291,7 +279,7 @@ def narrative(
         return lines
     lines.append(
         f"**{label}**{josa(label, '은는')} {total}개 섹터 중 **{rank}위**다. "
-        f"점수 {score_bp / 10000:+.2f}σ 는 '{sigma_words(score_bp)}' 는 뜻이다."
+        f"점수는 {score_bp / 10000:+.2f}σ 다."
     )
 
     scored = [p for p in parts if p["contribution_bp"] is not None]
@@ -305,7 +293,10 @@ def narrative(
         )
     if scored and explained:
         # ② 무엇이 밀어올렸나
-        best = max(scored, key=lambda p: p["contribution_bp"])
+        # 🔒 동점 규칙은 `sector.scoring.lead_axis` 하나다 — 여기서 다시 적지 않는다
+        by_axis = {p["axis"]: p for p in scored}
+        contributions = {axis: part["contribution_bp"] for axis, part in by_axis.items()}
+        best = by_axis[lead_axis(contributions)]
         if best["contribution_bp"] > 0:
             name = AXIS_NAMES[best["axis"]]
             lines.append(
@@ -315,7 +306,7 @@ def narrative(
                 f"이 축 하나가 총점에 **{best['contribution_bp']:+d}** 만큼 보탰다."
             )
         # ③ 무엇이 깎았나
-        worst = min(scored, key=lambda p: p["contribution_bp"])
+        worst = by_axis[trail_axis(contributions)]
         if worst["contribution_bp"] < 0 and worst["axis"] != best["axis"]:
             name = AXIS_NAMES[worst["axis"]]
             lines.append(

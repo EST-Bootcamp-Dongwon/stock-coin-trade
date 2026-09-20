@@ -19,7 +19,7 @@ from dashboard.explain import josa
 from sector.scoring import AXIS_NAMES
 
 __all__ = [
-    "ROLE_OF", "LABEL", "rank_headline", "sigma_band", "sigma", "no_score", "trust_rank",
+    "ROLE_OF", "LABEL", "rank_headline", "SIGMA", "no_score", "trust_rank",
     "TRUST_COUNTS", "axis_plain", "RAW_MISSING", "contrib", "stability_words", "stability",
     "STAB_MISSING", "no_past", "NO_NEW_DAY", "SINCE", "DEFAULT_WINDOW", "RANK_MISSING", "rank_change",
     "z_change", "Z_SAME", "no_master", "contents_head", "etf_line", "member_line", "ETF_COUNT",
@@ -29,7 +29,7 @@ __all__ = [
 #: 열쇠 → 역할. 🔒 guard 의 방향 검사는 역할을 따른다
 ROLE_OF: Mapping[str, str] = {
     "fixed": "fixed", "disclaimer": "disclaimer",
-    "rank_headline": "plain", "sigma": "sigma", "no_score": "no_score",
+    "rank_headline": "plain", "sigma": "plain", "no_score": "no_score",
     "trust_rank": "plain", "trust_counts": "plain",
     "axis_plain": "axis_plain", "raw_missing": "raw_missing", "contrib": "contrib",
     "stability": "stability", "stab_missing": "stab_missing",
@@ -53,21 +53,10 @@ def rank_headline(label: str) -> str:
     return f"{_who(label)} {slot('EV-TOTAL')}개 섹터 중 **{slot('EV-RANK')}위**다."
 
 
-def sigma_band(z_bp: int) -> str:
-    """`explain.sigma_words` 와 같은 구간 — 🔒 숫자는 자리로 적는다(테스트가 두 함수를 대조한다)."""
-    side = "높다" if z_bp > 0 else "낮다"
-    size = abs(z_bp)
-    if size >= 20000:
-        return f"다른 섹터들보다 {slot('EV-RULE-SIGMA2')}σ 이상 {side}"
-    if size >= 10000:
-        return f"다른 섹터들보다 뚜렷이 {side}"
-    if size >= 4000:
-        return f"다른 섹터들보다 다소 {side}"
-    return "다른 섹터들과 비슷하다"
-
-
-def sigma(z_bp: int) -> str:
-    return f"점수 {slot('EV-SCORE', 'sigma')}σ 는 '{sigma_band(z_bp)}' 는 뜻이다."
+#: 🔒 **구간 낱말이 없다** — 총점은 축 z 의 가중평균이라 축의 문턱을 쓸 수 없다
+#:    (이슈 #17 ① · ADR-SC-0020). 그래서 이 문장에는 검사할 방향 낱말도 없고,
+#:    `guard._ROLE_WORDS` 에서 «sigma» 줄이 함께 사라졌다.
+SIGMA = f"점수는 {slot('EV-SCORE', 'sigma')}σ 다."
 
 
 def no_score(label: str) -> str:

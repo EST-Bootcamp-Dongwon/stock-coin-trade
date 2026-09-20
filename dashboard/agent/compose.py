@@ -29,7 +29,7 @@ from dashboard.agent.inventory import Evidence, Gap, Inventory, axes_in, gap_by_
 from dashboard.agent.redteam import STATUSES, Attack, attacks
 from dashboard.agent.slots import cites_of, fill
 from dashboard.explain import AXIS_MEANING, AXIS_NOT
-from sector.scoring import AXES
+from sector.scoring import AXES, lead_axis, trail_axis
 
 __all__ = [
     "CARD_KINDS", "SLOT_NAMES", "DISCLAIMER_TEXT", "FIXED_TEXTS", "HEADLINE_FIXED",
@@ -295,14 +295,15 @@ def _why(inventory: Inventory, writer: _Writer) -> tuple[tuple[Sentence, ...], t
     if inventory.value("EV-RANK") is None or score is None:
         return (writer.say("no_score", T.no_score(inventory.label)), _fixed(NO_SCORE_TEXT)), ()
     headline = (writer.say("rank_headline", T.rank_headline(inventory.label)),
-                writer.say("sigma", T.sigma(score)))
+                writer.say("sigma", T.SIGMA))
     scored = [(axis, inventory.value(f"EV-{axis}-CONTRIB")) for axis in AXES
               if inventory.value(f"EV-{axis}-CONTRIB") is not None]
     cards: list[Card] = []
     if scored:
-        # 🔒 `explain.narrative` 와 같은 고름 — 같으면 축 순서가 앞선 것
-        best = max(scored, key=lambda pair: pair[1])
-        worst = min(scored, key=lambda pair: pair[1])
+        # 🔒 `explain.narrative` 와 같은 고름 — 규칙의 정본은 `sector.scoring` 이다
+        contributions = dict(scored)
+        best = (lead_axis(contributions), contributions[lead_axis(contributions)])
+        worst = (trail_axis(contributions), contributions[trail_axis(contributions)])
         if best[1] > 0:
             cards.append(_axis_card(inventory, writer, best[0]))
         if worst[1] < 0 and worst[0] != best[0]:

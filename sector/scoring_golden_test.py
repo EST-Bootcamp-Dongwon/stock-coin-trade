@@ -528,3 +528,41 @@ def test_scoring_axes_의_길이가_결측축과_짝이_맞는다(frames, config
             axes = scoring.scoring_axes(z_bp, weights)
             assert len(axes) == row.n_axes_used, f"{row.sector_id} {name}"
             assert set(axes).isdisjoint(set(row.axes_missing)), f"{row.sector_id} {name}"
+
+
+# ── 기여 동점 — 규칙을 명시한다 (이슈 #17 ② · ADR-SC-0020) ──────────────────
+
+def test_기여_동점은_축_순서로_갈리고_입력_순서를_타지_않는다():
+    """🔴 옛 네 호출처는 파이썬 `max()` 의 «먼저 온 것» 에 기댔다 — 즉 규칙이 코드가
+    아니라 **호출처가 목록을 만드는 순서**에 있었다. `rank_scores` 가
+    `(−score_bp, sector_id)` 로 tie-break 를 명시한 것과 규율이 갈려 있었다.
+
+    🔒 그래서 여기서 고정하는 성질은 둘이다 — ① 동점이면 `AXES` 순서가 이긴다
+       ② **입력 순서가 그것을 바꾸지 못한다.** ②가 없으면 이 함수는 `max()` 와
+       구별되지 않는다.
+    """
+    assert scoring.lead_axis({"M": 2100, "F": 2100}) == "M"
+    assert scoring.lead_axis({"F": 2100, "M": 2100}) == "M"      # 🔒 입력 순서가 못 바꾼다
+    assert scoring.lead_axis({"F": 6000, "B": 6000}) == "F"
+    assert scoring.lead_axis({"B": 6000, "F": 6000}) == "F"
+
+    assert scoring.trail_axis({"F": -5, "B": -5}) == "F"
+    assert scoring.trail_axis({"B": -5, "F": -5}) == "F"
+
+    # 동점이 아니면 순서는 아무것도 아니다
+    assert scoring.lead_axis({"V": 9, "M": 1}) == "V"
+    assert scoring.trail_axis({"V": 9, "M": 1}) == "M"
+
+    # 점수에 들어간 축이 하나도 없으면 지목할 것이 없다 — 0 을 지어내지 않는다
+    assert scoring.lead_axis({}) is None
+    assert scoring.trail_axis({}) is None
+
+
+def test_동점_규칙이_AXES_순서를_따른다는_것이_우연이_아니다():
+    """🔒 `AXES` 를 거꾸로 세운 가짜 순서로는 같은 답이 나오지 않아야 한다 —
+    그래야 «축 순서로 가른다» 가 실제로 검사된 말이 된다.
+    """
+    tied = {axis: 100 for axis in scoring.AXES}
+    assert scoring.lead_axis(tied) == scoring.AXES[0]
+    assert scoring.trail_axis(tied) == scoring.AXES[0]
+    assert scoring.lead_axis(tied) != scoring.AXES[-1]

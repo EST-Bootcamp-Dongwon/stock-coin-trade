@@ -19,7 +19,8 @@ from typing import Any, Mapping
 
 from dashboard.weights import Weighting
 from sector.datastore.gate import SCORE_PUBLISHED_COLUMNS
-from sector.scoring import AXES, PRESETS, rank_scores, scoring_axes, weighted_score_bp
+from sector.scoring import (AXES, PRESETS, lead_axis, rank_scores, scoring_axes,
+                            weighted_score_bp)
 
 __all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "SCORE_AXES_COLUMN",
            "UNCLASSIFIED", "Names", "ViewError",
@@ -817,7 +818,10 @@ def podium(frame: Any, *, weighting: Weighting, top: int = 3,
         #    "고른 다섯 중 1위"가 되고, 화면은 그 차이를 말하지 않는다
         parts = axis_breakdown(frame, sector_id, weights=weighting.weights)
         scored = [p for p in parts if p["contribution_bp"] is not None]
-        best = max(scored, key=lambda p: p["contribution_bp"]) if scored else None
+        # 🔒 동점 규칙은 `sector.scoring.lead_axis` 하나다 (이슈 #17 ②)
+        by_axis = {p["axis"]: p for p in scored}
+        leader = lead_axis({axis: part["contribution_bp"] for axis, part in by_axis.items()})
+        best = by_axis[leader] if leader is not None else None
         out.append({
             "sector_id": sector_id,
             "label": names.sector_label(sector_id),

@@ -99,7 +99,9 @@ __all__ = [
     "VALUE_WINDOW",
     "ScoreRow",
     "ScoringError",
+    "lead_axis",
     "rank_scores",
+    "trail_axis",
     "score",
     "score_history",
     "scoring_axes",
@@ -571,6 +573,42 @@ def rank_scores(scores: Mapping[str, int | None]) -> dict[str, int | None]:
     for position, sid in enumerate(ordered, start=1):
         out[sid] = position
     return out
+
+
+#: 축의 정본 순서 — `AXES` 를 색인으로. 🔒 아래 두 함수의 tie-break 가 이것을 쓴다
+_AXIS_ORDER: Mapping[str, int] = {axis: index for index, axis in enumerate(AXES)}
+
+
+def lead_axis(contributions: Mapping[str, int]) -> str | None:
+    """기여가 가장 큰 축 — 화면이 «이 자리를 만든 것» 으로 지목하는 축.
+
+    🔒 **동점은 `AXES` 순서로 가른다.** `rank_scores` 가 `(−score_bp, sector_id)` 로
+       tie-break 를 명시한 것과 같은 규율이다 — 같은 종류의 동점을 한쪽은 명시하고
+       한쪽은 파이썬 `max()` 의 «먼저 온 것» 에 맡기면, 호출처가 `scored` 를 만드는
+       순서를 바꾸는 날 화면이 조용히 다른 축을 지목한다 (이슈 #17 ②).
+
+    🔴 **동점은 가정이 아니라 실재다** — 이슈 본문은 *"양수 동점이 나오면"* 이라고
+       적었으나 실측(2026-09-20 · 6,111행 × 프리셋 3)으로 기여가 동점인 (행×프리셋)이
+       **146 / 17,136** 이고 그중 **기여 > 0 이라 화면이 실제로 축을 지목하는 것이 10건**
+       이다. 즉 지금 화면이 «주로 자금흐름이다» 라고 말하는 자리 중 10곳은 폭(B)이
+       **똑같이** 보탰다.
+
+    ⚠️ 🔒 그래서 이 함수가 고치는 것은 «어느 축을 고르나» 의 **재현성**이지 «둘이
+       똑같은데 하나만 지목해도 되나» 가 아니다. 후자는 문장·카드·guard 를 함께
+       바꿔야 해서 남겨 두었다 — 근거와 실측은 ADR-SC-0020 에 있다.
+
+    `contributions` 는 **점수에 들어간 축만** 담는다(`scoring_axes`). 비어 있으면 `None`.
+    """
+    if not contributions:
+        return None
+    return min(contributions, key=lambda axis: (-contributions[axis], _AXIS_ORDER[axis]))
+
+
+def trail_axis(contributions: Mapping[str, int]) -> str | None:
+    """기여가 가장 작은 축 — «무엇이 깎았나». 🔒 동점 규칙은 `lead_axis` 와 같다."""
+    if not contributions:
+        return None
+    return min(contributions, key=lambda axis: (contributions[axis], _AXIS_ORDER[axis]))
 
 
 # ── 하루치 채점 ─────────────────────────────────────────────────────────────

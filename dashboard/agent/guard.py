@@ -59,7 +59,9 @@ from sector.scoring import (
     LOOKBACK_SHORT,
     PRESETS,
     VALUE_WINDOW,
+    lead_axis,
     scoring_axes,
+    trail_axis,
 )
 
 __all__ = ["BANNED", "verify"]
@@ -97,7 +99,6 @@ _SLOT_SHAPES: tuple[tuple[re.Pattern[str], tuple[str, ...], re.Pattern[str] | No
         (r"EV-RULE-SHORT", ("int",), r"영업일|·"),
         (r"EV-RULE-LONG|EV-RULE-VALUE", ("int",), r"일"),
         (r"EV-RULE-LIQ", ("int",), r"억"),
-        (r"EV-RULE-SIGMA2", ("int",), r"σ"),
         (r"EV-SCORE|EV-(?:PAST-)?[MFBV]-Z", ("sigma",), r"σ"),
         (r"EV-M-RAW", ("pct2",), r"%p"),
         (r"EV-B-RAW", ("pct1",), r"%p"),
@@ -213,7 +214,7 @@ def _truth(item: Evidence, src: _Source) -> Any:
         if name == "weight":
             return PRESETS[rest[1]][rest[2]]
         table = {"liquidity_eok": LIQUIDITY_MIN_WON // EOK_WON, "short": LOOKBACK_SHORT,
-                 "long": LOOKBACK_LONG, "value": VALUE_WINDOW, "sigma2": 2}
+                 "long": LOOKBACK_LONG, "value": VALUE_WINDOW}
         if name not in table:
             raise _Unreachable(f"모르는 규칙 {name}")
         return table[name]
@@ -380,8 +381,7 @@ def _expected_evidence(ctx: _Ctx) -> set[str]:
     brief, src = ctx.brief, ctx.src
     needed = {"EV-LABEL", "EV-ASOF", "EV-CONFIG", "EV-TOTAL", "EV-RANK", "EV-SCORE", "EV-STAB-DAYS",
               "EV-STAB-MEAN", "EV-STAB-SPREAD", "EV-LIQ", "EV-ETF-N", "EV-AXES-USED", "EV-MISSING",
-              "EV-DEGRADED", "EV-RULE-LIQ", "EV-RULE-SHORT", "EV-RULE-LONG", "EV-RULE-VALUE",
-              "EV-RULE-SIGMA2"}
+              "EV-DEGRADED", "EV-RULE-LIQ", "EV-RULE-SHORT", "EV-RULE-LONG", "EV-RULE-VALUE"}
     needed |= {f"EV-RANK-{p.upper()}" for p in PRESETS}
     needed |= {f"EV-{a}-{k}" for a in AXES for k in ("RAW", "Z", "W", "CONTRIB", "RANK")}
     if src.sector is not None:
@@ -451,9 +451,9 @@ def _headline_expected(ctx: _Ctx) -> list[_Exp]:
     if brief.intent == "why_rank":
         if v.get("EV-RANK") is None or v.get("EV-SCORE") is None:
             return [_Exp("no_score", T.no_score(label), ("EV-LABEL",)), _fixed(C.NO_SCORE_TEXT)]
-        z = t["EV-SCORE"]
+        # 🔒 구간 낱말이 없으니 «가장 높은 구간» 상수도 인용하지 않는다 (ADR-SC-0020)
         return [_Exp("rank_headline", T.rank_headline(label), ("EV-LABEL", "EV-TOTAL", "EV-RANK")),
-                _Exp("sigma", T.sigma(z), ("EV-SCORE",) + (("EV-RULE-SIGMA2",) if abs(z) >= 20000 else ()))]
+                _Exp("sigma", T.SIGMA, ("EV-SCORE",))]
     if brief.intent == "trust":
         if v.get("EV-RANK") is None:
             return [_Exp("no_score", T.no_score(label), ("EV-LABEL",)), _fixed(C.NO_SCORE_TRUST)]
@@ -550,7 +550,11 @@ def _expected_cards(ctx: _Ctx) -> list[tuple[str, str | None]]:
         scored = [(a, t[f"EV-{a}-CONTRIB"]) for a in AXES if t.get(f"EV-{a}-CONTRIB") is not None]
         out: list[tuple[str, str | None]] = []
         if scored:
-            best, worst = max(scored, key=lambda p: p[1]), min(scored, key=lambda p: p[1])
+            # 🔒 동점 규칙은 `sector.scoring` 하나다 — guard 가 따로 적으면
+            #    화면과 guard 가 다른 축을 고르는 날 «문장이 다르다» 로 오판한다
+            contributions = dict(scored)
+            best = (lead_axis(contributions), contributions[lead_axis(contributions)])
+            worst = (trail_axis(contributions), contributions[trail_axis(contributions)])
             if best[1] > 0:
                 out.append(("axis", best[0]))
             if worst[1] < 0 and worst[0] != best[0]:
@@ -784,7 +788,6 @@ def _layer_gaps(ctx: _Ctx) -> list[str]:
 _ROLE_WORDS: Mapping[str, tuple[str, ...]] = {
     "axis_plain": ("더 올랐다", "덜 올랐다", "늘었다", "줄었다", "많다", "적다", "**아래**", "**위**",
                    "같다", "그대로다", "같은 자리"),
-    "sigma": ("높다", "낮다", "비슷하다"),
     "contrib": ("보탰다", "깎았다"),
     "rank_change": ("올랐다", "내려갔다", "그대로다"),
     "z_change": ("높아졌다", "낮아졌다"),
@@ -807,16 +810,6 @@ _AXIS_PATTERNS: Mapping[str, tuple[tuple[str, Callable[[int], bool]], ...]] = {
           (r"% \*\*위\*\*에 있다 — 최근 많이 올라 과열 쪽이라는 뜻이다\.$", lambda v: v < 0),
           (r"평균과 같은 자리에 있다\.$", lambda v: v == 0)),
 }
-
-_SIGMA_PATTERNS: tuple[tuple[str, Callable[[int], bool]], ...] = (
-    (r"2σ 이상 높다'", lambda z: z >= 20000),
-    (r"2σ 이상 낮다'", lambda z: z <= -20000),
-    (r"뚜렷이 높다'", lambda z: 10000 <= z < 20000),
-    (r"뚜렷이 낮다'", lambda z: -20000 < z <= -10000),
-    (r"다소 높다'", lambda z: 4000 <= z < 10000),
-    (r"다소 낮다'", lambda z: -10000 < z <= -4000),
-    (r"비슷하다'", lambda z: abs(z) < 4000),
-)
 
 
 def _numeric(text: str) -> bool:
@@ -889,9 +882,6 @@ def _direction(where: str, sentence: C.Sentence, ctx: _Ctx) -> list[str]:
                 else [f"{where}: 원시값이 없는데 방향을 말했다"])
     if role == "raw_missing":
         return [] if _is_none(values, f"EV-{axis}-RAW") else [f"{where}: 원시값이 있는데 없다고 했다"]
-    if role == "sigma":
-        z = truth.get("EV-SCORE")
-        return _one_of(where, text, _SIGMA_PATTERNS, z) if z is not None else [f"{where}: 점수가 없다"]
     if role == "contrib":
         value = truth.get(f"EV-{axis}-CONTRIB")
         table = ((r"보탰다\.$", lambda v: v > 0), (r"깎았다\.$", lambda v: v < 0))

@@ -3964,3 +3964,65 @@ def test_축수도_색인이_중복된_프레임에서_밀리지_않는다():
     expected = list(view.scored(plain, only_m)[view.SCORE_AXES_COLUMN])
     assert set(expected) == {0, 1}, "픽스처가 두 값을 만들지 못했다 — 테스트가 무력하다"
     assert list(view.scored(duplicated, only_m)[view.SCORE_AXES_COLUMN]) == expected
+
+
+# ── 총점 척도 · 기여 동점 (이슈 #17 ①② · ADR-SC-0020) ──────────────────────
+
+def test_총점_문장은_축_척도의_구간_낱말을_쓰지_않는다():
+    """🔴 `0.4 / 1.0 / 2.0` 은 **축 z 단위의 문턱**인데 총점에 붙어 있었다.
+
+    총점은 그 z 들의 가중평균이라 축들이 완전 상관이 아니면 **덜 퍼진다** — 실측
+    (2026-09-20 · 291영업일) 축 0.967~1.274σ vs 총점 0.538~0.779σ. 그래서 게시된
+    20260918 에서 contrarian 1위가 «다소 높다»(실제 2.30 표준편차)로 읽혔다.
+
+    🔒 여기서 고정하는 것은 «어떤 낱말을 쓰나» 가 아니라 **«비교 낱말을 쓰지 않는다»** 다.
+       순위는 정확하니 순위가 그 자리에서 비교를 말한다.
+    """
+    data = frame_with_z({
+        "sec_0": {a: 0 for a in AXES},
+        "sec_1": {a: 1000 for a in AXES},
+        "sec_2": {a: 12000 for a in AXES},          # 옛 코드라면 «뚜렷이 높다» 였다
+    })
+    lines = explain.narrative(**view.sector_story(data, "sec_2", names=KOREAN))
+    assert "1위" in lines[0] and "점수는 +1.20σ 다." in lines[0], lines[0]
+    for banned in ("높다", "낮다", "비슷하다", "뚜렷이", "다소", "2σ 이상"):
+        assert banned not in lines[0], (banned, lines[0])
+    # 🔒 함수째 사라졌다 — 남겨 두면 다음 사람이 총점에 다시 붙인다 (ADR-SC-0016 의 규율)
+    assert not hasattr(explain, "sigma_words")
+
+
+def test_기여가_동점이면_축_순서가_가르고_화면이_그것을_따른다():
+    """🔴 이슈 본문은 *"양수 동점이 나오면"* 이라고 적었으나 **이미 실재한다** —
+    실측(2026-09-20 · 6,111행 × 프리셋 3) 동점 146 / 17,136 · 그중 기여 > 0 이라
+    화면이 실제로 축을 지목하는 것이 **10건**이다.
+
+    🔒 `sector.scoring.lead_axis` 하나가 가르고, 화면은 그 답을 쓴다.
+    """
+    data = frame_with_z({
+        "sec_0": {a: 0 for a in AXES},
+        "sec_1": {a: 1000 for a in AXES},
+        # 35×6000 == 30×7000 → M 과 F 의 기여가 **정확히** 같다
+        "sec_2": {"M": 6000, "F": 7000, "B": 1000, "V": 1000},
+    })
+    parts = view.axis_breakdown(data, "sec_2", weights=PRESETS["balanced"])
+    contribution = {p["axis"]: p["contribution_bp"] for p in parts}
+    assert contribution["M"] == contribution["F"] == 2100, contribution   # 픽스처가 정말 동점이다
+
+    lines = explain.narrative(**view.sector_story(data, "sec_2", names=KOREAN))
+    assert AXIS_NAMES["M"] in lines[1], lines[1]          # AXES 순서상 M 이 F 보다 앞이다
+    assert AXIS_NAMES["F"] not in lines[1], lines[1]
+
+
+def test_어느_모듈도_기여_최댓값을_스스로_고르지_않는다():
+    """정적 보강 — 네 호출처가 각자 `max(scored, …)` 를 쓰던 상태로 돌아가면 빨개진다.
+
+    🔴 그 상태가 위험한 이유는 «규칙이 코드가 아니라 **호출처가 목록을 만드는 순서**에
+       있다» 는 것이다. 목록을 한 곳에서 다르게 만들면 화면과 guard 가 **다른 축**을
+       지목하고, guard 는 그것을 «문장이 다르다» 로 오판한다.
+    """
+    for path in ("dashboard/explain.py", "dashboard/view.py",
+                 "dashboard/agent/compose.py", "dashboard/agent/guard.py"):
+        source = Path(path).read_text(encoding="utf-8")
+        assert "lead_axis(" in source, path
+        for banned in ("max(scored", "min(scored"):
+            assert banned not in source, f"{path}: {banned}"
