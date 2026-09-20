@@ -2695,21 +2695,50 @@ def test_최신일이_전부_결측이어도_랭킹이_그려진다(monkeypatch)
     assert any("순위를 낼 수 있는 섹터가 없다" in m.value for m in at.markdown)
 
 
-def _bar_chart_of(at):
-    """랭킹 화면의 막대 차트 — **스펙과 원본 proto 를 함께** 준다.
+def _chart_by_field(at, field: str):
+    """그 필드를 **인코딩하는** Vega 차트 하나 — 스펙과 원본 proto 를 함께 준다.
 
     🔒 `AppTest` 에는 차트 접근자가 없다(`at.altair_chart` 도 `at.bar_chart` 도 없고
        `arrow_vega_lite_chart` 는 0건이다). `st.bar_chart` 와 `st.altair_chart` 는
        **둘 다** `vega_lite_chart` 로 내려오므로 이 이름 하나로 잡는다.
-    🔒 이 페이지의 유일한 Vega 차트다 — 표·분포는 `st.dataframe` 이다.
+
+    🔴 한때 «이 페이지의 유일한 Vega 차트다» 를 전제로 `len(charts) == 1` 을 걸었는데,
+       근거 패널에 워터폴이 들어오면서 랭킹 화면의 차트가 **둘**이 됐다 (이슈 #16).
+       그 단언은 정확히 이 상황을 잡으라고 심어 둔 것이고, 실제로 먼저 빨개졌다.
+
+    🔒 **`key=` 로는 가를 수 없다.** 실측(streamlit 1.63.0) — `st.altair_chart(key=…)`
+       를 줘도 proto 의 `id`·`form_id` 가 **빈 문자열**이라 AppTest 가 볼 수 있는
+       식별자가 남지 않는다. 그래서 «무엇을 그리는 차트인가» 로 가른다.
+    🔒 **여전히 «정확히 하나»** 다 — 같은 필드를 그리는 차트가 하나 더 생기면 이
+       헬퍼가 조용히 엉뚱한 것을 검사하는 상태로 돌아간다.
     """
     import json
 
     charts = at.get("vega_lite_chart")
-    assert charts, "막대 차트가 그려지지 않았다"
-    # 🔒 **하나여야 한다.** 위쪽에 차트가 하나 생기면 이 헬퍼가 조용히 엉뚱한 것을 검사한다
-    assert len(charts) == 1, f"Vega 차트가 {len(charts)}개다 — 어느 것을 볼지 모른다"
-    return json.loads(charts[0].proto.spec), charts[0].proto
+    assert charts, "Vega 차트가 하나도 그려지지 않았다"
+    found = []
+    for chart in charts:
+        spec = json.loads(chart.proto.spec)
+        # 🔒 층 차트까지 뒤진다 — 막대는 층 하나, 점선은 다른 층에 있다
+        layers = spec.get("layer", [spec])
+        fields = {enc.get("field") for layer in layers
+                  for enc in layer.get("encoding", {}).values()
+                  if isinstance(enc, dict)}
+        if field in fields:
+            found.append((spec, chart.proto))
+    assert len(found) == 1, \
+        f"«{field}» 를 그리는 차트가 {len(found)}개다 (전체 {len(charts)}개) — 어느 것을 볼지 모른다"
+    return found[0]
+
+
+def _bar_chart_of(at):
+    """랭킹 화면의 **섹터 막대** 차트. 🔒 근거 패널의 워터폴과 섞이지 않는다."""
+    return _chart_by_field(at, "섹터")
+
+
+def _waterfall_of(at):
+    """근거 패널의 **워터폴**. 🔒 «단계» 를 그리는 것은 이 차트뿐이다 (이슈 #16)."""
+    return _chart_by_field(at, "단계")
 
 
 def _dataset_of(proto, name: str):
@@ -2785,6 +2814,147 @@ def test_점선_색은_설정의_토큰에서_온다():
     gray = st.get_option("theme.grayColor")
     assert gray, "`config.toml` 에 `theme.grayColor` 가 없다 — 점선이 색을 잃는다"
     assert gray not in (st.get_option("theme.greenColor"), st.get_option("theme.redColor"))
+
+
+# ── 워터폴 (M10 ① · 이슈 #16) ──────────────────────────────────────────────
+
+def test_워터폴은_0에서_쌓아_게시된_총점에서_끝난다():
+    """🔒 마지막 막대는 **게시된 총점**에서 끝난다 — 쌓아 올린 합이 아니다.
+
+    🔴 픽스처의 잔차가 **0 이 아니어야** 이 구분에 뜻이 있다. 잔차가 0 인 날에는
+       두 수가 같아서 «쌓은 합을 총점이라 그린다» 는 돌연변이가 살아남는다.
+       `sec_2` 는 쌓은 합 6059 · 게시 총점 6060 이다 (잔차 +1 · 한도 2).
+    """
+    story = view.sector_story(frame(), "sec_2")
+    table = view.waterfall(story).table
+
+    assert list(table["단계"]) == ["모멘텀 (M)", "자금흐름 (F)", "폭 (B)", "밸류 (V)", "총점"]
+    # 🔒 층층이 이어진다 — 앞 단계의 끝이 다음 단계의 시작이다
+    axes = table[table["단계"] != "총점"]
+    assert list(axes["시작"]) == [0] + list(axes["끝"])[:-1]
+    assert list(axes["끝"] - axes["시작"]) == list(axes["값(bp)"])
+
+    stacked, total = int(axes.iloc[-1]["끝"]), story["arithmetic"].total_bp
+    assert stacked != total, "픽스처의 잔차가 0 이라 «쌓은 합» 과 «총점» 을 가를 수 없다"
+    last = table.iloc[-1]
+    assert (int(last["시작"]), int(last["끝"])) == (0, total)
+    assert int(last["값(bp)"]) == total
+
+
+def test_워터폴은_점수에_들어간_축만_그린다():
+    """🔴 **이슈 #15 가 그림으로 올라오는 자리다.** 점수에 안 들어간 축은 0 높이
+       막대가 아니라 **아예 없다** — 0 으로 그리면 「0 만큼 보탰다」와 「애초에 안
+       들어갔다」가 그림에서 같아진다 (ADR-SC-0007).
+
+    🔒 네 축 전부는 바로 아래 줄 목록과 `arithmetic_table` 이 «없음» 까지 보여준다.
+       그림이 숨기는 것이 아니라 **그림은 점수의 산수만** 그린다.
+    """
+    z_of = {"sec_0": {"M": 12000, "F": None, "B": 4000, "V": None},
+            "sec_1": {"M": 9000, "F": None, "B": 1000, "V": None},
+            "sec_2": {"M": 15000, "F": None, "B": 7000, "V": None}}
+    story = view.sector_story(frame_with_z(z_of), "sec_0")
+    table = view.waterfall(story).table
+
+    assert list(table["단계"]) == ["모멘텀 (M)", "폭 (B)", "총점"]
+    # 🔒 «없음» 인 축이 실제로 있어야 이 테스트에 뜻이 있다
+    absent = [p["axis"] for p in story["parts"] if p["contribution_bp"] is None]
+    assert absent == ["F", "V"], absent
+
+
+def test_합이_총점에_닿지_않으면_워터폴을_그리지_않는다():
+    """🔴 워터폴은 «쌓으면 총점에 닿는다» 고 말하는 그림이다. 그 말이 거짓인 상태에서
+       그리면 화면이 검산할 수 없는 주장을 한다 (절대 제약 8).
+
+    🔒 `_arithmetic` 을 직접 부른다 — **게시 게이트가 막는 상태**라 유효한 픽스처
+       프레임으로는 만들 수 없다(`test_축이_하나면_잔차_1은_설명되지_않는다` 와 같은 자리).
+    🔒 빈 프레임도 **열은 그대로** 다 — 화면이 `len()` 만 보고 갈린다.
+    """
+    parts = [{"axis": "M", "contribution_bp": 500}] + [
+        {"axis": a, "contribution_bp": None} for a in ("F", "B", "V")]
+    unexplained = view.waterfall({"parts": parts,
+                                  "arithmetic": view._arithmetic(parts, 501)})
+    assert len(unexplained.table) == 0
+    assert list(unexplained.table.columns) == list(view._WATERFALL_COLUMNS)
+    assert unexplained.total_bp == 501
+
+    # 🔒 총점이 없으면 맞춰 볼 것이 없다 — 이것은 «어긋남» 이 아니지만 역시 못 그린다
+    no_total = view.waterfall({"parts": parts,
+                               "arithmetic": view._arithmetic(parts, None)})
+    assert len(no_total.table) == 0 and no_total.total_bp is None
+
+
+def test_워터폴의_마지막_막대가_게시된_총점이다(monkeypatch):
+    """🔒 **화면이 실제로 그린 값**을 본다 — 순수 테스트는 렌더러가 무엇을 넘기는지
+       볼 수 없다 (`test_막대와_점선은_필터를_따로_따른다` 와 같은 자리).
+
+    🔒 기댓값을 **화면과 따로** 낸다 — 게시 열에서 직접 읽는다. 같은 함수를 두 번
+       부르면 대조가 대조이기를 그친다 (ADR-SC-0013 ④-1).
+    """
+    source = frame()
+    at = _app_with_frame(monkeypatch, source)
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    spec, proto = _waterfall_of(at)
+    drawn = _dataset_of(proto, spec["data"]["name"])
+    chosen = at.selectbox[0].value
+    latest = view.latest_frame(source).set_index("sector_id")
+    expected = int(latest.loc[chosen, f"score_{view.PROFILES[0]}_bp"])
+
+    last = drawn.iloc[-1]
+    assert last["단계"] == "총점"
+    assert (int(last["시작"]), int(last["끝"])) == (0, expected)
+    # 🔒 순서가 이 그림의 뜻이다 — 풀리면 «쌓아 올린다» 가 사라진다
+    assert spec["encoding"]["x"]["sort"] is None, spec["encoding"]["x"]
+    assert spec["encoding"]["y2"]["field"] == "끝", spec["encoding"]
+
+
+def test_워터폴이_색으로_부호를_말하지_않는다(monkeypatch):
+    """🔒 **위치가 부호를 말한다.** 0 에서 출발하는 워터폴은 그것으로 충분하다.
+
+    🔴 색을 쓰려면 스펙에 박아야 하고(프런트 테마는 `greenColor`·`redColor` 를 차트에
+       먹이지 않는다) 그러면 팔레트의 정본을 `config.toml` 하나로 둔 규율이 깨진다
+       (ADR-SC-0010 ⑦). 게다가 **한국 관습은 상승이 빨강**이라 팀 7명이 같은 색을
+       반대로 읽는다.
+    🔒 `theme.py` 의 «색으로 순위를 매기지 않는다» 와 같은 규율이다.
+    """
+    import json
+
+    import streamlit as st
+
+    at = _app_with_frame(monkeypatch, frame())
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    spec, _ = _waterfall_of(at)
+    assert "color" not in spec["encoding"], spec["encoding"]
+    assert "color" not in spec["mark"], spec["mark"]
+    # 🔴 **설정만 보면 색을 박아도 초록이다.** 실제 스펙 전체를 뒤진다
+    blob = json.dumps(spec, ensure_ascii=False)
+    for option in ("theme.greenColor", "theme.redColor"):
+        value = st.get_option(option)
+        assert value and value not in blob, f"{option} 을 스펙에 박았다 — {value}"
+
+
+def test_그림을_못_그릴_때_화면이_왜_없는지_말한다(monkeypatch):
+    """🔒 **조용히 빼지 않는다** (ADR-SC-0016 ④). 그림이 사라진 자리에 이유를 남긴다.
+
+    🔒 무엇이 어긋났는지는 바로 아래 `arithmetic_text` 가 경우마다 다르게 말하므로
+       여기서 다시 나누지 않는다 — 같은 판정이 두 곳에서 갈릴 자리를 만들지 않는다.
+    """
+    at = _app_with_frame(monkeypatch, blank_latest(3, blanks=1), rank_detail="sec_0")
+    assert not at.exception, [str(e)[:300] for e in at.exception]
+
+    drawn = " ".join(m.value for m in at.markdown)
+    assert explain.WATERFALL_ABSENT in drawn, drawn[-600:]
+    # 🔒 그림이 정말 없다 — 문장만 있고 그림도 그려지면 이 테스트가 거짓말이 된다
+    import json
+
+    for chart in at.get("vega_lite_chart"):
+        spec = json.loads(chart.proto.spec)
+        layers = spec.get("layer", [spec])
+        fields = {enc.get("field") for layer in layers
+                  for enc in layer.get("encoding", {}).values()
+                  if isinstance(enc, dict)}
+        assert "단계" not in fields, "못 그린다고 말해 놓고 그렸다"
 
 
 def test_막대와_점선은_필터를_따로_따른다(monkeypatch):

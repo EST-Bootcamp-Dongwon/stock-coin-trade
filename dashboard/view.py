@@ -25,7 +25,7 @@ __all__ = ["PROFILES", "SCORE_COLUMN", "RANK_COLUMN", "SCORE_AXES_COLUMN",
            "UNCLASSIFIED", "Names", "ViewError",
            "check_frame", "latest_frame", "scored", "rank_stability", "stability_window",
            "sector_story", "podium", "Bars", "score_bars", "arithmetic_table",
-           "Arithmetic",
+           "Arithmetic", "Waterfall", "waterfall",
            "ranking_table", "axis_breakdown", "gics_options", "visible_ids",
            "gics_distribution", "int_or_none"]
 
@@ -961,3 +961,75 @@ def arithmetic_table(parts: list[dict[str, Any]]) -> Any:
             "④ 기여(bp)": p["contribution_bp"],
         } for p in parts]
     ).set_index("축")
+
+
+#: 워터폴 표의 열 — 🔒 빈 프레임도 같은 열을 가진다. 화면이 `len()` 만 보고 갈리게 한다.
+_WATERFALL_COLUMNS = ("단계", "시작", "끝", "값(bp)", "순서")
+
+
+@dataclass(frozen=True)
+class Waterfall:
+    """워터폴이 그리는 것 **전부** — 층 표와 총점 (`Bars` 와 같은 규율).
+
+    ## 🔒 `sector_story` 의 반환값에서만 만든다
+
+    `parts` 와 총점을 **호출자가 짝지어** 넘기는 모양이면 둘이 같은 가중치·같은 날에서
+    나왔는지 이 함수가 알 수 없다. `_arithmetic` 을 공개 함수로 두지 않은 것과 같은
+    이유다(이슈 #13) — 총점의 출처를 정하는 자리는 `sector_story` 하나여야 한다.
+
+    ## 🔴 «합이 총점에 닿는다» 를 그림이 말할 수 없을 때는 그리지 않는다
+
+    워터폴은 **막대를 쌓으면 마지막에 닿는다**고 말하는 그림이다. 그 말이 거짓인
+    상태가 실재한다 — 게시된 총점이 게시된 z 로 재현되지 않으면(`Arithmetic.explained`
+    가 거짓) 어긋남에 **상한이 없다**(ADR-SC-0014 ①). 그때 그림을 그리면 화면이
+    검산할 수 없는 주장을 하게 된다(절대 제약 8).
+
+    ⚠️ 반대로 **반올림 잔차(±`bound_bp`)는 그려도 된다** — 상한이 구조적이고, 1bp 는
+       700px 도메인에서 **0.056px** 라 애초에 보이지 않으며(이슈 #16 §4), 바로 아래
+       `explain.arithmetic_text` 가 그 차이를 **숫자로** 말한다. 그림이 못 보여주는
+       것을 글이 말하는 배치다.
+    """
+
+    table: Any
+    """화면이 그대로 그리는 프레임. 🔒 **비어 있으면 그리지 않는다** — 열은 그대로다."""
+
+    total_bp: int | None
+    """게시된 총점. 🔒 마지막 막대는 여기서 끝난다 — 쌓은 합이 아니다."""
+
+
+def waterfall(story: Mapping[str, Any]) -> Waterfall:
+    """`sector_story` 가 만든 이야기 → 워터폴 층 표.
+
+    🔒 **총점도 잔차도 다시 계산하지 않는다.** `story["arithmetic"]` 이 이미 판정을
+       들고 있다 — 여기서 다시 더하면 같은 화면에 총점 출처가 둘이 된다.
+
+    🔒 **점수에 들어간 축만 막대가 된다.** 기여가 `None` 인 축(결측 z · 가중치 0)은
+       0 높이 막대가 아니라 **아예 없다** — 「0 만큼 보탰다」와 「애초에 안 들어갔다」를
+       그림이 같게 만들면 이슈 #15 가 되살아난다. 네 축 전부는 바로 아래 줄 목록과
+       `arithmetic_table` 이 «없음» 까지 보여준다.
+
+    🔴 마지막 «총점» 막대는 **0 에서 게시된 총점까지** 간다. 쌓은 합(`parts_sum_bp`)
+       까지 그리면 게시되지 않은 수를 총점이라고 그리게 된다.
+    """
+    import pandas as pd
+
+    from sector.scoring import AXIS_NAMES
+
+    # 🔒 `getattr` 기본값을 두지 않는다 — 없는 키는 시끄럽게 터지는 편이 낫다
+    arithmetic = story["arithmetic"]
+    total_bp = arithmetic.total_bp
+    steps = [p for p in story["parts"] if p["contribution_bp"] is not None]
+    if not (arithmetic.explained and steps and total_bp is not None):
+        return Waterfall(table=pd.DataFrame(columns=list(_WATERFALL_COLUMNS)),
+                         total_bp=total_bp)
+
+    rows, running = [], 0
+    for order, part in enumerate(steps):
+        start = running
+        running += part["contribution_bp"]
+        rows.append({"단계": f"{AXIS_NAMES[part['axis']]} ({part['axis']})",
+                     "시작": start, "끝": running,
+                     "값(bp)": part["contribution_bp"], "순서": order})
+    rows.append({"단계": "총점", "시작": 0, "끝": total_bp,
+                 "값(bp)": total_bp, "순서": len(steps)})
+    return Waterfall(table=pd.DataFrame(rows), total_bp=total_bp)

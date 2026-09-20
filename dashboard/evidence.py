@@ -34,7 +34,8 @@ from dashboard.agent.intent import EXAMPLE_QUESTIONS, INTENT_LABELS, INTENTS, MA
 from dashboard.agent.inventory import SEARCH_NOTICE
 from dashboard.agent.redteam import STATUS_PLAIN
 from dashboard.explain import (
-    arithmetic_text, axis_line, degraded_text, liquidity_text, rank_stability_text, score_text,
+    WATERFALL_ABSENT, WATERFALL_READING, arithmetic_text, axis_line, degraded_text,
+    liquidity_text, rank_stability_text, score_text,
 )
 
 __all__ = ["render_evidence", "GUARD_FAILED", "ASK_NOTICE"]
@@ -97,6 +98,9 @@ def render_evidence(frame, sector_id: str, *, profile: str = "balanced", names=N
         st.markdown("**총점** " + score_text(story["score_bp"], story["rank"], total))
         st.markdown(rank_stability_text(story["mean_rank"], story["spread"],
                                         story["window"]))
+        # ★ 그림 → 같은 것을 줄로 → 잔차 문장. 머리주석의 «말 → 숫자» 와 같은 규율이다
+        #   (모양을 먼저 보이고 자릿수를 뒤에 편다)
+        _render_waterfall(view.waterfall(story))
         for item in story["parts"]:
             line = axis_line(item["axis"], raw_bp=item["raw_bp"], z_bp=item["z_bp"],
                              rank=item["rank"], total=total)
@@ -118,6 +122,49 @@ def render_evidence(frame, sector_id: str, *, profile: str = "balanced", names=N
     if note:
         st.markdown("**사람이 쓴 근거** (`sectors.yaml`)")
         st.markdown(f"<div class='sc-note'>{note}</div>", unsafe_allow_html=True)
+
+
+def _waterfall_chart(waterfall: "view.Waterfall"):
+    """0 → M → F → B → V → 총점 (이슈 #16 · 계획서 D-5 ①).
+
+    🔒 **색 인코딩을 주지 않는다.** 그래야 프런트엔드의 `theme="streamlit"` 이
+       `chartCategoricalColors` 를 먹인다 — `ranking._bar_chart` 와 같은 경로다.
+       🔴 부호를 초록·빨강으로 칠하려면 색을 **스펙에 박아야** 하고 그것은 팔레트의
+       정본을 `config.toml` 하나로 둔 규율을 어긴다(ADR-SC-0010 ⑦). 게다가 한국
+       관습은 **상승이 빨강**이라 팀 7명이 같은 색을 반대로 읽는다. 워터폴은
+       **0 에서 출발하는 위치가 이미 부호를 말한다.**
+    🔒 `import altair` 를 **함수 안에서** 한다 — streamlit 이 미리 로드하지 않고
+       (실측 1.5s) 이 모듈은 부팅 때 함께 import 된다 (`ranking._bar_chart` 와 같다).
+    🔒 `sort=None` — M · F · B · V · 총점 순서가 이 그림의 뜻이다. 풀리면 알파벳순이
+       되어 «쌓아 올린다» 가 사라진다.
+    ⚠️ `.interactive()` 를 붙이지 않는다. `_bar_chart` 가 그것을 붙인 이유는
+       `st.bar_chart` 가 주던 줌·팬을 **빠짐없이 옮기려는** 것이었다(ADR-SC-0017 ⑤).
+       여기는 옮겨 올 원본이 없고 막대가 다섯뿐이라 확대할 것이 없다.
+    """
+    import altair as alt
+
+    return alt.Chart(waterfall.table).mark_bar().encode(
+        x=alt.X("단계:N", sort=None, title="", axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("시작:Q", title="bp", axis=alt.Axis(grid=True)),
+        y2=alt.Y2("끝:Q"),
+        tooltip=["단계", "값(bp)"],
+    ).properties(height=240)
+
+
+def _render_waterfall(waterfall: "view.Waterfall") -> None:
+    """축 기여가 총점까지 쌓이는 그림. 🔒 **그릴 수 없으면 왜 없는지 말한다.**
+
+    🔴 `bp` 로 그린다 — `score_bars` 가 σ 를 고른 것과 **반대**다. 이 칸의 모든 줄이
+       bp 로 적혀 있고(«→ 기여 +1,480» · 아래 합계 문장), 같은 칸에서 그림만 다른
+       척도를 쓰면 팀원이 눈으로 검산할 수 없다. 막대 차트는 21개 섹터를 **비교**
+       시키는 그림이라 눈금을 읽힐 일이 없었지만, 이 그림은 **검산시키는** 그림이다.
+    """
+    if len(waterfall.table) == 0:
+        st.markdown(WATERFALL_ABSENT)
+        return
+    st.altair_chart(_waterfall_chart(waterfall), width="stretch")
+    st.markdown(f"<div class='sc-muted'>{WATERFALL_READING}</div>",
+                unsafe_allow_html=True)
 
 
 def _handoff_key(ask_key: str) -> str:
