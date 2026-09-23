@@ -54,7 +54,7 @@ flowchart TB
 | 폴더 | 상태 | 무엇 | 커밋 |
 |---|---|---|---|
 | [`decisions/`](decisions/) | 🟢 **현재** | ADR 19건(0001~0020 · 0009 결번). 참조 키는 `ADR-SC-NNNN` | ✅ |
-| [`backlog/`](backlog/) | 🟢 **현재** | 아직 하지 않은 것 · 판정된 아이디어 | ✅ |
+| [`backlog/`](backlog/) | 🟢 **현재** | 아직 하지 않은 것 · 판정된 아이디어 · [확장 요구사항과 산출물](backlog/확장-요구사항-선별과-산출물.md) | ✅ |
 | [`v2-design/`](v2-design/) | 🧊 **동결** | v2.0 설계 55개 — [입구](v2-design/README.md)를 먼저 읽어라 | ✅ |
 | [`how-to/`](how-to/) | ⚠️ 일부 | `quant-core` 이식 계획은 **폐기**. 체결 가정 명세(§3)만 유효 | ✅ |
 | [`research/`](research/) | 🟢 현재 | 조사 기록 | ✅ |
